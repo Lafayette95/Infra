@@ -35,6 +35,18 @@ $PY scripts/run_dashboard.py                                 # http://127.0.0.1:
 $PY -m pytest
 ```
 
+## Supported futures (`FUTURES_ROOTS` in `infra/config.py`)
+| Category | Roots | Dataset |
+|---|---|---|
+| STIR | `SR3` (SOFR), `ESR` (€STR) | GLBX.MDP3 |
+| STIR | `SO3` (SONIA) | IFLL.IMPACT |
+| US Treasuries | `ZT`, `ZF`, `ZN`, `TN` (Ultra 10Y), `ZB`, `UB` (Ultra Bond) | GLBX.MDP3 |
+| Eurex | `FGBL`, `FGBM`, `FGBS`, `FBTP` (data from 2025-03-10) | XEUR.EOBI |
+| ICE | `R` (Long Gilt) | IFLL.IMPACT |
+
+Relative tickers: `<root>.c.<n>` (calendar) / `<root>.v.<n>` (prior-day volume), e.g. `ZN.v.0`.
+Prefer `.v.0` for bonds: the calendar front sits in an expiring, thin contract for weeks.
+
 ## Cost protection
 - Disk first: only date ranges absent from the coverage manifest are requested.
 - Every request is priced via `metadata.get_cost` and refused above `INFRA_MAX_COST_USD` (default $5).

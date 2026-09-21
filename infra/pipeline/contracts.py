@@ -65,7 +65,7 @@ def ensure_contracts(
             raw = api.fetch_definitions(
                 cfg.dataset, [cfg.parent], day, max_cost_usd=max_cost_usd, client=client
             )
-            contract_store.write_contracts(contracts_file, normalize_futures_definitions(raw, cfg.root))
+            contract_store.write_contracts(contracts_file, normalize_futures_definitions(raw, cfg.root, cfg.ticker_regex))
             coverage_store.record_covered(coverage_file, f"defs:{cfg.root}", [(day, day + _ONE_DAY)])
             log.info("%s definitions snapshot %s saved", cfg.root, day.date())
     return contract_store.read_contracts(contracts_file, cfg.root)

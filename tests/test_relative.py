@@ -135,3 +135,28 @@ def test_relative_pipeline_fetches_only_needed_contracts_once(tmp_path, monkeypa
 def test_unknown_root_fails_clearly():
     with pytest.raises(KeyError):
         rel.group_by_root([RelativeSpec("XX", "c", 0)])
+
+
+# ------------------------------------------------------------------ universe config
+def test_ice_quarterly_filter_drops_twins_and_serials():
+    """ICE lists a tradable '!' contract plus a non-trading '_Z' twin and off-cycle months."""
+    from infra.config import FUTURES_ROOTS
+    symbols = ["R   FMH0025!", "R   FMH0025_Z", "R   FMJ0025!", "R   FMM0025!", "R   FMK0025!"]
+    raw = pd.DataFrame({
+        "raw_symbol": symbols, "instrument_class": "F", "instrument_id": range(5),
+        "expiration": pd.to_datetime(["2025-03-27", "2025-03-26", "2025-03-21", "2025-06-26", "2025-04-25"], utc=True),
+        "activation": pd.NaT,
+    })
+    out = normalize_futures_definitions(raw, "R", FUTURES_ROOTS["R"].ticker_regex)
+    assert out["ticker"].tolist() == ["R   FMH0025!", "R   FMM0025!"]  # no twin, no April/May codes
+
+
+def test_root_config_is_consistent():
+    from infra.config import DEFAULT_RELATIVE_TICKERS, FUTURES_ROOTS
+    datasets = {"GLBX.MDP3", "XEUR.EOBI", "IFLL.IMPACT"}
+    for key, cfg in FUTURES_ROOTS.items():
+        assert key == cfg.root and cfg.parent == f"{key}.FUT" and cfg.dataset in datasets
+        assert cfg.category in {"STIR", "Bonds"}
+    assert {"SR3", "ESR", "SO3", "ZT", "ZF", "ZN", "TN", "ZB", "UB",
+            "FGBL", "FGBM", "FGBS", "FBTP", "R"} == set(FUTURES_ROOTS)
+    assert all(parse_relative(t) and parse_relative(t).root in FUTURES_ROOTS for t in DEFAULT_RELATIVE_TICKERS)

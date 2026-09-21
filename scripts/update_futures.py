@@ -21,7 +21,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from infra.api import databento_client as api  # noqa: E402
-from infra.config import DEFAULT_RELATIVE_TICKERS, FUTURES_ROOTS, MAX_COST_USD  # noqa: E402
+from infra.config import FUTURES_ROOTS, MAX_COST_USD  # noqa: E402
 from infra.pipeline import contracts as contracts_pipe  # noqa: E402
 from infra.pipeline import futures as fut  # noqa: E402
 from infra.pipeline import relative as rel  # noqa: E402
@@ -43,7 +43,8 @@ def _absolute_windows(specs, absolute, start, end, client):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--tickers", nargs="+", default=DEFAULT_RELATIVE_TICKERS)
+    parser.add_argument("--tickers", nargs="+", required=True,
+                        help="relative (SR3.v.0) and/or absolute (SRZ4; quote symbols with spaces)")
     parser.add_argument("--start", required=True, help="UTC date, inclusive (YYYY-MM-DD)")
     parser.add_argument("--end", default=None, help="UTC date, exclusive; default = today")
     parser.add_argument("--max-cost", type=float, default=MAX_COST_USD, help="USD guardrail per request")

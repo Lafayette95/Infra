@@ -54,11 +54,14 @@ def filter_definitions(
 CONTRACT_COLUMNS = ["root", "ticker", "instrument_id", "expiry", "activation"]
 
 
-def normalize_futures_definitions(raw: pd.DataFrame, root: str) -> pd.DataFrame:
+def normalize_futures_definitions(
+    raw: pd.DataFrame, root: str, ticker_regex: str | None = None
+) -> pd.DataFrame:
     """Raw futures ``definition`` rows -> one row per OUTRIGHT contract.
 
     Parent queries also return spreads (``instrument_class == 'S'``; e.g. 7,144 of
     7,190 rows for SR3), which are dropped here. ``ticker`` is the absolute raw symbol.
+    ``ticker_regex`` further keeps only symbols that match (e.g. ICE's quarterly contracts).
     """
     empty = pd.DataFrame({
         "root": pd.Series(dtype="str"),
@@ -71,6 +74,8 @@ def normalize_futures_definitions(raw: pd.DataFrame, root: str) -> pd.DataFrame:
         return empty
     df = raw.reset_index() if "ts_recv" in raw.index.names else raw.copy()
     df = df[df["instrument_class"] == "F"]
+    if ticker_regex:
+        df = df[df["raw_symbol"].astype(str).str.contains(ticker_regex, regex=True)]
     if df.empty:
         return empty
     out = pd.DataFrame({
