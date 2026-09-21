@@ -13,7 +13,7 @@ from dash import Dash, Input, Output, State, ctx, html
 from infra.api.databento_client import CostLimitExceeded
 from infra.dashboard import charts
 from infra.dashboard.theme import tokens
-from infra.pipeline import futures as fut
+from infra.pipeline.series import load_series, plan_series
 from infra.processing.resample import coarsen_to_fit, resample_ohlcv
 
 log = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ def register_callbacks(app: Dash) -> None:
         want_fetch = ctx.triggered_id == "load-btn" and "yes" in (fetch or [])
 
         try:
-            df = fut.load_futures([ticker], start_ts, end_ts, fetch_missing=want_fetch)
+            df = load_series([ticker], start_ts, end_ts, fetch_missing=want_fetch)
         except CostLimitExceeded as exc:
             return theme_class, charts.empty_figure("Blocked by cost guardrail", theme), \
                 charts.empty_figure("", theme), [], f"⚠ {exc}"
@@ -56,13 +56,15 @@ def register_callbacks(app: Dash) -> None:
 
         bars, used_tf = coarsen_to_fit(df, timeframe, MAX_BARS)
         daily = resample_ohlcv(df, "1D")
-        gaps = fut.plan_futures_update(ticker, start_ts, end_ts)
+        gaps = plan_series([ticker], start_ts, end_ts)
 
         notes = [f"{len(df):,} 1-min bars on disk"]
+        if not df.empty and ticker != df["contract"].iloc[0]:
+            notes.append(f"{df['contract'].nunique()} contract(s): {', '.join(sorted(df['contract'].unique()))}")
         if used_tf != timeframe:
             notes.append(f"showing {used_tf} (too many {timeframe} bars)")
         if gaps:
-            notes.append(f"{len(gaps)} date range(s) never queried - tick 'Fetch missing' and press Load")
+            notes.append(f"{len(gaps)} contract/definition set(s) missing on disk - tick 'Fetch missing' and press Load")
 
         kpis = [
             html.Div(className="kpi", children=[html.Span(label), html.Strong(value)])

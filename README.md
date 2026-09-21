@@ -14,7 +14,11 @@ infra/
   processing/transforms.py   clean / fixed-point encode / decode / MultiIndex (RAM only)
   processing/definitions.py  option definition normalise + local filter
   processing/resample.py     timeframe aggregation
-  pipeline/futures.py        load_futures  (parent) + read / plan / fetch children
+  pipeline/futures.py        load_futures (ABSOLUTE contracts) + read / plan / fetch children
+  pipeline/contracts.py      contracts table from periodic `definition` snapshots
+  pipeline/relative.py       relative series (SR3.c.0 / SR3.v.0) resolved to absolute contracts
+  pipeline/series.py         load_series / plan_series: one entry point for both kinds
+  relative/                  pure roll logic: symbology, calendar + volume rolls, apply_mapping
   pipeline/options.py        load_options  (definitions -> filter -> ids -> bars)
   dashboard/                 app, layout, callbacks, charts, theme, assets/
 scripts/                     update_futures.py, update_options.py, run_dashboard.py
@@ -25,8 +29,8 @@ tests/                       offline tests (no API, no cost)
 ```
 PY=/opt/homebrew/Caskroom/miniconda/base/envs/infra-env/bin/python
 cp .env.example .env            # add DATABENTO_API_KEY
-$PY scripts/update_futures.py --start 2025-01-01 --dry-run   # gaps + estimated cost only
-$PY scripts/update_futures.py --start 2025-01-01             # fetch gaps only
+$PY scripts/update_futures.py --tickers SR3.c.0 SR3.v.0 --start 2025-01-01 --dry-run   # gaps + est. cost
+$PY scripts/update_futures.py --tickers SR3.c.0 SR3.v.0 --start 2025-01-01             # fetch gaps only
 $PY scripts/run_dashboard.py                                 # http://127.0.0.1:8050
 $PY -m pytest
 ```
@@ -34,6 +38,8 @@ $PY -m pytest
 ## Cost protection
 - Disk first: only date ranges absent from the coverage manifest are requested.
 - Every request is priced via `metadata.get_cost` and refused above `INFRA_MAX_COST_USD` (default $5).
-- Futures accept continuous symbols only (`SR3.c.0`); wildcards raise.
+- The API and database use ABSOLUTE contracts only (`SRZ4`); wildcards and relative tickers raise at the API boundary.
+- Relative tickers (`SR3.c.0`, `SR3.v.0`) are resolved locally, so only the contracts actually needed are fetched.
+- Relative series are unadjusted across rolls; roll day is the UTC calendar day.
 - Options: `definition` → local filter → bars for the isolated instrument ids only.
 - The dashboard never hits the API unless "Fetch missing" is ticked and Load is pressed.
