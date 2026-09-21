@@ -50,18 +50,39 @@ class FuturesRoot:
     root: str  # product code, e.g. "SR3"
     dataset: str  # Databento dataset serving it
     parent: str  # parent symbol used to list its contracts
+    name: str  # human label (dashboard)
+    category: str  # "STIR" | "Bonds"
     expiry_months: tuple[int, ...] = (3, 6, 9, 12)  # cycle ranked by relative tickers
     roll_offset_days: int = 0  # calendar roll this many days before expiry
+    # Keep only outrights whose raw symbol matches (drops non-trading twins, serial months).
+    ticker_regex: str | None = None
 
+
+_CME, _EUREX, _ICE = "GLBX.MDP3", "XEUR.EOBI", "IFLL.IMPACT"
+# ICE symbols look like "R   FMH0025!": keep quarterly (H/M/U/Z) "!" contracts only.
+_ICE_QUARTERLY = r"FM[HMUZ]\d{4}!$"
 
 FUTURES_ROOTS: dict[str, FuturesRoot] = {
     r.root: r
     for r in (
-        FuturesRoot("SR3", "GLBX.MDP3", "SR3.FUT"),  # 3-Month SOFR (quarterly cycle)
-        FuturesRoot("ZN", "GLBX.MDP3", "ZN.FUT"),  # US 10-Year Note
-        FuturesRoot("FGBL", "XEUR.EOBI", "FGBL.FUT"),  # Euro-Bund (data from 2025-03-10)
-        FuturesRoot("FGBM", "XEUR.EOBI", "FGBM.FUT"),  # Euro-Bobl
-        FuturesRoot("FGBS", "XEUR.EOBI", "FGBS.FUT"),  # Euro-Schatz
+        # ---- STIR
+        FuturesRoot("SR3", _CME, "SR3.FUT", "3M SOFR", "STIR"),
+        FuturesRoot("ESR", _CME, "ESR.FUT", "3M €STR", "STIR"),
+        FuturesRoot("SO3", _ICE, "SO3.FUT", "3M SONIA", "STIR", ticker_regex=_ICE_QUARTERLY),
+        # ---- Bonds: US Treasuries (CBOT, via GLBX.MDP3)
+        FuturesRoot("ZT", _CME, "ZT.FUT", "US 2Y Note", "Bonds"),
+        FuturesRoot("ZF", _CME, "ZF.FUT", "US 5Y Note", "Bonds"),
+        FuturesRoot("ZN", _CME, "ZN.FUT", "US 10Y Note", "Bonds"),
+        FuturesRoot("TN", _CME, "TN.FUT", "US Ultra 10Y Note", "Bonds"),
+        FuturesRoot("ZB", _CME, "ZB.FUT", "US Classic Bond", "Bonds"),
+        FuturesRoot("UB", _CME, "UB.FUT", "US Ultra Bond", "Bonds"),
+        # ---- Bonds: Eurex (XEUR.EOBI only has data from 2025-03-10)
+        FuturesRoot("FGBL", _EUREX, "FGBL.FUT", "Euro-Bund", "Bonds"),
+        FuturesRoot("FGBM", _EUREX, "FGBM.FUT", "Euro-Bobl", "Bonds"),
+        FuturesRoot("FGBS", _EUREX, "FGBS.FUT", "Euro-Schatz", "Bonds"),
+        FuturesRoot("FBTP", _EUREX, "FBTP.FUT", "Euro-BTP", "Bonds"),
+        # ---- Bonds: ICE Futures Europe (data from 2018-12-23)
+        FuturesRoot("R", _ICE, "R.FUT", "UK Long Gilt", "Bonds", ticker_regex=_ICE_QUARTERLY),
     )
 }
 

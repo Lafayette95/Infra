@@ -13,7 +13,7 @@
     2. Install packages: `/opt/homebrew/Caskroom/miniconda/base/envs/infra-env/bin/pip install <package>`
 *   **Asset Universes:**
     *   `GLBX.MDP3` (CME Globex): SOFR futures & options, €STR futures & options, US Treasury Futures.
-    *   `XEUR.EOBI` (Eurex): Euro-Bund, Bobl, Schatz futures & options.
+    *   `XEUR.EOBI` (Eurex): Euro-Bund, Bobl, Schatz, BTP futures & options.
     *   `IFLL.IMPACT` (ICE Europe Financials): SONIA futures & options, UK Gilt futures.
 *   **Data Level:** Level 1 (Top-of-Book / Best Bid & Offer).
 *   **Target Schema:** `ohlcv-1m` (1-Minute Bars containing open, high, low, close, volume).
@@ -44,7 +44,12 @@ When interacting with Databento payloads, map to these native schemas:
 
 ## 5. Reading Symbology Best Practices
 Stored/queried tickers are ABSOLUTE (Databento `raw_symbol`); relative tickers exist only in code:
-*   **Roots (parent symbol):** `SR3` (`SR3.FUT`), `ZN` (`ZN.FUT`), `FGBL` / `FGBM` / `FGBS` (`FGBL.FUT` ... on `XEUR.EOBI`, data from 2025-03-10). `GG` is NOT a valid Eurex root.
+*   **Futures roots (parent symbol `<root>.FUT`), all in `FUTURES_ROOTS` (`infra/config.py`):**
+    *   STIR: `SR3` (3M SOFR), `ESR` (3M €STR) on `GLBX.MDP3`; `SO3` (3M SONIA) on `IFLL.IMPACT`.
+    *   US Treasuries (CBOT, on `GLBX.MDP3`): `ZT` (2Y), `ZF` (5Y), `ZN` (10Y), `TN` (Ultra 10Y), `ZB` (Classic Bond), `UB` (Ultra Bond).
+    *   Eurex (`XEUR.EOBI`, data only from 2025-03-10): `FGBL` (Bund), `FGBM` (Bobl), `FGBS` (Schatz), `FBTP` (BTP). `GG` is NOT a valid Eurex root.
+    *   ICE (`IFLL.IMPACT`, data from 2018-12-23): `R` = UK Long Gilt. `G`, `SOA` (1M SONIA) and `SON` are not used.
+*   **ICE symbol quirk:** raw symbols look like `R   FMH0025!`. Each expiry also lists a non-trading `_Z` twin one day earlier, and `R` has off-cycle April/May-coded contracts; both would corrupt relative ranks, so ICE roots filter with `ticker_regex` (quarterly `H/M/U/Z` `!` contracts only).
 *   **Absolute examples:** `SRZ4`, `ZNH5`, `FGBL SI 20250606 PS` (Eurex raw symbols are not CME-style: rank by definition `expiry`, never by parsing symbols). SR3's letter lags its expiry by a quarter (`SRZ4` expires 2025-03-18).
 *   **Relative notation:** `<root>.<c|v>.<rank>`, e.g. `SR3.c.0`. Ranking uses the quarterly expiry cycle (SR3 serial contracts are excluded), configured per root in `infra/config.py`. `c.0` on ZN/Bund sits in an expiring, thin contract for weeks; prefer `v.0` there.
 *   **3-Month SOFR Option Root:** `OQ` (e.g., utilize `OQ` inside definitions framework).

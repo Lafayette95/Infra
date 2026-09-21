@@ -4,15 +4,19 @@ from __future__ import annotations
 import pandas as pd
 from dash import dcc, html
 
-from infra.config import DEFAULT_RELATIVE_TICKERS, FUTURES_DIR
+from infra.config import DEFAULT_RELATIVE_TICKERS, FUTURES_DIR, FUTURES_ROOTS
 from infra.processing.resample import TIMEFRAMES
 from infra.storage import parquet_store
 
 
-def available_tickers() -> list[str]:
-    """Default relative tickers first, then absolute contracts already on disk."""
+def available_tickers() -> list[dict[str, str]]:
+    """Dropdown options: default relative tickers first, then absolute contracts on disk."""
+    options = [
+        {"label": f"{t} · {FUTURES_ROOTS[t.split('.')[0]].name}", "value": t}
+        for t in DEFAULT_RELATIVE_TICKERS
+    ]
     on_disk = parquet_store.list_values(FUTURES_DIR, "ticker")
-    return DEFAULT_RELATIVE_TICKERS + [t for t in on_disk if t not in DEFAULT_RELATIVE_TICKERS]
+    return options + [{"label": t, "value": t} for t in on_disk]
 
 
 def build_layout() -> html.Div:
@@ -28,7 +32,7 @@ def build_layout() -> html.Div:
         ]),
         html.Section(className="controls", children=[
             html.Label(["Ticker", dcc.Dropdown(
-                id="ticker", options=tickers, value=tickers[0], clearable=False)]),
+                id="ticker", options=tickers, value=tickers[0]["value"], clearable=False)]),
             html.Label(["Date range (UTC)", dcc.DatePickerRange(
                 id="dates", start_date=(today - pd.Timedelta(days=30)).date(),
                 end_date=today.date(), max_date_allowed=today.date(), display_format="YYYY-MM-DD")]),
