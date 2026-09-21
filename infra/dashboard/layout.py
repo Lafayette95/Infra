@@ -4,14 +4,15 @@ from __future__ import annotations
 import pandas as pd
 from dash import dcc, html
 
-from infra.config import FUTURES_DIR, FUTURES_UNIVERSE
+from infra.config import DEFAULT_RELATIVE_TICKERS, FUTURES_DIR
 from infra.processing.resample import TIMEFRAMES
 from infra.storage import parquet_store
 
 
 def available_tickers() -> list[str]:
-    """Configured universe plus any ticker already present on disk."""
-    return sorted(set(FUTURES_UNIVERSE) | set(parquet_store.list_values(FUTURES_DIR, "ticker")))
+    """Default relative tickers first, then absolute contracts already on disk."""
+    on_disk = parquet_store.list_values(FUTURES_DIR, "ticker")
+    return DEFAULT_RELATIVE_TICKERS + [t for t in on_disk if t not in DEFAULT_RELATIVE_TICKERS]
 
 
 def build_layout() -> html.Div:

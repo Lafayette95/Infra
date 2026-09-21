@@ -49,3 +49,40 @@ def filter_definitions(
         lo, hi = (pd.Timestamp(x) for x in expiry_range)
         mask &= definitions["expiry"].between(lo, hi)
     return definitions[mask].reset_index(drop=True)
+
+
+CONTRACT_COLUMNS = ["root", "ticker", "instrument_id", "expiry", "activation"]
+
+
+def normalize_futures_definitions(raw: pd.DataFrame, root: str) -> pd.DataFrame:
+    """Raw futures ``definition`` rows -> one row per OUTRIGHT contract.
+
+    Parent queries also return spreads (``instrument_class == 'S'``; e.g. 7,144 of
+    7,190 rows for SR3), which are dropped here. ``ticker`` is the absolute raw symbol.
+    """
+    empty = pd.DataFrame({
+        "root": pd.Series(dtype="str"),
+        "ticker": pd.Series(dtype="str"),
+        "instrument_id": pd.Series(dtype="int64"),
+        "expiry": pd.Series(dtype="datetime64[ms]"),
+        "activation": pd.Series(dtype="datetime64[ms]"),
+    })
+    if raw.empty:
+        return empty
+    df = raw.reset_index() if "ts_recv" in raw.index.names else raw.copy()
+    df = df[df["instrument_class"] == "F"]
+    if df.empty:
+        return empty
+    out = pd.DataFrame({
+        "root": root,
+        "ticker": df["raw_symbol"].astype(str),
+        "instrument_id": df["instrument_id"].astype("int64"),
+        "expiry": _to_day(df["expiration"]),
+        "activation": _to_day(df["activation"]),
+    })
+    return out.drop_duplicates(subset=["ticker", "expiry"], keep="last").reset_index(drop=True)
+
+
+def _to_day(values: pd.Series) -> pd.Series:
+    """Datetimes -> tz-naive UTC midnight ``datetime64[ms]`` (NaT preserved)."""
+    return pd.to_datetime(values, utc=True).dt.tz_localize(None).dt.normalize().astype("datetime64[ms]")

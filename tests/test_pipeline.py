@@ -14,7 +14,7 @@ from infra.processing import transforms as tf
 D = pd.Timestamp
 
 
-def _raw_bars(start: str, days: int, symbol: str = "SR3.c.0") -> pd.DataFrame:
+def _raw_bars(start: str, days: int, symbol: str = "SRZ4") -> pd.DataFrame:
     """Fake Databento ohlcv-1m frame: 3 bars/day, tz-aware ts_event index."""
     idx = pd.DatetimeIndex(
         [D(start, tz="UTC") + pd.Timedelta(days=d, minutes=m) for d in range(days) for m in range(3)],
@@ -69,7 +69,7 @@ def test_layout_flat_partitioned_and_no_repeat_queries(tmp_path, monkeypatch):
     kw = dict(root=root, coverage_file=cov)
 
     # spans a year and a quarter boundary (Dec 30 -> Jan 3)
-    df = fut.load_futures(["SR3.c.0"], "2024-12-30", "2025-01-03", **kw)
+    df = fut.load_futures(["SRZ4"], "2024-12-30", "2025-01-03", dataset="GLBX.MDP3", **kw)
     assert len(calls) == 1 and len(df) == 12
     assert (root / "year=2024" / "quarter=4").exists() and (root / "year=2025" / "quarter=1").exists()
 
@@ -80,9 +80,9 @@ def test_layout_flat_partitioned_and_no_repeat_queries(tmp_path, monkeypatch):
         assert pq.ParquetFile(f).metadata.row_group(0).column(0).compression == "ZSTD"
 
     # identical request again -> zero API calls; superset -> only the new tail
-    fut.load_futures(["SR3.c.0"], "2024-12-30", "2025-01-03", **kw)
+    fut.load_futures(["SRZ4"], "2024-12-30", "2025-01-03", dataset="GLBX.MDP3", **kw)
     assert len(calls) == 1
-    df2 = fut.load_futures(["SR3.c.0"], "2024-12-30", "2025-01-05", **kw)
+    df2 = fut.load_futures(["SRZ4"], "2024-12-30", "2025-01-05", dataset="GLBX.MDP3", **kw)
     assert len(calls) == 2 and calls[1][1:] == (D("2025-01-03"), D("2025-01-05"))
     assert len(df2) == 18 and not df2.duplicated(["timestamp", "ticker"]).any()
 
@@ -92,17 +92,24 @@ def test_fetch_missing_false_never_calls_api(tmp_path, monkeypatch):
         raise AssertionError("API must not be called")
 
     monkeypatch.setattr(api, "fetch_futures_ohlcv", boom)
-    df = fut.load_futures(["SR3.c.0"], "2025-01-01", "2025-01-05", fetch_missing=False,
+    df = fut.load_futures(["SRZ4"], "2025-01-01", "2025-01-05", fetch_missing=False,
                           root=tmp_path / "F", coverage_file=tmp_path / "c.parquet")
     assert df.empty
 
 
 # ---------------------------------------------------------------- guardrails
-@pytest.mark.parametrize("bad", ["SR3*", "", "SR3", "SR3.OPT", "*"])
-def test_wildcards_rejected(bad):
+@pytest.mark.parametrize("bad", ["SR3*", "", "  ", "*", "SR3.c.0", "ZN.v.1"])
+def test_wildcards_and_relative_rejected_at_api_boundary(bad):
     with pytest.raises(ValueError):
-        api.validate_continuous_symbol(bad)
+        api.validate_absolute_symbol(bad)
 
 
-def test_continuous_symbol_ok():
-    assert api.validate_continuous_symbol("SR3.c.0") == "SR3.c.0"
+@pytest.mark.parametrize("ok", ["SRZ4", "ZNH5", "FGBL SI 20250606 PS"])
+def test_absolute_symbols_accepted(ok):
+    assert api.validate_absolute_symbol(ok) == ok
+
+
+def test_dataset_required_when_fetching(tmp_path):
+    with pytest.raises(ValueError):
+        fut.load_futures(["SRZ4"], "2025-01-01", "2025-01-05",
+                         root=tmp_path / "F", coverage_file=tmp_path / "c.parquet")

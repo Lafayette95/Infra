@@ -1,14 +1,14 @@
 """The ONLY module that talks to Databento. No caching or parquet logic lives here.
 
 Cost guardrails enforced at this boundary:
-  * Rule 2.2 - futures symbols must be continuous (``SR3.c.0``); wildcards rejected.
+  * Rule 2.2 - futures are queried by ABSOLUTE raw symbol (``SRZ4``) only; wildcards
+    and relative tickers (``SR3.c.0``) are rejected here and resolved locally instead.
   * Every request is priced with the free ``metadata.get_cost`` first and refused
     if it exceeds ``max_cost_usd``.
 """
 from __future__ import annotations
 
 import os
-import re
 from typing import Sequence
 
 import databento as db
@@ -22,8 +22,7 @@ from infra.config import (
     SCHEMA_DEFINITION,
     SCHEMA_OHLCV,
 )
-
-_CONTINUOUS_RE = re.compile(r"^[A-Z0-9]+\.[cvn]\.\d+$")
+from infra.relative.symbology import is_relative
 
 
 class CostLimitExceeded(RuntimeError):
@@ -39,12 +38,12 @@ def get_client(api_key: str | None = None) -> db.Historical:
     return db.Historical(key)
 
 
-def validate_continuous_symbol(symbol: str) -> str:
-    """Reject wildcards/empty values; accept only continuous contracts (Rule 2.2)."""
-    if not symbol or "*" in symbol or not _CONTINUOUS_RE.match(symbol):
+def validate_absolute_symbol(symbol: str) -> str:
+    """Accept a single absolute contract symbol; reject wildcards and relative tickers."""
+    if not symbol or not symbol.strip() or "*" in symbol or is_relative(symbol):
         raise ValueError(
-            f"{symbol!r} is not a continuous symbol like 'SR3.c.0'; wildcards and "
-            "empty symbols are banned (Rule 2.2)."
+            f"{symbol!r} is not an absolute contract symbol like 'SRZ4'; wildcards, empty "
+            "and relative tickers (SR3.c.0) are banned at the API boundary (Rule 2.2)."
         )
     return symbol
 
@@ -107,9 +106,9 @@ def fetch_futures_ohlcv(
     max_cost_usd: float = MAX_COST_USD,
     client: db.Historical | None = None,
 ) -> pd.DataFrame:
-    """Raw ``ohlcv-1m`` bars for ONE continuous futures symbol over ``[start, end)``."""
-    validate_continuous_symbol(symbol)
-    return _get_range(dataset, SCHEMA_OHLCV, [symbol], start, end, "continuous", max_cost_usd, client)
+    """Raw ``ohlcv-1m`` bars for ONE absolute contract (raw symbol) over ``[start, end)``."""
+    validate_absolute_symbol(symbol)
+    return _get_range(dataset, SCHEMA_OHLCV, [symbol], start, end, "raw_symbol", max_cost_usd, client)
 
 
 def fetch_definitions(

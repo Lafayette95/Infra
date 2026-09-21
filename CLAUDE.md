@@ -21,8 +21,8 @@
 ## 2. Mandatory Cost-Protection Rules (Strict Budget Guardrails)
 *   **Rule 2.1: Implement Local Storage Caching Always**
     Before executing ANY historical API data request, the script must verify if data exists in a local `.parquet` file exists. If it exists, read it into Pandas with `pd.read_parquet()`. Never allow duplicate queries to charge the Databento wallet multiple times.
-*   **Rule 2.2: Continuous Contract Symology**
-    When querying historical futures lines over long multi-year horizons, NEVER pass wildcards like `SR3*` or empty asset fields. Instead, strictly pass the continuous front-month contract formatting (`SR3.c.0` for 3-Month SOFR) to avoid downloading exponential rows of illiquid or dead expiries.
+*   **Rule 2.2: Absolute Contracts Only (API + Database)**
+    The API is queried ONLY by absolute contract raw symbol (`SRZ4`, `ZNH5`) via `stype_in="raw_symbol"`. NEVER pass wildcards (`SR3*`), empty symbols, spread instruments, or relative/continuous tickers (`SR3.c.0`) to the API. Only absolute tickers are saved to the database. Relative tickers (`SR3.c.0` calendar, `SR3.v.0` prior-day-volume) are resolved locally from the contracts table (built from `definition` snapshots, outrights only: `instrument_class == "F"`) by `infra/relative`, so only the contracts actually needed are downloaded.
 *   **Rule 2.3: Safe Filtering for Options Chains**
     Options chains cause a data payload explosion. To fetch options data efficiently:
     1. Query the tiny `definition` schema first to return active contract IDs text data.
@@ -43,10 +43,10 @@ When interacting with Databento payloads, map to these native schemas:
 *   `definition`: Instrument metadata. Key fields: `instrument_id`, `raw_symbol`, `strike_price`, `expiration_date`.
 
 ## 5. Reading Symbology Best Practices
-Ensure proper ticker naming structures when querying:
-*   **3-Month SOFR Continuous:** `SR3.c.0`
-*   **US 10-Year Note Continuous:** `ZN.c.0`
-*   **Euro-Bund Continuous:** `GG.c.0` (Verify root symbol via active definitions if required)
+Stored/queried tickers are ABSOLUTE (Databento `raw_symbol`); relative tickers exist only in code:
+*   **Roots (parent symbol):** `SR3` (`SR3.FUT`), `ZN` (`ZN.FUT`), `FGBL` / `FGBM` / `FGBS` (`FGBL.FUT` ... on `XEUR.EOBI`, data from 2025-03-10). `GG` is NOT a valid Eurex root.
+*   **Absolute examples:** `SRZ4`, `ZNH5`, `FGBL SI 20250606 PS` (Eurex raw symbols are not CME-style: rank by definition `expiry`, never by parsing symbols). SR3's letter lags its expiry by a quarter (`SRZ4` expires 2025-03-18).
+*   **Relative notation:** `<root>.<c|v>.<rank>`, e.g. `SR3.c.0`. Ranking uses the quarterly expiry cycle (SR3 serial contracts are excluded), configured per root in `infra/config.py`. `c.0` on ZN/Bund sits in an expiring, thin contract for weeks; prefer `v.0` there.
 *   **3-Month SOFR Option Root:** `OQ` (e.g., utilize `OQ` inside definitions framework).
 
 ## 6. Database Architecture Rules: STIR Futures & Options (1-Min OHLCV)

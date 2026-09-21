@@ -1,4 +1,4 @@
-"""Futures pipeline: disk first -> find missing ranges -> API -> save -> read.
+"""Futures pipeline for ABSOLUTE contracts (raw symbols): disk first -> gaps -> API -> save -> read.
 
 Parent:   ``load_futures``            (what the dashboard and scripts call)
 Children: ``read_futures_from_disk``, ``plan_futures_update``,
@@ -16,7 +16,6 @@ from infra.config import (
     FUTURES_COVERAGE_FILE,
     FUTURES_DIR,
     MAX_COST_USD,
-    dataset_for_ticker,
 )
 from infra.coverage.intervals import Interval, find_missing_ranges, to_utc_day
 from infra.processing import transforms as tf
@@ -61,14 +60,13 @@ def fetch_and_store_futures(
     ticker: str,
     ranges: list[Interval],
     *,
-    dataset: str | None = None,
+    dataset: str,
     root: Path = FUTURES_DIR,
     coverage_file: Path = FUTURES_COVERAGE_FILE,
     max_cost_usd: float = MAX_COST_USD,
     client=None,
 ) -> int:
     """Query the API for ``ranges``, save to parquet, record coverage. Returns rows saved."""
-    dataset = dataset or dataset_for_ticker(ticker)
     rows = 0
     for range_start, range_end in ranges:
         raw = api.fetch_futures_ohlcv(
@@ -88,6 +86,7 @@ def load_futures(
     start,
     end,
     *,
+    dataset: str | None = None,
     fetch_missing: bool = True,
     root: Path = FUTURES_DIR,
     coverage_file: Path = FUTURES_COVERAGE_FILE,
@@ -95,14 +94,19 @@ def load_futures(
     client=None,
     multiindex: bool = False,
 ) -> pd.DataFrame:
-    """Parent: ensure ``[start, end)`` is on disk (API only for gaps), then read it."""
+    """Parent: ensure ``[start, end)`` is on disk (API only for gaps), then read it.
+
+    ``tickers`` are absolute contracts; ``dataset`` is required only when fetching.
+    """
+    if fetch_missing and dataset is None:
+        raise ValueError("dataset is required when fetch_missing=True")
     start, end = to_utc_day(start), to_utc_day(end)
     if fetch_missing:
         for ticker in tickers:
             gaps = plan_futures_update(ticker, start, end, coverage_file=coverage_file)
             if gaps:
                 fetch_and_store_futures(
-                    ticker, gaps, root=root, coverage_file=coverage_file,
+                    ticker, gaps, dataset=dataset, root=root, coverage_file=coverage_file,
                     max_cost_usd=max_cost_usd, client=client,
                 )
     return read_futures_from_disk(tickers, start, end, root=root, multiindex=multiindex)
