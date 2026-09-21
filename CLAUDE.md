@@ -9,8 +9,8 @@
 *   **Environment Configuration:** 
 *   This project uses a Conda environment named `infra-env` ( which uses Python 3.12.14; Use PEP 8 styling )
 *   To install packages or run scripts, NEVER use bare `python` or `pip`. ALWAYS use the explicit environment prefix paths:
-    1. Run python: `~/miniconda3/envs/infra-env/bin/python`
-    2. Install packages: `~/miniconda3/envs/infra-env/bin/pip install <package>`
+    1. Run python: `/opt/homebrew/Caskroom/miniconda/base/envs/infra-env/bin/python`
+    2. Install packages: `/opt/homebrew/Caskroom/miniconda/base/envs/infra-env/bin/pip install <package>`
 *   **Asset Universes:**
     *   `GLBX.MDP3` (CME Globex): SOFR futures & options, €STR futures & options, US Treasury Futures.
     *   `XEUR.EOBI` (Eurex): Euro-Bund, Bobl, Schatz futures & options.
