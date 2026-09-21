@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.env
+.DS_Store
+# Data never lives in the repo (see infra/config.py -> ~/Database)
+*.parquet
+*.dbn
+*.dbn.zst
