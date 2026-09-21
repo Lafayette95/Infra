@@ -4,23 +4,13 @@ from __future__ import annotations
 import pandas as pd
 from dash import dcc, html
 
-from infra.config import DEFAULT_RELATIVE_TICKERS, FUTURES_DIR, FUTURES_ROOTS
+from infra.config import FUTURES_ROOTS
+from infra.dashboard.selectors import default_expiry, expiry_options, root_options
 from infra.processing.resample import TIMEFRAMES
-from infra.storage import parquet_store
-
-
-def available_tickers() -> list[dict[str, str]]:
-    """Dropdown options: default relative tickers first, then absolute contracts on disk."""
-    options = [
-        {"label": f"{t} · {FUTURES_ROOTS[t.split('.')[0]].name}", "value": t}
-        for t in DEFAULT_RELATIVE_TICKERS
-    ]
-    on_disk = parquet_store.list_values(FUTURES_DIR, "ticker")
-    return options + [{"label": t, "value": t} for t in on_disk]
 
 
 def build_layout() -> html.Div:
-    tickers = available_tickers()
+    first_root = next(iter(FUTURES_ROOTS))
     today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
     return html.Div(id="root", className="theme-light", children=[
         html.Header(className="bar", children=[
@@ -31,8 +21,11 @@ def build_layout() -> html.Div:
             ),
         ]),
         html.Section(className="controls", children=[
-            html.Label(["Ticker", dcc.Dropdown(
-                id="ticker", options=tickers, value=tickers[0]["value"], clearable=False)]),
+            html.Label(["Ticker Root", dcc.Dropdown(
+                id="ticker-root", options=root_options(), value=first_root, clearable=False)]),
+            html.Label(["Expiry", dcc.Dropdown(
+                id="expiry", options=expiry_options(first_root),
+                value=default_expiry(first_root), clearable=False)]),
             html.Label(["Date range (UTC)", dcc.DatePickerRange(
                 id="dates", start_date=(today - pd.Timedelta(days=30)).date(),
                 end_date=today.date(), max_date_allowed=today.date(), display_format="YYYY-MM-DD")]),
