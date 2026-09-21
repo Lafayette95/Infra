@@ -86,9 +86,12 @@ FUTURES_ROOTS: dict[str, FuturesRoot] = {
     )
 }
 
-# Relative tickers offered by default (dashboard dropdown, update script).
+# Relative (kind, rank) pairs offered per root (dashboard Expiry dropdown, defaults).
+DEFAULT_RELATIVE_RANKS: tuple[tuple[str, int], ...] = (
+    ("c", 0), ("c", 1), ("c", 2), ("c", 3), ("v", 0), ("v", 1),
+)
 DEFAULT_RELATIVE_TICKERS: list[str] = [
-    f"{root}.{kind}.{rank}" for root in FUTURES_ROOTS for kind, rank in (("c", 0), ("c", 1), ("v", 0))
+    f"{root}.{kind}.{rank}" for root in FUTURES_ROOTS for kind, rank in DEFAULT_RELATIVE_RANKS
 ]
 
 DEFINITION_SNAPSHOT_DAYS = 30  # definition snapshot cadence used to discover contracts

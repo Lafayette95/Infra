@@ -12,6 +12,7 @@ from dash import Dash, Input, Output, State, ctx, html
 
 from infra.api.databento_client import CostLimitExceeded
 from infra.dashboard import charts
+from infra.dashboard.selectors import default_expiry, expiry_options
 from infra.dashboard.theme import tokens
 from infra.pipeline.series import load_series, plan_series
 from infra.processing.resample import coarsen_to_fit, resample_ohlcv
@@ -22,13 +23,23 @@ MAX_BARS = 8_000  # beyond this the timeframe is coarsened automatically
 
 def register_callbacks(app: Dash) -> None:
     @app.callback(
+        Output("expiry", "options"),
+        Output("expiry", "value"),
+        Input("ticker-root", "value"),
+        State("expiry", "value"),
+    )
+    def update_expiry(root, current):
+        """Rebuild the Expiry list for the chosen root, keeping the relative choice if any."""
+        return expiry_options(root), default_expiry(root, current)
+
+    @app.callback(
         Output("root", "className"),
         Output("price-chart", "figure"),
         Output("change-chart", "figure"),
         Output("kpis", "children"),
         Output("status", "children"),
         Input("theme", "value"),
-        Input("ticker", "value"),
+        Input("expiry", "value"),
         Input("timeframe", "value"),
         Input("load-btn", "n_clicks"),
         State("dates", "start_date"),
@@ -38,7 +49,7 @@ def register_callbacks(app: Dash) -> None:
     def refresh(theme, ticker, timeframe, _clicks, start, end, fetch):
         theme_class = f"theme-{theme}"
         if not (ticker and start and end):
-            return theme_class, charts.empty_figure("Pick a ticker and dates", theme), \
+            return theme_class, charts.empty_figure("Pick a root, expiry and dates", theme), \
                 charts.empty_figure("", theme), [], ""
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end) + pd.Timedelta(days=1)  # date picker end is inclusive
