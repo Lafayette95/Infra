@@ -90,3 +90,8 @@ Stored/queried tickers are ABSOLUTE (Databento `raw_symbol`); relative tickers e
 *   **Prohibited Partitions:** Never partition by `ticker`, `symbol`, or `day`.
 *   **Read Optimization:** Force PyArrow dataset predicate pushdown using C++ expressions before moving bytes to Pandas.
 *   **Compression Engine:** `ZSTD` (Compression Level: `5`).
+
+## 7. Timezone Handling
+*   **Everything is UTC except the pixels on screen.** Data on disk, everything returned by `infra/pipeline` (incl. `load_series`), all of `infra/processing` (incl. resampling day/quarter boundaries), `infra/relative` (roll days), `infra/storage` and `infra/api` MUST always be tz-naive UTC. NEVER localize, convert, or shift a timestamp anywhere outside `infra/dashboard`.
+*   **Timezone display conversion is Dash-only.** It lives exclusively in `infra/dashboard` (e.g. `infra/dashboard/timezones.py`), as a pure, isolated conversion applied ONLY to the values handed to Plotly for rendering (x-axis ticks, hover labels). It must never mutate a DataFrame coming out of `infra/pipeline` — build a separate display index/copy, never write back to `bars`/`df`.
+*   **Bucket boundaries stay UTC regardless of display timezone.** A `1D` bar is a UTC calendar day and a roll happens at UTC midnight (Rule 2.2) no matter what timezone is selected for display; only the rendered label of that same instant may shift. Never let a display timezone change which rows fall in the same bucket, which day a roll is assigned to, or any grouping/aggregation key.

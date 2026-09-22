@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from infra.dashboard.theme import tokens
+from infra.dashboard.timezones import DEFAULT_TIMEZONE, to_display_index
 
 
 def _style(fig: go.Figure, t: dict[str, str], height: int) -> go.Figure:
@@ -35,23 +36,31 @@ def empty_figure(message: str, theme: str = "light") -> go.Figure:
     return _style(fig, t, 420)
 
 
-def price_figure(bars: pd.DataFrame, ticker: str, timeframe: str, theme: str = "light") -> go.Figure:
-    """Candlesticks (top) with volume (bottom). Two stacked panels, one y-scale each."""
+def price_figure(
+    bars: pd.DataFrame, ticker: str, timeframe: str, theme: str = "light", tz: str = DEFAULT_TIMEZONE
+) -> go.Figure:
+    """Candlesticks (top) with volume (bottom). Two stacked panels, one y-scale each.
+
+    ``tz`` (an infra.dashboard.timezones.DISPLAY_TIMEZONES value) only changes how bar
+    times are RENDERED, on a display-only copy of the index - see
+    infra/dashboard/timezones.py and CLAUDE.md section 7. ``bars`` itself is untouched.
+    """
     t = tokens(theme)
     if bars.empty:
         return empty_figure("No data on disk for this selection", theme)
+    x = to_display_index(bars.index, tz)
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.04)
     # "contract" is the absolute ticker each bar actually came from (see
     # infra.pipeline.series.load_series); shown on hover so a relative ticker like
     # SR3.v.0 reveals which real contract is behind each bar, especially around a roll.
     has_contract = "contract" in bars.columns and bars["contract"].notna().any()
     hovertemplate = (
-        "%{x|%Y-%m-%d %H:%M} UTC<br>O %{open:.4f}  H %{high:.4f}<br>L %{low:.4f}  C %{close:.4f}"
+        f"%{{x|%Y-%m-%d %H:%M}} {tz}<br>O %{{open:.4f}}  H %{{high:.4f}}<br>L %{{low:.4f}}  C %{{close:.4f}}"
         + ("<br>Contract: %{customdata[0]}" if has_contract else "")
         + "<extra></extra>"
     )
     fig.add_trace(go.Candlestick(
-        x=bars.index, open=bars["open"], high=bars["high"], low=bars["low"], close=bars["close"],
+        x=x, open=bars["open"], high=bars["high"], low=bars["low"], close=bars["close"],
         name=ticker,
         customdata=bars[["contract"]].to_numpy() if has_contract else None,
         hovertemplate=hovertemplate,
@@ -59,11 +68,11 @@ def price_figure(bars: pd.DataFrame, ticker: str, timeframe: str, theme: str = "
         decreasing=dict(line=dict(color=t["down"], width=1), fillcolor=t["down"]),
     ), row=1, col=1)
     fig.add_trace(go.Bar(
-        x=bars.index, y=bars["volume"], name="Volume", marker_color=t["volume"], marker_line_width=0,
+        x=x, y=bars["volume"], name="Volume", marker_color=t["volume"], marker_line_width=0,
     ), row=2, col=1)
     fig.update_layout(
         title=dict(
-            text=f"{ticker} · {timeframe} bars"
+            text=f"{ticker} · {timeframe} bars ({tz})"
                  f"<br><sup>blue = close ≥ open · orange = close &lt; open</sup>",
             x=0, font=dict(color=t["ink"], size=16),
         ),
@@ -75,7 +84,12 @@ def price_figure(bars: pd.DataFrame, ticker: str, timeframe: str, theme: str = "
 
 
 def daily_change_figure(bars_1d: pd.DataFrame, ticker: str, theme: str = "light") -> go.Figure:
-    """Close-to-close daily change (price points). Sign = colour, plus the bar direction."""
+    """Close-to-close daily change (price points). Sign = colour, plus the bar direction.
+
+    Always UTC calendar days, regardless of the chart's display timezone: a "day" here
+    IS a UTC bucket (CLAUDE.md section 7), so shifting its label would misstate which
+    bucket a bar belongs to. Only price_figure's intraday x-axis is timezone-convertible.
+    """
     t = tokens(theme)
     change = bars_1d["close"].diff().dropna()
     if change.empty:
@@ -87,7 +101,7 @@ def daily_change_figure(bars_1d: pd.DataFrame, ticker: str, theme: str = "light"
         hovertemplate="%{y:+.4f}<extra></extra>",
     ))
     fig.update_layout(title=dict(
-        text=f"{ticker} · daily close-to-close change", x=0, font=dict(color=t["ink"], size=16),
+        text=f"{ticker} · daily close-to-close change (UTC day)", x=0, font=dict(color=t["ink"], size=16),
     ))
     fig.add_hline(y=0, line_color=t["axis"], line_width=1)
     return _style(fig, t, 300)

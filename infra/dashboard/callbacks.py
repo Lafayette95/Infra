@@ -41,12 +41,13 @@ def register_callbacks(app: Dash) -> None:
         Input("theme", "value"),
         Input("expiry", "value"),
         Input("timeframe", "value"),
+        Input("display-tz", "value"),
         Input("load-btn", "n_clicks"),
         State("dates", "start_date"),
         State("dates", "end_date"),
         State("fetch", "value"),
     )
-    def refresh(theme, ticker, timeframe, _clicks, start, end, fetch):
+    def refresh(theme, ticker, timeframe, tz, _clicks, start, end, fetch):
         theme_class = f"theme-{theme}"
         if not (ticker and start and end):
             return theme_class, charts.empty_figure("Pick a root, expiry and dates", theme), \
@@ -83,7 +84,7 @@ def register_callbacks(app: Dash) -> None:
         ]
         return (
             theme_class,
-            charts.price_figure(bars, ticker, used_tf, theme),
+            charts.price_figure(bars, ticker, used_tf, theme, tz=tz),
             charts.daily_change_figure(daily, ticker, theme) if not df.empty
             else charts.empty_figure("", theme),
             kpis,
