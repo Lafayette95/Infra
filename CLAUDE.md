@@ -35,6 +35,7 @@
     1. Read function to first check the existing relevant parquet files. Evaluate which data is not available on disk, and only then query API (and save it down)
     2. All functions in 1. are  distinct funtions (reading/writing from file, checking missing data, reading API); API distinct code file, reading/writing parquet distinct file, dash distinct etc
     3. Code lives in ~/Repos/Infra; DataBase lives separately in ~/Database/ohlcv-1m/Futures
+*   **Known edge cases that are found but not fixed immediately MUST be recorded in `TOFIX.md`** (repo root), not just mentioned in a conversation, commit message, or PR description and then lost. Each entry needs enough detail (where, why it happens, why it wasn't fixed now, options considered) that someone can pick it up later without re-deriving the analysis. Remove the entry once actually fixed, noting that in the fixing commit.
 
 ## 4. Reading Data Schema Definitions & Structural Mapping
 When interacting with Databento payloads, map to these native schemas:
