@@ -25,9 +25,18 @@ OPTIONS_COVERAGE_FILE = COVERAGE_DIR / "options.parquet"
 # Master table of absolute futures contracts (root, ticker, expiry, ...).
 FUTURES_CONTRACTS_FILE = DEFINITIONS_DIR / "Futures" / "contracts.parquet"
 
+# Daily settlement price / open interest - deliberately a SEPARATE root from ohlcv-1m
+# (different cadence, different pipeline shape; see infra/pipeline/daily.py and
+# CLAUDE.md section 8), reusing the same generic parquet/coverage primitives.
+DAILY_ROOT = DATABASE_ROOT / "Daily"
+DAILY_FUTURES_DIR = DAILY_ROOT / "Futures"
+DAILY_COVERAGE_DIR = DAILY_ROOT / "_coverage"
+DAILY_FUTURES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "futures.parquet"
+
 # ------------------------------------------------------------------ API settings
 SCHEMA_OHLCV = "ohlcv-1m"
 SCHEMA_DEFINITION = "definition"
+SCHEMA_STATISTICS = "statistics"
 API_KEY_ENV = "DATABENTO_API_KEY"
 
 # Hard budget guardrail: a single API request whose estimated cost exceeds this
