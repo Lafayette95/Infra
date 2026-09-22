@@ -83,12 +83,15 @@ def price_figure(
     return _style(fig, t, 560)
 
 
-def daily_change_figure(bars_1d: pd.DataFrame, ticker: str, theme: str = "light") -> go.Figure:
+def daily_change_figure(bars_1d: pd.DataFrame, ticker: str, theme: str = "light", exchange: str = "UTC") -> go.Figure:
     """Close-to-close daily change (price points). Sign = colour, plus the bar direction.
 
-    Always UTC calendar days, regardless of the chart's display timezone: a "day" here
-    IS a UTC bucket (CLAUDE.md section 7), so shifting its label would misstate which
-    bucket a bar belongs to. Only price_figure's intraday x-axis is timezone-convertible.
+    Always bucketed by the exchange TRADING day (infra.trading_calendar, CLAUDE.md
+    section 6e), regardless of the chart's display timezone: a "day" here is a DATA
+    bucket, so shifting its label would misstate which bucket a bar belongs to. Only
+    price_figure's intraday x-axis is timezone-convertible. ``exchange`` is a label only
+    (e.g. "CME Globex / CBOT" from infra.config.TRADING_HOURS) - it does not affect the
+    bucketing itself, which the caller already applied via resample_ohlcv's `dataset`.
     """
     t = tokens(theme)
     change = bars_1d["close"].diff().dropna()
@@ -101,7 +104,8 @@ def daily_change_figure(bars_1d: pd.DataFrame, ticker: str, theme: str = "light"
         hovertemplate="%{y:+.4f}<extra></extra>",
     ))
     fig.update_layout(title=dict(
-        text=f"{ticker} · daily close-to-close change (UTC day)", x=0, font=dict(color=t["ink"], size=16),
+        text=f"{ticker} · daily close-to-close change ({exchange} trading day)",
+        x=0, font=dict(color=t["ink"], size=16),
     ))
     fig.add_hline(y=0, line_color=t["axis"], line_width=1)
     return _style(fig, t, 300)

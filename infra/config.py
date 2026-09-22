@@ -86,6 +86,61 @@ FUTURES_ROOTS: dict[str, FuturesRoot] = {
     )
 }
 
+# ------------------------------------------------------------------ trading calendar
+# What "trading day" means per exchange - the source of truth for infra.trading_calendar
+# (used by infra.relative for roll-day/volume-ranking assignment and by
+# infra.processing.resample for the "1D" bucket; CLAUDE.md section 6e). This is a DATA
+# concept, distinct from the DISPLAY timezone a dashboard viewer picks (section 7).
+@dataclass(frozen=True)
+class TradingSession:
+    """One exchange's trading-day definition. Verify against ``source`` if this drifts.
+
+    ``crosses_midnight=False`` (Eurex, ICE Futures Europe): the session sits inside one
+    local calendar day, so the trading day is simply that local date; ``open_time`` /
+    ``close_time`` are informational only.
+    ``crosses_midnight=True`` (CME Globex/CBOT): the session opens in the evening of one
+    local calendar day and closes the afternoon of the next. The exchange's own "trade
+    date" convention labels the WHOLE session by the day it closes - e.g. the session
+    opening Sunday 17:00 CT and closing Monday 16:00 CT is trade date Monday.
+    """
+    exchange: str
+    timezone: str  # IANA zone open_time/close_time are expressed in
+    open_time: str  # "HH:MM" local session open
+    close_time: str  # "HH:MM" local session close; the trading-day boundary
+    crosses_midnight: bool
+    source: str  # verified against, on the date below - re-check if hours change
+
+
+TRADING_HOURS: dict[str, TradingSession] = {
+    # Sun 17:00 CT -> Fri 16:00 CT, Mon-Thu maintenance halt 16:00-17:00 CT; a session
+    # is labelled by the day it closes (CME's own trade-date convention). Same platform
+    # hours for STIR (SR3, ESR) and CBOT Treasuries (ZT/ZF/ZN/TN/ZB/UB) alike.
+    # Verified 2026-09-21: https://www.cmegroup.com/trading-hours.html and
+    # https://cmegroupclientsite.atlassian.net/wiki/spaces/EPICSANDBOX/pages/1184202754/Globex+Trade+Date+Behavior+Change
+    "GLBX.MDP3": TradingSession(
+        exchange="CME Globex / CBOT", timezone="America/Chicago",
+        open_time="17:00", close_time="16:00", crosses_midnight=True,
+        source="https://www.cmegroup.com/trading-hours.html",
+    ),
+    # Continuous trading ~02:10-22:00 CET/CEST, entirely inside one calendar day - no
+    # next-day label shift. Verified 2026-09-21:
+    # https://www.eurex.com/ex-en/markets/int/long-term-interest-rates/fix/government-bonds/Euro-Bund-Futures-137298
+    "XEUR.EOBI": TradingSession(
+        exchange="Eurex", timezone="Europe/Berlin",
+        open_time="02:10", close_time="22:00", crosses_midnight=False,
+        source="https://www.eurex.com/ex-en/markets/int/long-term-interest-rates/fix/government-bonds/Euro-Bund-Futures-137298",
+    ),
+    # 01:00-21:00 London time, entirely inside one calendar day - no next-day label
+    # shift. Effective 2026-07-06 (aligned with European contract hours); verify again
+    # if it predates that change. Verified 2026-09-21:
+    # https://www.newsquawk.com/headlines/from-6th-july-2026-ice-will-be-aligning-the-trading-hours-of-uk-fistir-contracts-with-those-of-european-contracts-as-such-gilt-and-sonia-futures-will-open-at-1am-london-time-and-close-at-9pm
+    "IFLL.IMPACT": TradingSession(
+        exchange="ICE Futures Europe", timezone="Europe/London",
+        open_time="01:00", close_time="21:00", crosses_midnight=False,
+        source="https://www.newsquawk.com/headlines/from-6th-july-2026-ice-will-be-aligning-the-trading-hours-of-uk-fistir-contracts-with-those-of-european-contracts-as-such-gilt-and-sonia-futures-will-open-at-1am-london-time-and-close-at-9pm",
+    ),
+}
+
 # Relative (kind, rank) pairs offered per root (dashboard Expiry dropdown, defaults).
 DEFAULT_RELATIVE_RANKS: tuple[tuple[str, int], ...] = (
     ("c", 0), ("c", 1), ("c", 2), ("c", 3), ("v", 0), ("v", 1),

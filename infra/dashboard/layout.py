@@ -31,7 +31,9 @@ def build_layout() -> html.Div:
                 id="dates", start_date=(today - pd.Timedelta(days=30)).date(),
                 end_date=today.date(), max_date_allowed=today.date(), display_format="YYYY-MM-DD")]),
             html.Label(["Timeframe", dcc.Dropdown(
-                id="timeframe", options=list(TIMEFRAMES), value="1h", clearable=False)]),
+                id="timeframe",
+                options=[{"label": ("1D (trading day)" if k == "1D" else k), "value": k} for k in TIMEFRAMES],
+                value="1h", clearable=False)]),
             html.Label(["Display timezone", dcc.Dropdown(
                 id="display-tz",
                 options=[{"label": k, "value": v} for k, v in DISPLAY_TIMEZONES.items()],
