@@ -39,7 +39,7 @@
 
 ## 4. Reading Data Schema Definitions & Structural Mapping
 When interacting with Databento payloads, map to these native schemas:
-*   `ohlcv-1m`: Use for bars. Key fields returned: `symbol`, `open`, `high`, `low`, `close`, `volume`. Index is `ts_event` (start time of bar).
+*   `ohlcv-1m`: Use for bars. Key fields returned: `symbol`, `open`, `high`, `low`, `close`, `volume`. Index is `ts_event` (start time of bar). **Trade-based, not quote-based**: `open`/`high`/`low`/`close` are actual executed transaction prices (not bid/ask/mid), and `volume` is summed trade size — confirmed against Databento's own schema docs. For bid/ask instead, use `tbbo` below.
 *   `tbbo`: Top of Book Best Bid/Offer (Level 1 Tick stream). Contains: `bid_price_0`, `ask_price_0`, `bid_size_0`, `ask_size_0`.
 *   `definition`: Instrument metadata. Key fields: `instrument_id`, `raw_symbol`, `strike_price`, `expiration_date`.
 
