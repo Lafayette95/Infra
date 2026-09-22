@@ -53,7 +53,7 @@ Stored/queried tickers are ABSOLUTE (Databento `raw_symbol`); relative tickers e
 *   **ICE symbol quirk:** raw symbols look like `R   FMH0025!`. Each expiry also lists a non-trading `_Z` twin one day earlier, and `R` has off-cycle April/May-coded contracts; both would corrupt relative ranks, so ICE roots filter with `ticker_regex` (quarterly `H/M/U/Z` `!` contracts only).
 *   **Absolute examples:** `SRZ4`, `ZNH5`, `FGBL SI 20250606 PS` (Eurex raw symbols are not CME-style: rank by definition `expiry`, never by parsing symbols). SR3's letter lags its expiry by a quarter (`SRZ4` expires 2025-03-18).
 *   **Relative notation:** `<root>.<c|v>.<rank>`, e.g. `SR3.c.0`. Ranking uses the quarterly expiry cycle (SR3 serial contracts are excluded), configured per root in `infra/config.py`. `c.0` on ZN/Bund sits in an expiring, thin contract for weeks; prefer `v.0` there.
-*   **3-Month SOFR Option Root:** `OQ` (e.g., utilize `OQ` inside definitions framework).
+*   **3-Month SOFR Option Root:** `SR3.OPT` (`OQ` does not resolve - verified against the real API 2026-09-21; `SR3.OPT` returns 3,358 real option contracts, e.g. `SR3U6 C9762.5`, same convention as the futures root plus `.OPT`).
 
 ## 6. Database Architecture Rules: STIR Futures & Options (1-Min OHLCV)
 

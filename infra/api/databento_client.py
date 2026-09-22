@@ -119,7 +119,7 @@ def fetch_definitions(
     max_cost_usd: float = MAX_COST_USD,
     client: db.Historical | None = None,
 ) -> pd.DataFrame:
-    """Instrument ``definition`` rows for parent symbols (e.g. ``OQ.OPT``) on ONE day."""
+    """Instrument ``definition`` rows for parent symbols (e.g. ``SR3.OPT``) on ONE day."""
     day = pd.Timestamp(day).normalize()
     return _get_range(
         dataset, SCHEMA_DEFINITION, parent_symbols, day, day + pd.Timedelta(days=1),
