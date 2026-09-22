@@ -1,5 +1,6 @@
 databento>=0.50
 databento_dbn>=0.69  # transitive via databento; pinned explicitly since infra/processing/statistics.py imports its StatType enum directly
+scipy>=1.18  # infra/analytics: implied-vol solving (brentq) and smile fitting (CubicSpline)
 pandas>=2.2
 numpy>=1.26
 pyarrow>=16
