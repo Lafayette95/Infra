@@ -7,7 +7,7 @@ import pytest
 
 from infra.analytics.black76 import implied_vol, price
 from infra.analytics.forward import implied_forward_and_discount
-from infra.analytics.rnd import extract_rnd
+from infra.analytics.rnd import extract_rnd, percentiles
 from infra.analytics.smile import fit_smile
 
 D = pd.Timestamp
@@ -152,6 +152,28 @@ def test_extract_rnd_requires_single_underlying_expiry_day():
     mixed = pd.concat([chain, chain2], ignore_index=True)
     with pytest.raises(ValueError):
         extract_rnd(mixed)
+
+
+def test_percentiles_match_the_closed_form_lognormal_quantiles():
+    from scipy.stats import norm
+
+    F, discount, sigma, T = 96.0, 0.999, 0.02, 0.1
+    strikes = np.arange(90.0, 102.0, 0.0625)
+    chain = _synthetic_chain(F, discount, sigma, T, strikes)
+    out = extract_rnd(chain)
+
+    probs = [0.05, 0.25, 0.5, 0.75, 0.95]
+    got = percentiles(out, probs)
+    mu = np.log(F) - 0.5 * sigma**2 * T
+    want = [float(np.exp(mu + sigma * np.sqrt(T) * norm.ppf(p))) for p in probs]
+    for g, w, p in zip(got, want, probs):
+        assert abs(g - w) / w < 0.01, f"p={p}: got {g}, want {w}"
+    assert got == sorted(got)  # monotonically increasing with probability
+
+
+def test_percentiles_rejects_degenerate_density():
+    with pytest.raises(ValueError):
+        percentiles(pd.DataFrame({"strike": [95.0, 96.0], "density": [0.0, 0.0]}), [0.5])
 
 
 def test_extract_rnd_rejects_already_expired_option():

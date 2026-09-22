@@ -170,12 +170,22 @@ def encode_daily_options(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def decode_expiry_column(expiry: pd.Series) -> pd.Series:
+    """Disk representation (int32 day-epoch) -> datetime64. A day-epoch integer is NOT
+    a datetime - ``pd.to_datetime()`` on it directly reads it as nanoseconds and gives
+    nonsense near 1970-01-01. Shared here so callers reading just the ``expiry`` column
+    (e.g. infra.dashboard.rnd_selectors, without decoding the whole frame) decode it
+    correctly too, rather than re-deriving this epoch math.
+    """
+    return _EPOCH + pd.to_timedelta(expiry.astype("int64"), unit="D")
+
+
 def decode_daily_options(df: pd.DataFrame) -> pd.DataFrame:
     """Disk representation -> float settlement price/strike, datetime expiry, categories."""
     out = df.copy()
     out["settlement_price"] = out["settlement_price"].astype("float64") / 10_000.0
     out["strike"] = out["strike"].astype("float64") / 10_000.0
-    out["expiry"] = _EPOCH + pd.to_timedelta(out["expiry"].astype("int64"), unit="D")
+    out["expiry"] = decode_expiry_column(out["expiry"])
     out["underlying"] = out["underlying"].astype("category")
     out["option_type"] = out["option_type"].astype("category")
     return out
