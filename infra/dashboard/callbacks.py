@@ -34,7 +34,6 @@ def register_callbacks(app: Dash) -> None:
         return expiry_options(root), default_expiry(root, current)
 
     @app.callback(
-        Output("root", "className"),
         Output("price-chart", "figure"),
         Output("change-chart", "figure"),
         Output("kpis", "children"),
@@ -50,9 +49,8 @@ def register_callbacks(app: Dash) -> None:
         State("fetch", "value"),
     )
     def refresh(theme, ticker, timeframe, tz, _clicks, ticker_root, start, end, fetch):
-        theme_class = f"theme-{theme}"
         if not (ticker and start and end):
-            return theme_class, charts.empty_figure("Pick a root, expiry and dates", theme), \
+            return charts.empty_figure("Pick a root, expiry and dates", theme), \
                 charts.empty_figure("", theme), [], ""
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end) + pd.Timedelta(days=1)  # date picker end is inclusive
@@ -61,11 +59,11 @@ def register_callbacks(app: Dash) -> None:
         try:
             df = load_series([ticker], start_ts, end_ts, fetch_missing=want_fetch)
         except CostLimitExceeded as exc:
-            return theme_class, charts.empty_figure("Blocked by cost guardrail", theme), \
+            return charts.empty_figure("Blocked by cost guardrail", theme), \
                 charts.empty_figure("", theme), [], f"⚠ {exc}"
         except Exception as exc:  # surface API/key problems in the UI, keep the app alive
             log.exception("load failed")
-            return theme_class, charts.empty_figure("Load failed", theme), \
+            return charts.empty_figure("Load failed", theme), \
                 charts.empty_figure("", theme), [], f"⚠ {type(exc).__name__}: {exc}"
 
         dataset = FUTURES_ROOTS[ticker_root].dataset
@@ -86,7 +84,6 @@ def register_callbacks(app: Dash) -> None:
             for label, value in charts.summary_metrics(bars, daily)
         ]
         return (
-            theme_class,
             charts.price_figure(bars, ticker, used_tf, theme, tz=tz),
             charts.daily_change_figure(daily, ticker, theme, exchange=TRADING_HOURS[dataset].exchange)
             if not df.empty else charts.empty_figure("", theme),

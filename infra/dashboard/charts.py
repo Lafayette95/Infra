@@ -9,7 +9,11 @@ from infra.dashboard.theme import tokens
 from infra.dashboard.timezones import DEFAULT_TIMEZONE, to_display_index
 
 
-def _style(fig: go.Figure, t: dict[str, str], height: int) -> go.Figure:
+def _style(fig: go.Figure, t: dict[str, str], height: int, *, date_axis: bool = True) -> go.Figure:
+    """Shared chart chrome. ``date_axis=False`` skips the weekend rangebreak - only
+    meaningful when the x-axis is actually a date/time axis (e.g. infra.dashboard.
+    rnd_charts's density curve has a STRIKE x-axis, where a weekend skip is meaningless).
+    """
     fig.update_layout(
         height=height,
         paper_bgcolor=t["surface"], plot_bgcolor=t["surface"],
@@ -20,7 +24,7 @@ def _style(fig: go.Figure, t: dict[str, str], height: int) -> go.Figure:
     )
     fig.update_xaxes(
         gridcolor=t["grid"], linecolor=t["axis"], zeroline=False,
-        rangebreaks=[dict(bounds=["sat", "sun"])],  # Globex has no Saturday session
+        rangebreaks=[dict(bounds=["sat", "sun"])] if date_axis else None,  # Globex has no Saturday session
     )
     fig.update_yaxes(gridcolor=t["grid"], linecolor=t["axis"], zeroline=False)
     return fig

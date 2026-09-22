@@ -83,3 +83,17 @@ def extract_rnd(chain: pd.DataFrame, *, grid_points: int = 400) -> pd.DataFrame:
     density = density / integral
 
     return pd.DataFrame({"strike": grid, "density": density})
+
+
+def percentiles(density: pd.DataFrame, probs: list[float]) -> list[float]:
+    """Strike values at the given cumulative probabilities, via trapezoidal
+    integration of ``extract_rnd``'s output - e.g. ``probs=[0.05, 0.95]`` for a 90%
+    probability interval, or ``[0.5]`` for the median.
+    """
+    x = density["strike"].to_numpy(dtype=float)
+    d = density["density"].to_numpy(dtype=float)
+    cdf = np.concatenate([[0.0], np.cumsum((d[:-1] + d[1:]) / 2 * np.diff(x))])
+    if cdf[-1] <= 0:
+        raise ValueError("density does not integrate to a positive mass")
+    cdf = cdf / cdf[-1]
+    return [float(np.interp(p, cdf, x)) for p in probs]

@@ -1,6 +1,10 @@
-"""Static Dash layout (component tree only; behaviour lives in callbacks.py)."""
+"""Static Dash layout for the Futures page (component tree only; behaviour lives in
+callbacks.py). Registered as the app's index page - see infra/dashboard/shell.py for
+the persistent nav + theme toggle shared across pages.
+"""
 from __future__ import annotations
 
+import dash
 import pandas as pd
 from dash import dcc, html
 
@@ -9,18 +13,11 @@ from infra.dashboard.selectors import default_expiry, expiry_options, root_optio
 from infra.dashboard.timezones import DEFAULT_TIMEZONE, DISPLAY_TIMEZONES
 from infra.processing.resample import TIMEFRAMES
 
-
 def build_layout() -> html.Div:
     first_root = next(iter(FUTURES_ROOTS))
     today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
-    return html.Div(id="root", className="theme-light", children=[
-        html.Header(className="bar", children=[
-            html.H1("STIR & Rates · 1-minute bars"),
-            dcc.RadioItems(
-                id="theme", value="light", inline=True, className="theme-toggle",
-                options=[{"label": "Light", "value": "light"}, {"label": "Dark", "value": "dark"}],
-            ),
-        ]),
+    return html.Div(className="page", children=[
+        html.H2("Futures · 1-minute bars"),
         html.Section(className="controls", children=[
             html.Label(["Ticker Root", dcc.Dropdown(
                 id="ticker-root", options=root_options(), value=first_root, clearable=False)]),
@@ -52,3 +49,6 @@ def build_layout() -> html.Div:
             dcc.Graph(id="change-chart", config={"displaylogo": False}),
         ]),
     ])
+
+
+dash.register_page(__name__, path="/", name="Futures", layout=build_layout)
