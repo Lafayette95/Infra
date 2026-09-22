@@ -128,6 +128,16 @@ def fetch_definitions(
     )
 
 
+# Databento caps a single request at 2,000 symbols (verified empirically 2026-09-21: a
+# 3,358-instrument SR3 option chain request failed with data_exceeded_maximum_number_of_symbols).
+# Kept comfortably under that, not at the exact limit.
+MAX_SYMBOLS_PER_REQUEST = 1_900
+
+
+def _batched(items: Sequence, size: int) -> list[list]:
+    return [list(items[i:i + size]) for i in range(0, len(items), size)]
+
+
 def fetch_ohlcv_by_instrument_ids(
     dataset: str,
     instrument_ids: Sequence[int],
@@ -137,13 +147,42 @@ def fetch_ohlcv_by_instrument_ids(
     max_cost_usd: float = MAX_COST_USD,
     client: db.Historical | None = None,
 ) -> pd.DataFrame:
-    """Raw ``ohlcv-1m`` bars for an isolated array of instrument ids (Rule 2.3 step 3)."""
+    """Raw ``ohlcv-1m`` bars for an isolated array of instrument ids (Rule 2.3 step 3).
+
+    Batches at ``MAX_SYMBOLS_PER_REQUEST`` - a large enough option chain can exceed
+    Databento's 2,000-symbol-per-request cap even after Rule 2.3 filtering.
+    """
     if not len(instrument_ids):
         raise ValueError("instrument_ids is empty; refusing an unbounded options query.")
-    return _get_range(
-        dataset, SCHEMA_OHLCV, [int(i) for i in instrument_ids], start, end,
-        "instrument_id", max_cost_usd, client,
-    )
+    ids = [int(i) for i in instrument_ids]
+    frames = [
+        _get_range(dataset, SCHEMA_OHLCV, batch, start, end, "instrument_id", max_cost_usd, client)
+        for batch in _batched(ids, MAX_SYMBOLS_PER_REQUEST)
+    ]
+    return pd.concat(frames)  # ids is non-empty (checked above), so frames always has >=1 entry
+
+
+def fetch_statistics_by_instrument_ids(
+    dataset: str,
+    instrument_ids: Sequence[int],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    *,
+    max_cost_usd: float = MAX_COST_USD,
+    client: db.Historical | None = None,
+) -> pd.DataFrame:
+    """Raw ``statistics`` rows for an isolated array of instrument ids (Rule 2.3 step 3,
+    applied to settlement price / open interest instead of pricing bars). Batches at
+    ``MAX_SYMBOLS_PER_REQUEST`` for the same reason as ``fetch_ohlcv_by_instrument_ids``.
+    """
+    if not len(instrument_ids):
+        raise ValueError("instrument_ids is empty; refusing an unbounded options query.")
+    ids = [int(i) for i in instrument_ids]
+    frames = [
+        _get_range(dataset, SCHEMA_STATISTICS, batch, start, end, "instrument_id", max_cost_usd, client)
+        for batch in _batched(ids, MAX_SYMBOLS_PER_REQUEST)
+    ]
+    return pd.concat(frames)  # ids is non-empty (checked above), so frames always has >=1 entry
 
 
 def fetch_statistics(

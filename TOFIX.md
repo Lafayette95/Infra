@@ -87,3 +87,46 @@ quantity value under the wrong day label - a duplicate/misdated row, not a wrong
 **Next step if picked back up:** get a few more real ICE (and Eurex) samples across
 different days to see how often the null-`ts_ref` case recurs before choosing a fix -
 this was observed on a single sample day, not yet characterized at scale.
+
+---
+
+## `infra.pipeline.options.load_options` has no storage-path override, risking real-DB pollution in tests
+
+**Found:** 2026-09-21, while building the daily options settlement pipeline
+(`infra/pipeline/daily_options.py`).
+**Where:** `infra/pipeline/options.py` (`load_options`).
+**Status:** open, not fixed.
+
+**The issue:** `load_options` (the 1-minute options parent function) does not expose
+`root`/`coverage_file`/`directory` parameters the way `load_futures`,
+`load_daily`/`load_daily_options` (after this same fix was applied there) all do - it
+always writes to and reads from the real `OPTIONS_DIR`/`OPTIONS_COVERAGE_FILE`/
+`DEFINITIONS_DIR` paths. A test that monkeypatches the API and calls `load_options`
+directly (the natural, obvious way to test it) would silently write fake data into the
+real `~/Database` on disk, with no way to redirect it to a `tmp_path`.
+
+**How this was found:** `load_daily_options` (built alongside this pipeline, mirroring
+`load_options`'s shape) initially had the exact same gap. A test for it ran against the
+real default paths and wrote 2 rows of fake settlement data into the real
+`~/Database/Daily/Options` and a fake `SR3.OPT_2025-03-12.parquet` into the real
+`~/Database/definitions` before being caught and cleaned up (no real data was actually
+overwritten - both were fresh files - but it could have been). `load_daily_options` was
+fixed to accept `definitions_directory`/`root`/`coverage_file` overrides;
+`load_options` itself was left as-is, since fixing it wasn't part of this pipeline.
+
+**Why it's not fixed now:** out of scope for the daily-options-settlement work; touching
+already-shipped `infra/pipeline/options.py` for an unrelated reason adds review surface
+to a change that wasn't asked for.
+
+**Fix:** add `directory: Path = DEFINITIONS_DIR`, `root: Path = OPTIONS_DIR`,
+`coverage_file: Path = OPTIONS_COVERAGE_FILE` parameters to `load_options`, threaded
+through to its internal `load_definitions`/`plan_options_update`/
+`fetch_and_store_options`/`read_options_from_disk` calls - the exact same mechanical
+change already applied to `load_daily_options` (see its current signature for the
+pattern to copy).
+
+**Next step if picked back up:** apply that same signature change, then check whether
+any existing test already calls `load_options` against real default paths (a search
+for `load_options(` in `tests/` at that time didn't turn up an end-to-end test of it at
+all - if one gets added later without this fix, it's at risk of the same leak this
+entry describes).
