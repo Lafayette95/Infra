@@ -35,3 +35,37 @@ def test_figures_light_dark_and_empty():
 def test_coarsen_when_too_many_bars():
     _, used = coarsen_to_fit(_df(5), "1m", 100)
     assert used != "1m"
+
+
+def test_resample_carries_contract_through_with_one_per_bucket():
+    """A roll only ever happens at UTC midnight, so every bucket (up to 1D) stays
+    within a single contract - 'first' aggregation never hides a mid-bucket switch."""
+    df = _df(days=2).assign(contract=["SRZ4"] * 1440 + ["SRH5"] * 1440)
+    for tf in ("1h", "4h", "1D"):
+        bars = resample_ohlcv(df, tf)
+        assert list(bars["contract"].unique()) == ["SRZ4", "SRH5"]
+    # a bucket never straddles the roll: each row has exactly the day's own contract
+    hourly = resample_ohlcv(df, "1h")
+    assert (hourly.loc[hourly.index.normalize() == df["timestamp"].iloc[0].normalize(), "contract"] == "SRZ4").all()
+    assert (hourly.loc[hourly.index.normalize() == df["timestamp"].iloc[-1].normalize(), "contract"] == "SRH5").all()
+
+
+def test_resample_without_contract_column_is_unaffected():
+    bars = resample_ohlcv(_df(1), "1h")
+    assert "contract" not in bars.columns
+
+
+def test_price_figure_hover_shows_contract_when_present():
+    df = _df(days=1).assign(contract="SRZ4")
+    bars = resample_ohlcv(df, "1h")
+    fig = charts.price_figure(bars, "SR3.v.0", "1h")
+    candle = fig.data[0]
+    assert candle.customdata is not None and (candle.customdata[:, 0] == "SRZ4").all()
+    assert "Contract" in candle.hovertemplate
+
+
+def test_price_figure_hover_omits_contract_when_absent():
+    bars = resample_ohlcv(_df(1), "1h")
+    fig = charts.price_figure(bars, "SRZ4", "1h")
+    assert fig.data[0].customdata is None
+    assert "Contract" not in fig.data[0].hovertemplate

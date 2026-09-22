@@ -41,9 +41,20 @@ def price_figure(bars: pd.DataFrame, ticker: str, timeframe: str, theme: str = "
     if bars.empty:
         return empty_figure("No data on disk for this selection", theme)
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.04)
+    # "contract" is the absolute ticker each bar actually came from (see
+    # infra.pipeline.series.load_series); shown on hover so a relative ticker like
+    # SR3.v.0 reveals which real contract is behind each bar, especially around a roll.
+    has_contract = "contract" in bars.columns and bars["contract"].notna().any()
+    hovertemplate = (
+        "%{x|%Y-%m-%d %H:%M} UTC<br>O %{open:.4f}  H %{high:.4f}<br>L %{low:.4f}  C %{close:.4f}"
+        + ("<br>Contract: %{customdata[0]}" if has_contract else "")
+        + "<extra></extra>"
+    )
     fig.add_trace(go.Candlestick(
         x=bars.index, open=bars["open"], high=bars["high"], low=bars["low"], close=bars["close"],
         name=ticker,
+        customdata=bars[["contract"]].to_numpy() if has_contract else None,
+        hovertemplate=hovertemplate,
         increasing=dict(line=dict(color=t["up"], width=1), fillcolor=t["up"]),
         decreasing=dict(line=dict(color=t["down"], width=1), fillcolor=t["down"]),
     ), row=1, col=1)
