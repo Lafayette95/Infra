@@ -74,7 +74,7 @@ def test_volume_mapping_uses_prior_day_volume_only():
         {"SRZ4": [100, 100, 10, 10], "SRH5": [10, 10, 500, 500]},
         index=pd.to_datetime(["2025-03-10", "2025-03-11", "2025-03-12", "2025-03-13"]).astype("datetime64[ms]"),
     )
-    m = volume_mapping(vol, _contracts(), dates, max_rank=0)
+    m = volume_mapping(vol, _contracts(), dates, max_rank=0)  # volume_mapping itself is dataset-agnostic
     # H5 first out-trades Z4 on Mar 12; it becomes v.0 only on Mar 13 (lookback_days=1,
     # i.e. prior-day volume with no smoothing)
     assert m[0].tolist() == ["SRZ4", "SRZ4", "SRZ4", "SRH5"]
@@ -86,9 +86,25 @@ def test_apply_mapping_selects_contract_per_day():
     bars = pd.DataFrame({"timestamp": ts, "ticker": ["SRZ4", "SRH5", "SRZ4", "SRH5"],
                          "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": [1, 2, 3, 4]})
     m = calendar_mapping(_contracts(), day_index("2025-03-17", "2025-03-21"), max_rank=0)
-    out = apply_mapping(bars, m, 0, "SR3.c.0")
+    out = apply_mapping(bars, m, 0, "SR3.c.0", dataset="GLBX.MDP3")
     assert out["contract"].tolist() == ["SRZ4", "SRH5"] and set(out["ticker"]) == {"SR3.c.0"}
-    assert daily_volume(bars).loc[D("2025-03-17"), "SRZ4"] == 1
+    # 10:00 UTC is 05:00 CT (CDT) - well before CME's 16:00 CT close, so still "today"
+    assert daily_volume(bars, dataset="GLBX.MDP3").loc[D("2025-03-17"), "SRZ4"] == 1
+
+
+def test_apply_mapping_uses_trading_day_not_utc_day():
+    """SRZ4 is front through Mar 18 (its expiry day, inclusive); SRH5 takes over Mar 19.
+    A bar at 22:00 UTC on Mar 18 is 17:00 CT - after the 16:00 CT close - so its CME
+    trade date is Mar 19 (SRH5), not Mar 18 (SRZ4) as naive UTC-day bucketing would say.
+    """
+    ts = pd.to_datetime(["2025-03-18 22:00"]).astype("datetime64[ms]")
+    bars = pd.DataFrame({"timestamp": ts, "ticker": ["SRH5"],
+                         "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": [7]})
+    m = calendar_mapping(_contracts(), day_index("2025-03-17", "2025-03-21"), max_rank=0)
+    out = apply_mapping(bars, m, 0, "SR3.c.0", dataset="GLBX.MDP3")
+    assert out["contract"].tolist() == ["SRH5"]  # kept: this bar's trading day is Mar 19
+    vol = daily_volume(bars, dataset="GLBX.MDP3")
+    assert D("2025-03-18") not in vol.index and vol.loc[D("2025-03-19"), "SRH5"] == 7
 
 
 # ------------------------------------------------------------------ end to end

@@ -6,6 +6,7 @@ from dash import dcc, html
 
 from infra.config import FUTURES_ROOTS
 from infra.dashboard.selectors import default_expiry, expiry_options, root_options
+from infra.dashboard.timezones import DEFAULT_TIMEZONE, DISPLAY_TIMEZONES
 from infra.processing.resample import TIMEFRAMES
 
 
@@ -30,7 +31,13 @@ def build_layout() -> html.Div:
                 id="dates", start_date=(today - pd.Timedelta(days=30)).date(),
                 end_date=today.date(), max_date_allowed=today.date(), display_format="YYYY-MM-DD")]),
             html.Label(["Timeframe", dcc.Dropdown(
-                id="timeframe", options=list(TIMEFRAMES), value="1h", clearable=False)]),
+                id="timeframe",
+                options=[{"label": ("1D (trading day)" if k == "1D" else k), "value": k} for k in TIMEFRAMES],
+                value="1h", clearable=False)]),
+            html.Label(["Display timezone", dcc.Dropdown(
+                id="display-tz",
+                options=[{"label": k, "value": v} for k, v in DISPLAY_TIMEZONES.items()],
+                value=DEFAULT_TIMEZONE, clearable=False)]),
             html.Div(className="fetch", children=[
                 dcc.Checklist(
                     id="fetch", value=[],

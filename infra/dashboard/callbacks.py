@@ -11,6 +11,7 @@ import pandas as pd
 from dash import Dash, Input, Output, State, ctx, html
 
 from infra.api.databento_client import CostLimitExceeded
+from infra.config import FUTURES_ROOTS, TRADING_HOURS
 from infra.dashboard import charts
 from infra.dashboard.selectors import default_expiry, expiry_options
 from infra.dashboard.theme import tokens
@@ -41,12 +42,14 @@ def register_callbacks(app: Dash) -> None:
         Input("theme", "value"),
         Input("expiry", "value"),
         Input("timeframe", "value"),
+        Input("display-tz", "value"),
         Input("load-btn", "n_clicks"),
+        State("ticker-root", "value"),
         State("dates", "start_date"),
         State("dates", "end_date"),
         State("fetch", "value"),
     )
-    def refresh(theme, ticker, timeframe, _clicks, start, end, fetch):
+    def refresh(theme, ticker, timeframe, tz, _clicks, ticker_root, start, end, fetch):
         theme_class = f"theme-{theme}"
         if not (ticker and start and end):
             return theme_class, charts.empty_figure("Pick a root, expiry and dates", theme), \
@@ -65,8 +68,9 @@ def register_callbacks(app: Dash) -> None:
             return theme_class, charts.empty_figure("Load failed", theme), \
                 charts.empty_figure("", theme), [], f"⚠ {type(exc).__name__}: {exc}"
 
-        bars, used_tf = coarsen_to_fit(df, timeframe, MAX_BARS)
-        daily = resample_ohlcv(df, "1D")
+        dataset = FUTURES_ROOTS[ticker_root].dataset
+        bars, used_tf = coarsen_to_fit(df, timeframe, MAX_BARS, dataset=dataset)
+        daily = resample_ohlcv(df, "1D", dataset=dataset)
         gaps = plan_series([ticker], start_ts, end_ts)
 
         notes = [f"{len(df):,} 1-min bars on disk"]
@@ -83,9 +87,9 @@ def register_callbacks(app: Dash) -> None:
         ]
         return (
             theme_class,
-            charts.price_figure(bars, ticker, used_tf, theme),
-            charts.daily_change_figure(daily, ticker, theme) if not df.empty
-            else charts.empty_figure("", theme),
+            charts.price_figure(bars, ticker, used_tf, theme, tz=tz),
+            charts.daily_change_figure(daily, ticker, theme, exchange=TRADING_HOURS[dataset].exchange)
+            if not df.empty else charts.empty_figure("", theme),
             kpis,
             " · ".join(notes),
         )

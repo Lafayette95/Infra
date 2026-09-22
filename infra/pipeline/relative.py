@@ -135,7 +135,7 @@ def load_relative_futures(
         bars = fut.read_futures_from_disk(list(windows), start, end, root=root_dir)
         if bars.empty:
             continue
-        vol = daily_volume(bars) if any(s.kind == "v" for s in root_specs) else None
+        vol = daily_volume(bars, dataset=cfg.dataset) if any(s.kind == "v" for s in root_specs) else None
         for spec in root_specs:
             if spec.kind == "c":
                 mapping = cal_map
@@ -145,7 +145,7 @@ def load_relative_futures(
                     max_rank=spec.rank, expiry_months=cfg.expiry_months,
                     roll_offset_days=cfg.roll_offset_days, lookback_days=VOLUME_LOOKBACK_DAYS,
                 )
-            frames.append(apply_mapping(bars, mapping, spec.rank, spec.label))
+            frames.append(apply_mapping(bars, mapping, spec.rank, spec.label, dataset=cfg.dataset))
     if not frames:
         empty = fut.read_futures_from_disk([], start, start)
         return empty.assign(contract=pd.Series(dtype="str"))
