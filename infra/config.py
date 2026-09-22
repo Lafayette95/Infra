@@ -32,6 +32,8 @@ DAILY_ROOT = DATABASE_ROOT / "Daily"
 DAILY_FUTURES_DIR = DAILY_ROOT / "Futures"
 DAILY_COVERAGE_DIR = DAILY_ROOT / "_coverage"
 DAILY_FUTURES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "futures.parquet"
+DAILY_OPTIONS_DIR = DAILY_ROOT / "Options"
+DAILY_OPTIONS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "options.parquet"
 
 # ------------------------------------------------------------------ API settings
 SCHEMA_OHLCV = "ohlcv-1m"
