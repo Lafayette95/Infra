@@ -159,5 +159,8 @@ VOLUME_LOOKBACK_DAYS = 5
 
 # Option parent symbols (Rule 2.3): parent symbol -> dataset.
 OPTIONS_UNIVERSE: dict[str, str] = {
-    "OQ.OPT": "GLBX.MDP3",  # 3-Month SOFR options (verify root via definitions)
+    # 3-Month SOFR options. `OQ.OPT` (the old assumed root) does not resolve; verified
+    # against the real API 2026-09-21: SR3.OPT returns 3,358 real option contracts
+    # (e.g. "SR3U6 C9762.5"), same convention as the futures root plus ".OPT".
+    "SR3.OPT": "GLBX.MDP3",
 }

@@ -1,7 +1,7 @@
 """Pull option bars for a filtered set of contracts (definitions -> filter -> bars).
 
 Example:
-    /opt/homebrew/Caskroom/miniconda/base/envs/infra-env/bin/python scripts/update_options.py --parent OQ.OPT \
+    /opt/homebrew/Caskroom/miniconda/base/envs/infra-env/bin/python scripts/update_options.py --parent SR3.OPT \
         --definitions-day 2025-01-15 --start 2025-01-15 --end 2025-01-31 \
         --strike-min 95 --strike-max 96 --expiry-min 2025-03-01 --expiry-max 2025-06-30
 """
