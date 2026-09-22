@@ -1,4 +1,5 @@
 databento>=0.50
+databento_dbn>=0.69  # transitive via databento; pinned explicitly since infra/processing/statistics.py imports its StatType enum directly
 pandas>=2.2
 numpy>=1.26
 pyarrow>=16

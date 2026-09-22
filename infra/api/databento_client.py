@@ -21,6 +21,7 @@ from infra.config import (
     PROJECT_ROOT,
     SCHEMA_DEFINITION,
     SCHEMA_OHLCV,
+    SCHEMA_STATISTICS,
 )
 from infra.relative.symbology import is_relative
 
@@ -143,6 +144,21 @@ def fetch_ohlcv_by_instrument_ids(
         dataset, SCHEMA_OHLCV, [int(i) for i in instrument_ids], start, end,
         "instrument_id", max_cost_usd, client,
     )
+
+
+def fetch_statistics(
+    dataset: str,
+    symbol: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    *,
+    max_cost_usd: float = MAX_COST_USD,
+    client: db.Historical | None = None,
+) -> pd.DataFrame:
+    """Raw ``statistics`` rows (settlement price, open interest, ...) for ONE absolute
+    contract over ``[start, end)``. Long format: one row per (stat_type, update)."""
+    validate_absolute_symbol(symbol)
+    return _get_range(dataset, SCHEMA_STATISTICS, [symbol], start, end, "raw_symbol", max_cost_usd, client)
 
 
 def _utc(ts: pd.Timestamp) -> pd.Timestamp:
