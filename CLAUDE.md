@@ -22,7 +22,7 @@
 *   **Rule 2.1: Implement Local Storage Caching Always**
     Before executing ANY historical API data request, the script must verify if data exists in a local `.parquet` file exists. If it exists, read it into Pandas with `pd.read_parquet()`. Never allow duplicate queries to charge the Databento wallet multiple times.
 *   **Rule 2.2: Absolute Contracts Only (API + Database)**
-    The API is queried ONLY by absolute contract raw symbol (`SRZ4`, `ZNH5`) via `stype_in="raw_symbol"`. NEVER pass wildcards (`SR3*`), empty symbols, spread instruments, or relative/continuous tickers (`SR3.c.0`) to the API. Only absolute tickers are saved to the database. Relative tickers (`SR3.c.0` calendar, `SR3.v.0` prior-day-volume) are resolved locally from the contracts table (built from `definition` snapshots, outrights only: `instrument_class == "F"`) by `infra/relative`, so only the contracts actually needed are downloaded.
+    The API is queried ONLY by absolute contract raw symbol (`SRZ4`, `ZNH5`) via `stype_in="raw_symbol"`. NEVER pass wildcards (`SR3*`), empty symbols, spread instruments, or relative/continuous tickers (`SR3.c.0`) to the API. Only absolute tickers are saved to the database. Relative tickers (`SR3.c.0` calendar, `SR3.v.0` trailing-average-volume) are resolved locally from the contracts table (built from `definition` snapshots, outrights only: `instrument_class == "F"`) by `infra/relative`, so only the contracts actually needed are downloaded.
 *   **Rule 2.3: Safe Filtering for Options Chains**
     Options chains cause a data payload explosion. To fetch options data efficiently:
     1. Query the tiny `definition` schema first to return active contract IDs text data.

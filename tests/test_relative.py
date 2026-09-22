@@ -75,7 +75,8 @@ def test_volume_mapping_uses_prior_day_volume_only():
         index=pd.to_datetime(["2025-03-10", "2025-03-11", "2025-03-12", "2025-03-13"]).astype("datetime64[ms]"),
     )
     m = volume_mapping(vol, _contracts(), dates, max_rank=0)
-    # H5 first out-trades Z4 on Mar 12; it becomes v.0 only on Mar 13 (prior-day volume)
+    # H5 first out-trades Z4 on Mar 12; it becomes v.0 only on Mar 13 (lookback_days=1,
+    # i.e. prior-day volume with no smoothing)
     assert m[0].tolist() == ["SRZ4", "SRZ4", "SRZ4", "SRH5"]
 
 
@@ -160,3 +161,34 @@ def test_root_config_is_consistent():
     assert {"SR3", "ESR", "SO3", "ZT", "ZF", "ZN", "TN", "ZB", "UB",
             "FGBL", "FGBM", "FGBS", "FBTP", "R"} == set(FUTURES_ROOTS)
     assert all(parse_relative(t) and parse_relative(t).root in FUTURES_ROOTS for t in DEFAULT_RELATIVE_TICKERS)
+
+
+def test_volume_mapping_lookback_smooths_a_single_thin_day():
+    """A thin session (e.g. a Sunday open) can outrank a more liquid contract by a
+    coin-flip margin under lookback_days=1, flipping the front contract for one day and
+    flipping right back. Averaging over several prior days should absorb that noise.
+    Shape mirrors a real SR3 case: U6 leads on every normal day, but on one thin day
+    (~1-2k contracts) Z6's volume edges ahead by chance.
+    """
+    dates = day_index("2025-01-05", "2025-01-13")  # 6 trading days (Sat/Sun excluded below)
+    vol = pd.DataFrame(
+        {
+            "SRZ4": [400000, 430000, 1243, 450000, 380000, 500000],  # thin on day 3
+            "SRH5": [270000, 260000, 1747, 310000, 300000, 480000],  # edges ahead on day 3 only
+        },
+        index=pd.to_datetime(["2025-01-05", "2025-01-06", "2025-01-07", "2025-01-08",
+                              "2025-01-09", "2025-01-10"]).astype("datetime64[ms]"),
+    )
+    contracts = pd.DataFrame({
+        "root": "SR3", "ticker": ["SRZ4", "SRH5"], "instrument_id": [1, 2],
+        "expiry": pd.to_datetime(["2025-03-18", "2025-06-17"]).astype("datetime64[ms]"),
+        "activation": pd.NaT,
+    })
+
+    naive = volume_mapping(vol, contracts, dates, max_rank=0, lookback_days=1)
+    smoothed = volume_mapping(vol, contracts, dates, max_rank=0, lookback_days=5)
+
+    # naive (prior-day only) flips to SRH5 for one day, chasing the thin-day noise
+    assert "SRH5" in naive[0].tolist() and naive[0].tolist().count("SRZ4") < len(dates)
+    # the 5-day rolling average never lets that single thin day flip the front contract
+    assert smoothed[0].tolist() == ["SRZ4"] * len(dates)

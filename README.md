@@ -44,7 +44,9 @@ $PY -m pytest
 | Eurex | `FGBL`, `FGBM`, `FGBS`, `FBTP` (data from 2025-03-10) | XEUR.EOBI |
 | ICE | `R` (Long Gilt) | IFLL.IMPACT |
 
-Relative tickers: `<root>.c.<n>` (calendar) / `<root>.v.<n>` (prior-day volume), e.g. `ZN.v.0`.
+Relative tickers: `<root>.c.<n>` (calendar) / `<root>.v.<n>` (trailing `VOLUME_LOOKBACK_DAYS`-day
+average volume, default 5 - smooths thin single sessions like a Sunday open so they don't
+flip the front contract for one day), e.g. `ZN.v.0`.
 Prefer `.v.0` for bonds: the calendar front sits in an expiring, thin contract for weeks.
 
 ## Cost protection

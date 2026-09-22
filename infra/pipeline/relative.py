@@ -17,6 +17,7 @@ from infra.config import (
     FUTURES_ROOTS,
     MAX_COST_USD,
     VOLUME_EXTRA_CANDIDATES,
+    VOLUME_LOOKBACK_DAYS,
     FuturesRoot,
 )
 from infra.coverage.intervals import Interval, to_utc_day
@@ -142,7 +143,7 @@ def load_relative_futures(
                 mapping = volume_mapping(
                     vol, contracts, day_index(start, end),
                     max_rank=spec.rank, expiry_months=cfg.expiry_months,
-                    roll_offset_days=cfg.roll_offset_days,
+                    roll_offset_days=cfg.roll_offset_days, lookback_days=VOLUME_LOOKBACK_DAYS,
                 )
             frames.append(apply_mapping(bars, mapping, spec.rank, spec.label))
     if not frames:
