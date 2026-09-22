@@ -1,6 +1,7 @@
 """Parsing of relative ticker notation: ``<root>.<kind>.<rank>``.
 
-kind: ``c`` = calendar (Nth contract by expiry), ``v`` = volume (Nth by prior-day volume).
+kind: ``c`` = calendar (Nth contract by expiry), ``v`` = volume (Nth by trailing average
+daily volume - see infra.config.VOLUME_LOOKBACK_DAYS).
 """
 from __future__ import annotations
 

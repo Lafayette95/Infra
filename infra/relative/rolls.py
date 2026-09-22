@@ -59,11 +59,17 @@ def volume_mapping(
     max_rank: int,
     expiry_months: tuple[int, ...] = (3, 6, 9, 12),
     roll_offset_days: int = 0,
+    lookback_days: int = 1,
 ) -> pd.DataFrame:
-    """Rank v.N: the Nth unexpired contract by PRIOR-day volume (no look-ahead).
+    """Rank v.N: the Nth unexpired contract by trailing average volume (no look-ahead).
 
-    ``daily_volume`` is indexed by UTC day with one column per candidate ticker. Ties and
-    days with no prior volume fall back to calendar (expiry) order.
+    ``daily_volume`` is indexed by UTC day with one column per candidate ticker.
+    ``lookback_days`` sets how many PRIOR trading days are averaged (1 = prior day only,
+    matching the naive rule). A single thin session - a Sunday open, a day before a
+    holiday - can otherwise outrank a genuinely more liquid contract by a coin-flip
+    margin and cause a one-day round-trip in the front contract; averaging over several
+    days damps that noise. Ties and days with no prior volume fall back to calendar
+    (expiry) order.
     """
     c = _eligible_contracts(contracts, expiry_months)
     c = c[c["ticker"].isin(daily_volume.columns)].reset_index(drop=True)
@@ -76,7 +82,10 @@ def volume_mapping(
     threshold = dates.to_numpy("datetime64[D]") + np.timedelta64(roll_offset_days, "D")
     alive = expiry[None, :] >= threshold[:, None]  # (dates, contracts)
 
+    # shift(1) first so the average only ever sees days strictly before the ranked day;
+    # rolling() then never introduces look-ahead, it just smooths what's already past.
     prior = daily_volume.reindex(columns=tickers).sort_index().shift(1)
+    prior = prior.rolling(window=lookback_days, min_periods=1).mean()
     prior = prior.reindex(dates, method="ffill").fillna(0.0).to_numpy()
 
     out = np.full((len(dates), max_rank + 1), None, dtype=object)

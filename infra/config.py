@@ -96,6 +96,11 @@ DEFAULT_RELATIVE_TICKERS: list[str] = [
 
 DEFINITION_SNAPSHOT_DAYS = 30  # definition snapshot cadence used to discover contracts
 VOLUME_EXTRA_CANDIDATES = 3  # calendar ranks beyond the requested v.N ranked by volume
+# .v.N ranks by the trailing average of this many prior trading days' volume, not just
+# the single prior day - a lone thin session (Sunday open, day before a holiday) can
+# otherwise outrank a genuinely more liquid contract by a coin-flip margin and cause a
+# one-day round-trip in the front contract. See infra/relative/rolls.py.
+VOLUME_LOOKBACK_DAYS = 5
 
 # Option parent symbols (Rule 2.3): parent symbol -> dataset.
 OPTIONS_UNIVERSE: dict[str, str] = {
