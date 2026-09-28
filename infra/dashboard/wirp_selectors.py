@@ -148,12 +148,19 @@ def build_schedule(
     last_known_month = max(all_meeting_months)  # last month FOMC_MEETINGS actually covers
 
     contracts = zq_contracts(contracts_file)
-    rate_fn = (lambda mt: close_rates(mt, root=close_root)) if mode == "close" else (lambda mt: live_rates(mt, root=live_root))
-    anchor = find_anchor(earliest_upcoming_month, contracts, rate_fn, all_meeting_months)
+    # The anchor, and any already-past meeting the chain runs through, represent KNOWN,
+    # settled fact - not a live-evolving prediction - so they always read from the
+    # official settlement, regardless of the LIVE/CLOSE toggle. Only genuinely upcoming
+    # meetings (and the reference months used to price them) follow the toggle: those
+    # are real forecasts a viewer might want to watch move intraday.
+    settlement_fn = lambda mt: close_rates(mt, root=close_root)  # noqa: E731
+    toggle_fn = settlement_fn if mode == "close" else (lambda mt: live_rates(mt, root=live_root))
+
+    anchor = find_anchor(earliest_upcoming_month, contracts, settlement_fn, all_meeting_months)
     if anchor is None:
         return pd.DataFrame(), {
             **empty_meta,
-            "status": "No flat (non-meeting) ZQ contract cached before the first upcoming "
+            "status": "No flat (non-meeting) ZQ settlement cached before the first upcoming "
                       "meeting to anchor the current rate - fetch an earlier month.",
         }
     anchor_month, anchor_rate = anchor
@@ -166,9 +173,13 @@ def build_schedule(
     # PRE-hike/cut rate feeding straight into the first upcoming meeting instead of the
     # real current rate. All of them are priced so the chain is correct; only the
     # upcoming subset is returned for display.
+    upcoming_set = set(upcoming_dates)
     chain_meetings = [m for m in FOMC_MEETINGS if pd.Period(m.end_date, freq="M") > anchor_month]
     chain_dates = [pd.Timestamp(m.end_date) for m in chain_meetings]
     chain_months = {pd.Period(d, freq="M") for d in chain_dates}
+    past_chain_months = {pd.Period(d, freq="M") for d in chain_dates if d not in upcoming_set}
+    upcoming_months = {pd.Period(d, freq="M") for d in upcoming_dates}
+
     # infra.analytics.wirp.meeting_schedule prefers reading the FLAT month right after
     # a meeting (no day-weighting needed there) over day-weighting the meeting's own
     # month - so its rate needs to be fetched too, not just the meeting months
@@ -177,12 +188,19 @@ def build_schedule(
     # UNKNOWN, not confirmed flat - the Fed's calendar page simply doesn't extend that
     # far yet, it doesn't say there's no meeting there. Treating it as flat would risk
     # reintroducing the exact bug this preference was built to avoid (a real meeting
-    # hiding in a month we wrongly assumed was flat).
-    next_months = {
-        m + 1 for m in chain_months
+    # hiding in a month we wrongly assumed was flat). Each next-month reference is
+    # settlement or toggle depending on whether the meeting it BACKS is past or upcoming.
+    next_month_source = {
+        m + 1: m for m in chain_months
         if (m + 1) not in chain_months and (m + 1) <= last_known_month
     }
-    needed_months = sorted(chain_months | next_months)
+    settlement_months = sorted(past_chain_months | {
+        nm for nm, src in next_month_source.items() if src in past_chain_months
+    })
+    toggle_months = sorted(upcoming_months | {
+        nm for nm, src in next_month_source.items() if src in upcoming_months
+    })
+    needed_months = sorted(set(settlement_months) | set(toggle_months))
 
     month_tickers = month_contract_map(needed_months, contracts)
     if not month_tickers:
@@ -192,11 +210,15 @@ def build_schedule(
                       "scripts/update_futures.py / scripts/update_daily.py for ZQ first.",
         }
 
-    rates, as_of = rate_fn(month_tickers)
+    settlement_tickers = {m: t for m, t in month_tickers.items() if m in settlement_months}
+    toggle_tickers = {m: t for m, t in month_tickers.items() if m in toggle_months}
+    settlement_rates, _ = settlement_fn(settlement_tickers) if settlement_tickers else (pd.Series(dtype="float64"), None)
+    toggle_rates, as_of = toggle_fn(toggle_tickers) if toggle_tickers else (pd.Series(dtype="float64"), None)
+    rates = pd.concat([settlement_rates, toggle_rates]).sort_index()
+
     full_schedule = wirp.meeting_schedule(rates, chain_dates, anchor_rate)
     # Already-past meetings were priced only to chain the rate correctly - trim them
     # before returning; they're realized history now, not an upcoming prediction.
-    upcoming_set = set(upcoming_dates)
     schedule = full_schedule[full_schedule["meeting_date"].isin(upcoming_set)].reset_index(drop=True)
 
     priced = schedule["meeting_date"].nunique() if not schedule.empty else 0

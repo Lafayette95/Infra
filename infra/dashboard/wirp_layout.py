@@ -72,6 +72,13 @@ def build_layout() -> html.Div:
                 '"Live" means the freshest 1-minute bar already cached on disk, shown '
                 "with its own \"as of\" timestamp, not a live market print.",
             ]),
+            html.P([
+                html.Strong("The toggle only affects upcoming meetings."),
+                " The current/anchor rate and any already-past meeting used to chain "
+                "it forward always read the official settlement, in both modes - "
+                "they're settled fact, not a live prediction. Only the genuinely "
+                "upcoming meetings (and their own reference months) follow Live/Close.",
+            ]),
         ]),
     ])
 

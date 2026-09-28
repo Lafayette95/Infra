@@ -160,6 +160,48 @@ def test_build_schedule_end_to_end_with_synthetic_data(tmp_path):
     assert meta["as_of"] == D("2025-12-01")
 
 
+def test_build_schedule_live_mode_still_uses_settlement_for_anchor_and_past_chain(tmp_path):
+    """The LIVE/CLOSE toggle only ever affects genuinely UPCOMING meetings (and their
+    reference months) - the anchor and any already-past meeting used purely to chain
+    the current rate forward always read settlement, even in mode="live", since they
+    represent settled fact, not a live-evolving forecast (raised by the user, who
+    correctly argued the base rate should always come from settlement)."""
+    contracts_file = tmp_path / "contracts.parquet"
+    daily_root = tmp_path / "Daily"
+    ohlcv_root = tmp_path / "ohlcv"
+    _write_contracts(contracts_file, [
+        ("ZQQ6", "2026-08-31"), ("ZQU6", "2026-09-30"),
+        ("ZQX6", "2026-11-30"), ("ZQZ6", "2026-12-31"),
+    ])
+    # Settlement - the source of truth for the anchor and September's already-past chain.
+    _write_daily(daily_root, "ZQQ6", "2026-08-15", 100.0 - 4.00)  # Aug: flat anchor
+    sep_avg = (4.00 * 16 + 4.25 * (30 - 16)) / 30
+    _write_daily(daily_root, "ZQU6", "2026-09-20", 100.0 - sep_avg)  # Sep -> solves to 4.25%
+    _write_daily(daily_root, "ZQZ6", "2026-12-01", 100.0 - 4.60)  # Dec (upcoming fallback)
+
+    # Intraday LIVE prices for the SAME anchor/past months are deliberately absurd - if
+    # they ever leaked into the anchor or September's chain, the assertions below fail.
+    _write_bar(ohlcv_root, "ZQQ6", "2026-08-15 12:00", 100.0 - 9.00)
+    _write_bar(ohlcv_root, "ZQU6", "2026-09-20 12:00", 100.0 - 9.00)
+    # November backs the genuinely UPCOMING October meeting - its LIVE price legitimately
+    # SHOULD be used (deliberately different from what a settlement price might say).
+    _write_bar(ohlcv_root, "ZQX6", "2026-11-01 12:00", 100.0 - 4.60)
+    _write_bar(ohlcv_root, "ZQZ6", "2026-12-01 12:00", 100.0 - 4.60)
+
+    schedule, meta = build_schedule(
+        "live", today=D("2026-09-20"),
+        contracts_file=contracts_file, close_root=daily_root, live_root=ohlcv_root,
+    )
+
+    assert meta["anchor_month"] == "2026-08"
+    assert meta["anchor_rate"] == pytest.approx(4.00)  # settlement, not the absurd 9.00-implied live value
+
+    oct_row = schedule[schedule["month"] == "2026-10"].loc[lambda d: d["probability"].idxmax()]
+    assert oct_row["method"] == "next_month_flat"
+    assert oct_row["pre_rate"] == pytest.approx(4.25, abs=1e-3)  # chained via September's SETTLEMENT
+    assert oct_row["implied_rate"] == pytest.approx(4.60, abs=1e-3)  # but November's LIVE price
+
+
 def test_build_schedule_chains_through_an_already_past_meeting(tmp_path):
     """Regression test for a real bug a user caught 2026-09-28: 'today' sits right
     after September's meeting already happened (real schedule: Sep 15-16 2026) but
