@@ -38,11 +38,21 @@ def build_layout() -> html.Div:
             html.Strong("Methodology & known limitations"),
             html.P([
                 "Each contract month's price implies its average daily Fed Funds rate "
-                "(100 - price); a day-weighted split around the meeting's announcement "
-                "day backs out the implied post-meeting rate (Geraty 2000, via Keasler "
-                "& Goff 2007). The pre-meeting rate is anchored to the nearest flat "
-                "(no-meeting) month's own contract, then chained meeting to meeting - "
-                "no external Fed Funds rate feed needed.",
+                "(100 - price). For each meeting, the post-meeting rate is read from "
+                "the FLAT month right after it when available (its whole-month average "
+                "IS the post-decision rate, no day-weighting) - falling back to "
+                "day-weighting the meeting's own month (Geraty 2000, via Keasler & "
+                "Goff 2007) only when that's not cached. Hover a bar to see which was "
+                "used. The pre-meeting rate is anchored to the nearest flat month's own "
+                "contract, then chained meeting to meeting - no external Fed Funds rate "
+                "feed needed.",
+            ]),
+            html.P([
+                html.Strong("Day-weighting a late-month meeting is noisy."),
+                " Its amplification factor is days-in-month / days-after-the-meeting - "
+                "large when few days remain in the month. This is why the next-month "
+                "flat read is preferred whenever it's available, not just for "
+                "late-month meetings.",
             ]),
             html.P([
                 html.Strong("Per-meeting, not a full joint tree."),

@@ -43,11 +43,15 @@ def probability_figure(schedule: pd.DataFrame, meta: dict, theme: str = "light")
         bps = int(round(seg["outcome_bps"].iloc[0]))
         name = "unchanged" if level == 0 else f"{bps:+d}bp"
         color, opacity = _level_style(level, t)
+        method_label = seg["method"].map({"next_month_flat": "next-month read", "day_weighted": "day-weighted"})
         fig.add_trace(go.Bar(
             x=seg["label"], y=seg["probability"], name=name,
             marker_color=color, marker_line_width=0, opacity=opacity,
-            customdata=seg["outcome_rate"],
-            hovertemplate=f"{name}<br>implied rate %{{customdata:.3f}}%<br>%{{y:.0%}}<extra></extra>",
+            customdata=pd.DataFrame({"rate": seg["outcome_rate"], "method": method_label}),
+            hovertemplate=(
+                f"{name}<br>implied rate %{{customdata[0]:.3f}}%<br>%{{y:.0%}}"
+                "<br><span style='opacity:0.7'>%{customdata[1]}</span><extra></extra>"
+            ),
         ))
 
     as_of = meta.get("as_of")

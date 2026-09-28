@@ -5,7 +5,8 @@ import pandas as pd
 import pytest
 
 from infra.analytics.wirp import (
-    implied_rate, level_probabilities, meeting_schedule, modal_outcome, solve_post_meeting_rate,
+    implied_rate, level_probabilities, meeting_schedule, modal_outcome,
+    post_meeting_rate_from_flat_month, solve_post_meeting_rate,
 )
 
 D = pd.Timestamp
@@ -62,11 +63,64 @@ def test_level_probabilities_cut_direction_uses_negative_levels():
     assert levels == pytest.approx({-2: 0.3, -1: 0.7})
 
 
+# ------------------------------------------------------- post_meeting_rate_from_flat_month
+def test_post_meeting_rate_from_flat_month_is_a_direct_pass_through():
+    assert post_meeting_rate_from_flat_month(4.35) == 4.35
+
+
 # --------------------------------------------------------------------- meeting_schedule
+def test_meeting_schedule_prefers_the_flat_next_month_over_day_weighting():
+    """Regression test for a real bug found 2026-09-28: day-weighting a LATE-month
+    meeting (Oct 27-28, day 28 of 31 - amplification ~10x) is wildly noise-amplified.
+    When the following month (Nov) is flat and cached, it must be used instead, and
+    must NOT match what plain day-weighting of October would have given."""
+    anchor = 3.63
+    meeting_date = D("2026-10-28")
+    november_avg = 4.035  # flat month, directly read - no day-weighting
+    october_avg = 3.89  # would day-weight to a nonsensical ~6.3% via the fallback path
+
+    rates = pd.Series({P("2026-10"): october_avg, P("2026-11"): november_avg})
+    schedule = meeting_schedule(rates, [meeting_date], anchor)
+
+    row = schedule.loc[schedule["probability"].idxmax()]
+    assert row["method"] == "next_month_flat"
+    assert row["implied_rate"] == pytest.approx(november_avg)
+    assert row["implied_rate"] < 5.0  # sanity: nowhere near the day-weighted ~6.3%
+
+
+def test_meeting_schedule_falls_back_to_day_weighting_when_next_month_uncached():
+    anchor = 4.00
+    meeting_date = D("2026-01-28")
+    avg = (anchor * 28 + 4.25 * (31 - 28)) / 31  # constructed for an exact +25bp
+    rates = pd.Series({P("2026-01"): avg})  # February intentionally absent
+
+    schedule = meeting_schedule(rates, [meeting_date], anchor)
+
+    row = schedule.loc[schedule["probability"].idxmax()]
+    assert row["method"] == "day_weighted"
+    assert row["implied_rate"] == pytest.approx(4.25, abs=1e-9)
+
+
+def test_meeting_schedule_never_uses_a_next_month_that_itself_has_a_meeting():
+    """Back-to-back meeting months never occur in the real FOMC schedule, but the
+    fallback to day-weighting must still trigger correctly if it ever did."""
+    anchor = 4.00
+    m1_date, m2_date = D("2026-01-28"), D("2026-02-18")  # adjacent months, both meetings
+    m1_avg = (anchor * 28 + 4.25 * (31 - 28)) / 31  # exact +25bp, day-weighted
+    m2_avg = 100.0  # deliberately absurd - must NOT be read as February's "flat" rate
+    rates = pd.Series({P("2026-01"): m1_avg, P("2026-02"): m2_avg})
+
+    schedule = meeting_schedule(rates, [m1_date, m2_date], anchor)
+    jan = schedule[schedule["month"] == "2026-01"]
+    assert jan.loc[jan["probability"].idxmax(), "method"] == "day_weighted"
+    assert jan.loc[jan["probability"].idxmax(), "implied_rate"] == pytest.approx(4.25, abs=1e-9)
+
+
 def test_meeting_schedule_chains_and_recovers_a_known_path():
     """Two meeting months, each constructed so its contract average day-weights to a
-    KNOWN exact post-meeting rate - meeting_schedule must chain meeting 2's pre_rate
-    from meeting 1's solved post_rate, not from the anchor again."""
+    KNOWN exact post-meeting rate (their own next months are deliberately absent, so
+    the day-weighted fallback is what's exercised) - meeting_schedule must chain
+    meeting 2's pre_rate from meeting 1's solved post_rate, not from the anchor again."""
     anchor = 4.00
     m1_date, m1_pre, m1_post = D("2026-01-28"), anchor, 4.25  # +25bp
     m1_avg = (m1_pre * 28 + m1_post * (31 - 28)) / 31
@@ -80,6 +134,7 @@ def test_meeting_schedule_chains_and_recovers_a_known_path():
     mar = schedule[schedule["month"] == "2026-03"]
     assert jan["implied_rate"].iloc[0] == pytest.approx(m1_post, abs=1e-9)
     assert jan["probability"].iloc[0] == pytest.approx(1.0)
+    assert jan["method"].iloc[0] == "day_weighted"
     assert mar["pre_rate"].iloc[0] == pytest.approx(m1_post, abs=1e-9)  # chained, not anchor
     assert mar["implied_rate"].iloc[0] == pytest.approx(m2_post, abs=1e-9)
 

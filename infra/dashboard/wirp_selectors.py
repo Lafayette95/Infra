@@ -144,7 +144,22 @@ def build_schedule(
                                                           "update infra.config.FOMC_MEETINGS."}
 
     meeting_dates = [pd.Timestamp(m.end_date) for m in upcoming]
-    needed_months = sorted({pd.Period(d, freq="M") for d in meeting_dates})
+    meeting_months = {pd.Period(d, freq="M") for d in meeting_dates}
+    last_known_month = max(all_meeting_months)  # last month FOMC_MEETINGS actually covers
+    # infra.analytics.wirp.meeting_schedule prefers reading the FLAT month right after
+    # a meeting (no day-weighting needed there) over day-weighting the meeting's own
+    # month - so its rate needs to be fetched too, not just the meeting months
+    # themselves, or that preferred path can never be taken (see CLAUDE.md section 11).
+    # Capped at ``last_known_month``: a month past FOMC_MEETINGS's last entry is
+    # UNKNOWN, not confirmed flat - the Fed's calendar page simply doesn't extend that
+    # far yet, it doesn't say there's no meeting there. Treating it as flat would risk
+    # reintroducing the exact bug this preference was built to avoid (a real meeting
+    # hiding in a month we wrongly assumed was flat).
+    next_months = {
+        m + 1 for m in meeting_months
+        if (m + 1) not in meeting_months and (m + 1) <= last_known_month
+    }
+    needed_months = sorted(meeting_months | next_months)
 
     contracts = zq_contracts(contracts_file)
     month_tickers = month_contract_map(needed_months, contracts)

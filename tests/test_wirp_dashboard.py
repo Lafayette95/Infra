@@ -160,6 +160,36 @@ def test_build_schedule_end_to_end_with_synthetic_data(tmp_path):
     assert meta["as_of"] == D("2025-12-01")
 
 
+def test_build_schedule_never_treats_a_month_past_fomc_meetings_as_flat(tmp_path):
+    """The LAST meeting in infra.config.FOMC_MEETINGS (2026-12-09) must fall back to
+    day-weighting its own month, never read January 2027 as if it were confirmed
+    flat - FOMC_MEETINGS simply doesn't cover 2027 yet, it doesn't say there's no
+    meeting there. Regression test for the real bug this project found and fixed
+    2026-09-28 (a wrongly-flat late-month read produced a +275bp nonsense outcome)."""
+    contracts_file = tmp_path / "contracts.parquet"
+    daily_root = tmp_path / "Daily"
+    _write_contracts(contracts_file, [
+        ("ZQX6", "2026-11-30"), ("ZQZ6", "2026-12-31"), ("ZQF7", "2027-01-29"),
+    ])
+    _write_daily(daily_root, "ZQX6", "2026-11-10", 100.0 - 4.00)  # Nov: flat anchor
+    # Dec 2026 meeting ends 2026-12-09 (31-day month); construct EXACTLY a +25bp hike.
+    days_in_month, meeting_day, pre, post = 31, 9, 4.00, 4.25
+    dec_avg = (pre * meeting_day + post * (days_in_month - meeting_day)) / days_in_month
+    _write_daily(daily_root, "ZQZ6", "2026-12-01", 100.0 - dec_avg)
+    # January 2027 is deliberately an absurd value - if it were ever read as "flat"
+    # this would leak straight into the result.
+    _write_daily(daily_root, "ZQF7", "2027-01-05", 100.0 - 99.0)
+
+    schedule, _ = build_schedule(
+        "close", today=D("2026-11-15"), contracts_file=contracts_file, close_root=daily_root,
+    )
+    dec = schedule[schedule["month"] == "2026-12"]
+    assert not dec.empty
+    dominant = dec.loc[dec["probability"].idxmax()]
+    assert dominant["method"] == "day_weighted"
+    assert dominant["implied_rate"] == pytest.approx(post, abs=1e-3)
+
+
 def test_build_schedule_empty_when_nothing_cached(tmp_path):
     schedule, meta = build_schedule(
         "close", today=D("2025-11-15"),
@@ -182,6 +212,7 @@ def _fake_schedule() -> pd.DataFrame:
         "pre_rate": [4.33] * 2,
         "implied_rate": [4.20, 4.20],
         "change_bps": [-13.0, -13.0],
+        "method": ["next_month_flat", "next_month_flat"],
         "outcome_step": [0, -1],
         "outcome_bps": [0.0, -25.0],
         "outcome_rate": [4.33, 4.08],

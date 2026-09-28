@@ -49,6 +49,25 @@ def solve_post_meeting_rate(
     return (days_in_month * month_avg_rate - meeting_day * pre_rate) / days_after
 
 
+def post_meeting_rate_from_flat_month(next_month_avg_rate: float) -> float:
+    """The implied post-meeting rate when the month immediately AFTER the meeting has
+    no FOMC meeting of its own - that month's whole average IS the market's
+    expectation of the (constant over that month) post-decision rate, no day-weighting
+    needed at all.
+
+    Preferred over ``solve_post_meeting_rate`` (day-weighting the meeting's own month)
+    whenever it's available: day-weighting amplifies any noise/imprecision in a
+    month's average by a factor of ``days_in_month / days_after`` (CLAUDE.md section
+    11), which can be large for a meeting late in its own month. Keasler & Goff (2007)
+    recommend exactly this substitution "if the FOMC meeting is after the middle of
+    the month [and] there will not be a meeting in the following month" - confirmed
+    necessary against real data 2026-09-28: day-weighting October 2026's own month
+    (meeting on the 28th of 31 days, amplification factor ~10x) produced a nonsensical
+    +275bp implied move; reading November 2026 (flat) directly gave a sane +40bp.
+    """
+    return next_month_avg_rate
+
+
 def level_probabilities(change_bps: float, step_bps: float = 25.0, *, eps: float = 1e-9) -> dict[int, float]:
     """Decompose a continuous implied change (bps) into probabilities over the two
     nearest discrete step levels (multiples of ``step_bps``, signed: positive = hike,
@@ -92,19 +111,42 @@ def meeting_schedule(
     typically derived from the nearest FLAT (no-meeting) month's own contract, so it
     needs no day-weighting itself (see infra.dashboard.wirp_selectors.find_anchor).
 
-    A meeting whose month has no entry in ``contract_rates`` is silently skipped (no
-    cached contract yet) and does not break the chain - the next priced meeting still
-    chains from the last SOLVED rate, not the skipped one's.
+    For each meeting, the post-meeting rate is read two ways, in order of preference:
+    1. ``post_meeting_rate_from_flat_month`` - the month right after the meeting, IF
+       that month has no meeting of its own (among ``meeting_dates``) and its rate is
+       cached. Strictly less noise-amplified, so always preferred when available.
+    2. ``solve_post_meeting_rate`` (day-weighting the meeting's OWN month) - fallback
+       when (1) isn't available (e.g. the next month isn't cached yet, or itself has a
+       meeting - never observed in the real ~8-meeting/year FOMC schedule, but not
+       assumed impossible).
+    A meeting for which NEITHER is available is silently skipped (no cached data yet)
+    and does not break the chain - the next priced meeting still chains from the last
+    SOLVED rate, not the skipped one's. The output's ``method`` column records which
+    was used, so callers/dashboards can surface it (a day-weighted read on a meeting
+    very late in its month is inherently noisier - CLAUDE.md section 11).
     """
+    meeting_dates_sorted = sorted(pd.Timestamp(d) for d in meeting_dates)
+    meeting_months = {pd.Period(d, freq="M") for d in meeting_dates_sorted}
+
     rows = []
     pre_rate = anchor_rate
-    for meeting_date in sorted(pd.Timestamp(d) for d in meeting_dates):
+    for meeting_date in meeting_dates_sorted:
         month = pd.Period(meeting_date, freq="M")
-        if month not in contract_rates.index or pd.isna(contract_rates[month]):
+        next_month = month + 1
+        if (
+            next_month not in meeting_months
+            and next_month in contract_rates.index
+            and pd.notna(contract_rates[next_month])
+        ):
+            post_rate = post_meeting_rate_from_flat_month(float(contract_rates[next_month]))
+            method = "next_month_flat"
+        elif month in contract_rates.index and pd.notna(contract_rates[month]):
+            avg = float(contract_rates[month])
+            post_rate = solve_post_meeting_rate(pre_rate, avg, meeting_date.day, month.days_in_month)
+            method = "day_weighted"
+        else:
             continue
-        avg = float(contract_rates[month])
-        meeting_day, days_in_month = meeting_date.day, month.days_in_month
-        post_rate = solve_post_meeting_rate(pre_rate, avg, meeting_day, days_in_month)
+
         change_bps = (post_rate - pre_rate) * 100.0
         for level, prob in level_probabilities(change_bps, step_bps).items():
             rows.append({
@@ -113,6 +155,7 @@ def meeting_schedule(
                 "pre_rate": pre_rate,
                 "implied_rate": post_rate,
                 "change_bps": change_bps,
+                "method": method,
                 "outcome_step": level,
                 "outcome_bps": level * step_bps,
                 "outcome_rate": pre_rate + level * step_bps / 100.0,
@@ -120,7 +163,7 @@ def meeting_schedule(
             })
         pre_rate = post_rate  # chain forward regardless of how many levels were split
     return pd.DataFrame(rows, columns=[
-        "meeting_date", "month", "pre_rate", "implied_rate", "change_bps",
+        "meeting_date", "month", "pre_rate", "implied_rate", "change_bps", "method",
         "outcome_step", "outcome_bps", "outcome_rate", "probability",
     ])
 
