@@ -143,9 +143,32 @@ def build_schedule(
         return pd.DataFrame(), {**empty_meta, "status": "No upcoming FOMC meetings configured - "
                                                           "update infra.config.FOMC_MEETINGS."}
 
-    meeting_dates = [pd.Timestamp(m.end_date) for m in upcoming]
-    meeting_months = {pd.Period(d, freq="M") for d in meeting_dates}
+    upcoming_dates = [pd.Timestamp(m.end_date) for m in upcoming]
+    earliest_upcoming_month = min(pd.Period(d, freq="M") for d in upcoming_dates)
     last_known_month = max(all_meeting_months)  # last month FOMC_MEETINGS actually covers
+
+    contracts = zq_contracts(contracts_file)
+    rate_fn = (lambda mt: close_rates(mt, root=close_root)) if mode == "close" else (lambda mt: live_rates(mt, root=live_root))
+    anchor = find_anchor(earliest_upcoming_month, contracts, rate_fn, all_meeting_months)
+    if anchor is None:
+        return pd.DataFrame(), {
+            **empty_meta,
+            "status": "No flat (non-meeting) ZQ contract cached before the first upcoming "
+                      "meeting to anchor the current rate - fetch an earlier month.",
+        }
+    anchor_month, anchor_rate = anchor
+
+    # CHAIN meetings = every FOMC meeting after the anchor month, not just the upcoming
+    # ones. The anchor's flat month can sit several meetings back (find_anchor walks
+    # past any meeting month while searching for a flat one) - an already-past meeting
+    # in that gap (e.g. today is late September and September itself just met) still
+    # moved the prevailing rate, and skipping it would silently leave the anchor's
+    # PRE-hike/cut rate feeding straight into the first upcoming meeting instead of the
+    # real current rate. All of them are priced so the chain is correct; only the
+    # upcoming subset is returned for display.
+    chain_meetings = [m for m in FOMC_MEETINGS if pd.Period(m.end_date, freq="M") > anchor_month]
+    chain_dates = [pd.Timestamp(m.end_date) for m in chain_meetings]
+    chain_months = {pd.Period(d, freq="M") for d in chain_dates}
     # infra.analytics.wirp.meeting_schedule prefers reading the FLAT month right after
     # a meeting (no day-weighting needed there) over day-weighting the meeting's own
     # month - so its rate needs to be fetched too, not just the meeting months
@@ -156,32 +179,26 @@ def build_schedule(
     # reintroducing the exact bug this preference was built to avoid (a real meeting
     # hiding in a month we wrongly assumed was flat).
     next_months = {
-        m + 1 for m in meeting_months
-        if (m + 1) not in meeting_months and (m + 1) <= last_known_month
+        m + 1 for m in chain_months
+        if (m + 1) not in chain_months and (m + 1) <= last_known_month
     }
-    needed_months = sorted(meeting_months | next_months)
+    needed_months = sorted(chain_months | next_months)
 
-    contracts = zq_contracts(contracts_file)
     month_tickers = month_contract_map(needed_months, contracts)
     if not month_tickers:
         return pd.DataFrame(), {
-            **empty_meta,
+            **empty_meta, "anchor_month": str(anchor_month), "anchor_rate": anchor_rate,
             "status": "No cached ZQ contracts for any upcoming meeting month yet - run "
                       "scripts/update_futures.py / scripts/update_daily.py for ZQ first.",
         }
 
-    rate_fn = (lambda mt: close_rates(mt, root=close_root)) if mode == "close" else (lambda mt: live_rates(mt, root=live_root))
     rates, as_of = rate_fn(month_tickers)
-    anchor = find_anchor(needed_months[0], contracts, rate_fn, all_meeting_months)
-    if anchor is None:
-        return pd.DataFrame(), {
-            **empty_meta, "as_of": as_of,
-            "status": "No flat (non-meeting) ZQ contract cached before the first upcoming "
-                      "meeting to anchor the current rate - fetch an earlier month.",
-        }
-    anchor_month, anchor_rate = anchor
+    full_schedule = wirp.meeting_schedule(rates, chain_dates, anchor_rate)
+    # Already-past meetings were priced only to chain the rate correctly - trim them
+    # before returning; they're realized history now, not an upcoming prediction.
+    upcoming_set = set(upcoming_dates)
+    schedule = full_schedule[full_schedule["meeting_date"].isin(upcoming_set)].reset_index(drop=True)
 
-    schedule = wirp.meeting_schedule(rates, meeting_dates, anchor_rate)
     priced = schedule["meeting_date"].nunique() if not schedule.empty else 0
     meta = {
         "mode": mode, "as_of": as_of, "anchor_month": str(anchor_month), "anchor_rate": anchor_rate,

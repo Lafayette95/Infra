@@ -160,6 +160,58 @@ def test_build_schedule_end_to_end_with_synthetic_data(tmp_path):
     assert meta["as_of"] == D("2025-12-01")
 
 
+def test_build_schedule_chains_through_an_already_past_meeting(tmp_path):
+    """Regression test for a real bug a user caught 2026-09-28: 'today' sits right
+    after September's meeting already happened (real schedule: Sep 15-16 2026) but
+    before October's (Oct 27-28). The anchor walks back PAST September to the nearest
+    flat month (August) - September's own hike/cut must still be chained through when
+    pricing October, not silently dropped just because September itself is no longer
+    "upcoming"."""
+    contracts_file = tmp_path / "contracts.parquet"
+    daily_root = tmp_path / "Daily"
+    _write_contracts(contracts_file, [
+        ("ZQQ6", "2026-08-31"), ("ZQU6", "2026-09-30"),
+        ("ZQX6", "2026-11-30"), ("ZQZ6", "2026-12-31"),
+    ])
+    _write_daily(daily_root, "ZQQ6", "2026-08-15", 100.0 - 4.00)  # Aug: flat anchor
+
+    # September meets 2026-09-16 (30-day month); construct EXACTLY a +25bp hike.
+    sep_avg = (4.00 * 16 + 4.25 * (30 - 16)) / 30
+    _write_daily(daily_root, "ZQU6", "2026-09-20", 100.0 - sep_avg)
+
+    # November is flat (no meeting) - read directly as October's post-meeting rate:
+    # another +25bp on top of September's solved 4.25%, i.e. 4.50%.
+    _write_daily(daily_root, "ZQX6", "2026-11-01", 100.0 - 4.50)
+
+    # December meets 2026-12-09 (31-day month, Jan 2027 uncached/beyond config so this
+    # falls back to day-weighting its own month) - constructed as an exact hold.
+    _write_daily(daily_root, "ZQZ6", "2026-12-01", 100.0 - 4.50)
+
+    schedule, meta = build_schedule(
+        "close", today=D("2026-09-20"), contracts_file=contracts_file, close_root=daily_root,
+    )
+
+    assert meta["anchor_month"] == "2026-08"
+    assert meta["anchor_rate"] == pytest.approx(4.00)
+    assert set(schedule["month"]) == {"2026-10", "2026-12"}  # September itself not shown - it's past
+
+    oct_row = schedule[schedule["month"] == "2026-10"].loc[lambda d: d["probability"].idxmax()]
+    assert oct_row["method"] == "next_month_flat"
+    # The crux of the fix: October's PRE-rate must be September's solved ~4.25%, not
+    # August's un-chained anchor of 4.00% - a bug would show pre_rate == 4.00 here.
+    # (Loose-ish tolerance: settlement prices round-trip through fixed-point ×10000
+    # storage, CLAUDE.md 6b, leaving a tiny residual.)
+    assert oct_row["pre_rate"] == pytest.approx(4.25, abs=1e-3)
+    assert oct_row["implied_rate"] == pytest.approx(4.50, abs=1e-3)
+    assert oct_row["outcome_bps"] == pytest.approx(25.0, abs=1.0)
+    assert oct_row["probability"] > 0.99
+
+    dec_row = schedule[schedule["month"] == "2026-12"].loc[lambda d: d["probability"].idxmax()]
+    assert dec_row["method"] == "day_weighted"
+    assert dec_row["pre_rate"] == pytest.approx(4.50, abs=1e-3)
+    assert dec_row["outcome_bps"] == pytest.approx(0.0, abs=1.0)
+
+
 def test_build_schedule_never_treats_a_month_past_fomc_meetings_as_flat(tmp_path):
     """The LAST meeting in infra.config.FOMC_MEETINGS (2026-12-09) must fall back to
     day-weighting its own month, never read January 2027 as if it were confirmed
@@ -196,7 +248,9 @@ def test_build_schedule_empty_when_nothing_cached(tmp_path):
         contracts_file=tmp_path / "contracts.parquet", close_root=tmp_path / "Daily",
     )
     assert schedule.empty
-    assert "no cached zq contracts" in meta["status"].lower()
+    # find_anchor now runs first (needed to know the chain), so with nothing cached at
+    # all it's the anchor lookup that reports the gap, not the meeting-month fetch.
+    assert "anchor" in meta["status"].lower()
 
 
 def test_build_schedule_rejects_unknown_mode():
