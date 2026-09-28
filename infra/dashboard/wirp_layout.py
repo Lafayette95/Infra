@@ -58,9 +58,13 @@ def build_layout() -> html.Div:
                 html.Strong("Per-meeting, not a full joint tree."),
                 " CME's own FedWatch builds a cross-meeting probability tree enforcing "
                 "a consistent joint path; this page decomposes each meeting's own "
-                "implied change independently into the two nearest 25bp outcomes "
-                "instead - exact for a single meeting's marginal probabilities, but not "
-                "the same as a joint multi-meeting distribution.",
+                "implied change independently instead. The nearest meeting is "
+                "effectively bootstrapped from the front of the curve either way, so "
+                "the two methods should land close together there (checked against "
+                "real FedWatch numbers: ~0.2bp apart) - the difference matters more for "
+                "later meetings, and for genuinely joint questions like \"probability "
+                "of at least 50bp of total cuts by year-end\", which this page doesn't "
+                "attempt.",
             ]),
             html.P([
                 html.Strong("Live mode is not a real-time feed"),
