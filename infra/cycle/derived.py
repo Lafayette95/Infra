@@ -22,7 +22,7 @@ import pandas as pd
 from infra.cycle.checks import revision_check
 from infra.cycle.core import Check, Step, StepContext
 from infra.cycle.paths import CyclePaths
-from infra.dashboard.wirp_selectors import available_days, build_schedule
+from infra.pipeline.wirp import available_days, build_schedule
 from infra.storage import parquet_store
 
 # (rows with a "timestamp" column = the as-of day, {day: why no rows}) over [start, end]

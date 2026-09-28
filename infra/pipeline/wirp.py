@@ -1,7 +1,12 @@
-"""Data plumbing for the WIRP (Fed rate-probability) page: reads directly from
-already-cached Database data, LIVE or CLOSE (no Dash imports; unit-testable). Never
-fetches - populate ZQ data first via scripts/update_futures.py (LIVE) and
-scripts/update_daily.py (CLOSE). See CLAUDE.md section 11.
+"""WIRP (Fed rate-probability) data layer: reads already-cached ZQ settlements (CLOSE)
+or 1-minute bars (LIVE) and builds the per-meeting schedule with infra.analytics.wirp.
+Never fetches - populate ZQ data first (scripts/update_futures.py for LIVE, the daily
+cycle or scripts/update_daily.py for CLOSE). See CLAUDE.md sections 11 and 12.
+
+Used by BOTH the dashboard page (infra/dashboard/wirp_*) and the daily cycle
+(infra.cycle.derived) - which is why it lives here and not under infra/dashboard: the
+dependency direction is dashboard -> pipeline, never the reverse (CLAUDE.md section 3).
+It started as infra/dashboard/wirp_selectors.py.
 
 Every read function takes its storage root/contracts-file as an explicit keyword
 default (the real config paths) rather than reaching for the config constant inside
@@ -61,7 +66,7 @@ def _latest_rates(
     This ``as_of`` cutoff is what makes the function usable for BOTH live dashboard
     use (the default) and a point-in-time historical backfill (an explicit ``as_of``) -
     see CLAUDE.md section 3's "point-in-time cutoff" convention, and
-    infra.dashboard.wirp_selectors.backfill_schedule for the worked example. Without
+    infra.pipeline.wirp.backfill_schedule for the worked example. Without
     it, asking "what did this look like on day X" would silently read whatever the
     LATEST cached row happens to be regardless of X - look-ahead bias, not history.
     """

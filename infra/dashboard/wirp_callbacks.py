@@ -1,5 +1,5 @@
 """Dash callbacks for the WIRP page. Reads directly from cached Database data via
-infra.dashboard.wirp_selectors (LIVE or CLOSE, switched by the mode toggle) - never
+infra.pipeline.wirp (LIVE or CLOSE, switched by the mode toggle) - never
 fetches (CLAUDE.md section 11); this page is a read-only viewer.
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from dash import Dash, Input, Output, html
 
 from infra.analytics.wirp import modal_outcome
 from infra.dashboard import wirp_charts
-from infra.dashboard.wirp_selectors import build_schedule
+from infra.pipeline.wirp import build_schedule
 
 log = logging.getLogger(__name__)
 

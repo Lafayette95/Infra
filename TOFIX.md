@@ -154,3 +154,32 @@ dependency; its CME rates / CBOT / Eurex calendars would need verifying against 
 exchanges' own holiday notices, per this project's verify-first habit); (2) a hand-kept
 holiday list per dataset in `infra/config.py` with source URLs, like `FOMC_MEETINGS`.
 Either lets `px_dataset_present` become a hard `fail` on non-holidays.
+
+---
+
+## Bond futures have no DV01 (so no pnl-per-DV01) - needs a CTD model
+
+**Found:** 2026-09-28, building the daily cycle's bmk step (CLAUDE.md 12).
+**Where:** `infra/cycle/bmk.py` (`_dv01`, the `RISK_MODELS["DV01"]` entry).
+**Status:** open, deliberately deferred - a CTD model is planned as a separate side
+project.
+
+**The issue:** a bond future's DV01 is the cheapest-to-deliver bond's DV01 divided by its
+conversion factor (roughly - plus delivery-option effects). That needs cash-bond
+reference data (deliverable basket, coupons, maturities, conversion factors) and CTD
+prices/yields, none of which this project sources. STIR futures don't have the problem
+(price = 100 - rate, so DV01 = point value x 0.01 exactly).
+
+**Current state:** every bond-futures risk row is stored with `value = NaN` and the reason
+in `method`; the warn-level `dv01_coverage` check lists the affected roots every run.
+Bond futures pnl in CURRENCY is unaffected and real (settlement change x point value);
+only `pnl_per_dv01` is NaN for them.
+
+**When the CTD model lands:** add it as the bond branch of `_dv01` (or a separate entry in
+`RISK_MODELS` dispatched by category), backfill `bmk_risk` then `bmk_pnl` over history -
+`pnl_per_dv01` fills in with no other change, since pnl already divides by the prior
+day's stored DV01.
+
+**Interim option considered, not taken:** an empirical DV01 from regressing futures
+price moves on a benchmark yield series (would need a yield feed - the natural first
+user of `backfill_daily_raw_data`). Rejected for now in favour of doing it properly.

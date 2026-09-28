@@ -17,7 +17,7 @@ from infra.cycle.runner import (
     DEFAULT_STEPS, _with_backup_last, run_daily_cycle, run_scheduled_daily, scheduled_windows,
 )
 from infra.cycle.universe import daily_universe, snapshot_grid_floor
-from infra.dashboard.wirp_selectors import build_schedule
+from infra.pipeline.wirp import build_schedule
 from infra.pipeline import daily as dl
 from infra.storage import contract_store, parquet_store
 

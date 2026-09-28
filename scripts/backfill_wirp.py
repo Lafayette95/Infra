@@ -2,7 +2,7 @@
 
 No API calls - reads whatever's already cached (populate it first via
 scripts/update_futures.py for LIVE, scripts/update_daily.py for CLOSE). Re-runs
-infra.dashboard.wirp_selectors.build_schedule for every cached trading day, so a
+infra.pipeline.wirp.build_schedule for every cached trading day, so a
 backfilled day is computed exactly the way the live dashboard would have shown it that
 day - see CLAUDE.md section 3's point-in-time cutoff convention.
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from infra.dashboard.wirp_selectors import backfill_schedule  # noqa: E402
+from infra.pipeline.wirp import backfill_schedule  # noqa: E402
 
 
 def main() -> int:

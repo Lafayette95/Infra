@@ -26,7 +26,7 @@ def _level_style(level: int, t: dict[str, str]) -> tuple[str, float]:
 def probability_figure(schedule: pd.DataFrame, meta: dict, theme: str = "light") -> go.Figure:
     """``schedule``: infra.analytics.wirp.meeting_schedule's long-format output.
     ``meta``: dict with ``mode``, ``as_of``, ``anchor_month``, ``anchor_rate`` (see
-    infra.dashboard.wirp_selectors.build_schedule) and, when empty, ``status`` as the
+    infra.pipeline.wirp.build_schedule) and, when empty, ``status`` as the
     placeholder message.
     """
     t = tokens(theme)

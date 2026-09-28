@@ -6,7 +6,7 @@ Pure functions only - no API calls, no pipeline/storage imports, no FOMC-calenda
 config (meeting dates are passed in as plain timestamps by the caller, matching
 infra.analytics.rnd/forward's convention of taking already-loaded data). Everything
 here works in RATE space (percent), not futures price - callers convert
-``100 - price`` at the boundary (see infra.dashboard.wirp_selectors).
+``100 - price`` at the boundary (see infra.pipeline.wirp).
 """
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ def meeting_schedule(
     of each meeting - CLAUDE.md section 11's day-weighting convention), any order.
     ``anchor_rate``: the prevailing rate (%) immediately before the first meeting here -
     typically derived from the nearest FLAT (no-meeting) month's own contract, so it
-    needs no day-weighting itself (see infra.dashboard.wirp_selectors.find_anchor).
+    needs no day-weighting itself (see infra.pipeline.wirp.find_anchor).
 
     For each meeting, the post-meeting rate is read two ways, in order of preference:
     1. ``post_meeting_rate_from_flat_month`` - the month right after the meeting, IF

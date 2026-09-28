@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from infra.dashboard import wirp_charts
-from infra.dashboard.wirp_selectors import (
+from infra.pipeline.wirp import (
     available_days, backfill_schedule, build_schedule, close_rates, contract_for_month,
     find_anchor, live_rates, month_contract_map,
 )
