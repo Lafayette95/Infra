@@ -174,7 +174,7 @@ def test_root_config_is_consistent():
     for key, cfg in FUTURES_ROOTS.items():
         assert key == cfg.root and cfg.parent == f"{key}.FUT" and cfg.dataset in datasets
         assert cfg.category in {"STIR", "Bonds"}
-    assert {"SR3", "ESR", "SO3", "ZT", "ZF", "ZN", "TN", "ZB", "UB",
+    assert {"SR3", "ESR", "SO3", "ZQ", "ZT", "ZF", "ZN", "TN", "ZB", "UB",
             "FGBL", "FGBM", "FGBS", "FBTP", "R"} == set(FUTURES_ROOTS)
     assert all(parse_relative(t) and parse_relative(t).root in FUTURES_ROOTS for t in DEFAULT_RELATIVE_TICKERS)
 

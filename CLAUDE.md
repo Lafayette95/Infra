@@ -46,7 +46,7 @@ When interacting with Databento payloads, map to these native schemas:
 ## 5. Reading Symbology Best Practices
 Stored/queried tickers are ABSOLUTE (Databento `raw_symbol`); relative tickers exist only in code:
 *   **Futures roots (parent symbol `<root>.FUT`), all in `FUTURES_ROOTS` (`infra/config.py`):**
-    *   STIR: `SR3` (3M SOFR), `ESR` (3M €STR) on `GLBX.MDP3`; `SO3` (3M SONIA) on `IFLL.IMPACT`.
+    *   STIR: `SR3` (3M SOFR), `ESR` (3M €STR), `ZQ` (30-Day Fed Funds — MONTHLY cycle, all 12 months, unlike everything else in this universe which is quarterly) on `GLBX.MDP3`; `SO3` (3M SONIA) on `IFLL.IMPACT`.
     *   US Treasuries (CBOT, on `GLBX.MDP3`): `ZT` (2Y), `ZF` (5Y), `ZN` (10Y), `TN` (Ultra 10Y), `ZB` (Classic Bond), `UB` (Ultra Bond).
     *   Eurex (`XEUR.EOBI`, data only from 2025-03-10): `FGBL` (Bund), `FGBM` (Bobl), `FGBS` (Schatz), `FBTP` (BTP). `GG` is NOT a valid Eurex root.
     *   ICE (`IFLL.IMPACT`, data from 2018-12-23): `R` = UK Long Gilt. `G`, `SOA` (1M SONIA) and `SON` are not used.

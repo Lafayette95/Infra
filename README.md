@@ -38,7 +38,7 @@ $PY -m pytest
 ## Supported futures (`FUTURES_ROOTS` in `infra/config.py`)
 | Category | Roots | Dataset |
 |---|---|---|
-| STIR | `SR3` (SOFR), `ESR` (€STR) | GLBX.MDP3 |
+| STIR | `SR3` (SOFR), `ESR` (€STR), `ZQ` (Fed Funds, monthly cycle) | GLBX.MDP3 |
 | STIR | `SO3` (SONIA) | IFLL.IMPACT |
 | US Treasuries | `ZT`, `ZF`, `ZN`, `TN` (Ultra 10Y), `ZB`, `UB` (Ultra Bond) | GLBX.MDP3 |
 | Eurex | `FGBL`, `FGBM`, `FGBS`, `FBTP` (data from 2025-03-10) | XEUR.EOBI |
