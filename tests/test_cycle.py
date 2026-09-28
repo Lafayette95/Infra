@@ -561,3 +561,42 @@ def test_bmk_presence_checks_every_settled_day_not_just_the_last(stir_env):
                       output=report.outcome("bmk_risk").output)
     passed, _, details = _presence(lambda p: p.bmk_root / "Risk", "risk")(ctx)
     assert not passed and set(details["timestamp"]) == {D("2025-01-07")}
+
+
+def test_px_fetches_run_concurrently_but_writes_never_overlap(env, monkeypatch):
+    import threading
+    import time
+    paths, fake, opts = env
+    state = {"in_fetch": 0, "max_fetch": 0, "in_store": 0, "max_store": 0}
+    lock = threading.Lock()
+
+    def slow_fetch(*a, **k):
+        with lock:
+            state["in_fetch"] += 1
+            state["max_fetch"] = max(state["max_fetch"], state["in_fetch"])
+        time.sleep(0.3)
+        try:
+            return fake(*a, **k)
+        finally:
+            with lock:
+                state["in_fetch"] -= 1
+
+    real_store = dl.store_daily_raw
+
+    def watched_store(*a, **k):
+        with lock:
+            state["in_store"] += 1
+            state["max_store"] = max(state["max_store"], state["in_store"])
+        try:
+            return real_store(*a, **k)
+        finally:
+            with lock:
+                state["in_store"] -= 1
+
+    monkeypatch.setattr(api, "fetch_statistics", slow_fetch)
+    monkeypatch.setattr(dl, "store_daily_raw", watched_store)
+    out = backfill_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS,
+                                 refresh_contracts=False, workers=3)
+    assert not out["fetch_errors"] and out["rows"] > 0
+    assert state["max_fetch"] == 3   # all three contracts in flight at once
+    assert state["max_store"] == 1   # file writes strictly one at a time

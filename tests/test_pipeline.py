@@ -152,3 +152,15 @@ def test_prune_rows_on_a_datetime_column_matches_by_value_not_string_form(tmp_pa
     removed = parquet_store.prune_rows(tmp_path, "timestamp", [pd.Timestamp("2025-01-06")])
     out = parquet_store.read_partitioned(tmp_path)
     assert removed == 1 and list(out["v"]) == [2]
+
+
+def test_orphaned_temp_file_in_a_partition_is_never_read_as_data(tmp_path):
+    """A run killed mid-write leaves its temp file behind; reads must ignore it."""
+    from infra.storage import parquet_store
+    keys = ["timestamp", "ticker"]
+    df = pd.DataFrame({"timestamp": pd.to_datetime(["2025-01-06"]).astype("datetime64[ms]"),
+                       "ticker": ["A"], "v": [1]})
+    written = parquet_store.write_partitioned(df, tmp_path, keys)[0]
+    (written.parent / f".{written.name}.tmp").write_bytes(b"not parquet - a torn write")
+    out = parquet_store.read_partitioned(tmp_path)
+    assert list(out["v"]) == [1]

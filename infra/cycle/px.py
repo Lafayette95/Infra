@@ -4,6 +4,8 @@ the cycle's point-in-time contract universe, through the existing daily pipeline
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import numpy as np
 import pandas as pd
 
@@ -28,6 +30,11 @@ OUTLIER_MIN_HISTORY = 20
 # their prior day from earlier runs instead - widening their fetch would silently turn
 # the scheduled run's T-3 revision window into a much longer one.
 PRIOR_SETTLEMENT_DAYS = 7
+# Contracts fetched concurrently. Databento answers each request with a latency that can
+# be tens of seconds (2026-09-28: ~85s per one-contract statistics request), so a
+# strictly sequential loop over ~150 contracts took hours. Only the NETWORK half runs in
+# parallel; every file write stays sequential on the calling thread.
+PX_FETCH_WORKERS = 8
 
 
 def fetch_window(m: UniverseMember, start: pd.Timestamp, end: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -74,6 +81,7 @@ def backfill_daily_px_data(
     specs: dict[str, DailyBackfillSpec] = DAILY_BACKFILL,
     max_cost_usd: float = MAX_COST_USD,
     client=None,
+    workers: int = PX_FETCH_WORKERS,
 ) -> dict:
     """Settlement/OI for every universe contract over the days it is in the universe,
     within ``[start, end]`` (inclusive). Per-contract failures are collected, not raised,
@@ -88,21 +96,27 @@ def backfill_daily_px_data(
     fetch_errors: dict[str, str] = {}
     rows = 0
     if fetch_missing:
+        work = {}
         for m in members.values():
             w0, w1 = fetch_window(m, start, end)
-            try:
-                gaps = dl.plan_daily_update(
-                    m.ticker, w0, w1, coverage_file=paths.daily_futures_coverage,
-                    force_refetch=force_refetch,
-                )
-                if gaps:
-                    rows += dl.fetch_and_store_daily(
-                        m.ticker, gaps, dataset=m.dataset, root=paths.daily_futures_dir,
-                        coverage_file=paths.daily_futures_coverage, max_cost_usd=max_cost_usd,
-                        client=client,
-                    )
-            except Exception as exc:
-                fetch_errors[m.ticker] = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
+            gaps = dl.plan_daily_update(m.ticker, w0, w1, coverage_file=paths.daily_futures_coverage,
+                                        force_refetch=force_refetch)
+            if gaps:
+                work[m.ticker] = (m, gaps)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="px-fetch") as pool:
+            futures = {
+                pool.submit(dl.fetch_daily_raw, t, gaps, dataset=m.dataset,
+                            max_cost_usd=max_cost_usd, client=client): t
+                for t, (m, gaps) in work.items()
+            }
+            for fut in as_completed(futures):  # store each as it lands, one at a time
+                ticker = futures[fut]
+                try:
+                    rows += dl.store_daily_raw(ticker, fut.result(), dataset=work[ticker][0].dataset,
+                                               root=paths.daily_futures_dir,
+                                               coverage_file=paths.daily_futures_coverage)
+                except Exception as exc:
+                    fetch_errors[ticker] = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
     return {"members": members, "universe_errors": universe_errors, "fetch_errors": fetch_errors,
             "rows": rows, "available_end": _availability(members, end, client) if fetch_missing else {}}
 
@@ -249,8 +263,8 @@ def _run(ctx: StepContext) -> dict:
     opts = ctx.options
     return backfill_daily_px_data(
         ctx.start, ctx.end, paths=ctx.paths, force_refetch=ctx.force_refetch,
-        **{k: opts[k] for k in ("fetch_missing", "refresh_contracts", "specs", "max_cost_usd", "client")
-           if k in opts},
+        **{k: opts[k] for k in ("fetch_missing", "refresh_contracts", "specs", "max_cost_usd", "client",
+                                "workers") if k in opts},
     )
 
 

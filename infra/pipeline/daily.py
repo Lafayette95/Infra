@@ -64,6 +64,64 @@ def plan_daily_update(
     return find_missing_ranges(requested, coverage_store.read_covered(coverage_file, ticker))
 
 
+# (range_start, range_end, covered_end, raw statistics rows) per queried range
+Fetched = list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.DataFrame]]
+
+
+def fetch_daily_raw(
+    ticker: str,
+    ranges: list[Interval],
+    *,
+    dataset: str,
+    max_cost_usd: float = MAX_COST_USD,
+    client=None,
+) -> Fetched:
+    """NETWORK ONLY: query the API for ``ranges`` (each bounded by availability); touches
+    no files, so callers may run many of these concurrently (infra.cycle.px does)."""
+    out: Fetched = []
+    for range_start, range_end in ranges:
+        query_end, covered_end = bounded_by_availability(dataset, range_end, client)
+        if query_end <= range_start:
+            continue  # nothing in this range is queryable yet; not covered, retried later
+        raw = api.fetch_statistics(
+            dataset, ticker, range_start, query_end, max_cost_usd=max_cost_usd, client=client
+        )
+        out.append((range_start, range_end, covered_end, raw))
+    return out
+
+
+def store_daily_raw(
+    ticker: str,
+    fetched: Fetched,
+    *,
+    dataset: str,
+    root: Path = DAILY_FUTURES_DIR,
+    coverage_file: Path = DAILY_FUTURES_COVERAGE_FILE,
+    prune: bool = False,
+) -> int:
+    """FILES ONLY: clean, save and record coverage for what ``fetch_daily_raw`` returned.
+    Read-modify-writes shared partition files - never run two of these concurrently.
+
+    ``prune=True`` first deletes this ticker's entire stored history AND its coverage
+    record, so afterwards both describe exactly the ranges fetched here (done once, up
+    front - pruning per range would wipe the previous range's rows).
+    """
+    if prune:
+        parquet_store.prune_rows(root, "ticker", [ticker])
+        coverage_store.clear_key(coverage_file, ticker)
+    rows = 0
+    for range_start, range_end, covered_end, raw in fetched:
+        clean = stats.clean_daily_statistics(raw, ticker, dataset)
+        parquet_store.write_partitioned(stats.encode_daily(clean), root, stats.DAILY_KEYS)
+        # Recorded even when empty (holidays, or a contract not yet publishing stats)
+        # so we never pay to re-ask - but never past the last COMPLETE available day.
+        if covered_end > range_start:
+            coverage_store.record_covered(coverage_file, ticker, [(range_start, covered_end)])
+        rows += len(clean)
+        log.info("%s %s->%s: %d daily rows saved", ticker, range_start.date(), range_end.date(), len(clean))
+    return rows
+
+
 def fetch_and_store_daily(
     ticker: str,
     ranges: list[Interval],
@@ -76,31 +134,10 @@ def fetch_and_store_daily(
     prune: bool = False,
 ) -> int:
     """Query the API for ``ranges``, save to parquet, record coverage. Returns rows saved.
-
-    ``prune=True`` first deletes this ticker's entire stored history AND its coverage
-    record, so afterwards both describe exactly the ranges fetched here (done once, up
-    front - pruning per range would wipe the previous range's rows).
-    """
-    if prune:
-        parquet_store.prune_rows(root, "ticker", [ticker])
-        coverage_store.clear_key(coverage_file, ticker)
-    rows = 0
-    for range_start, range_end in ranges:
-        query_end, covered_end = bounded_by_availability(dataset, range_end, client)
-        if query_end <= range_start:
-            continue  # nothing in this range is queryable yet; not covered, retried later
-        raw = api.fetch_statistics(
-            dataset, ticker, range_start, query_end, max_cost_usd=max_cost_usd, client=client
-        )
-        clean = stats.clean_daily_statistics(raw, ticker, dataset)
-        parquet_store.write_partitioned(stats.encode_daily(clean), root, stats.DAILY_KEYS)
-        # Recorded even when empty (holidays, or a contract not yet publishing stats)
-        # so we never pay to re-ask - but never past the last COMPLETE available day.
-        if covered_end > range_start:
-            coverage_store.record_covered(coverage_file, ticker, [(range_start, covered_end)])
-        rows += len(clean)
-        log.info("%s %s->%s: %d daily rows saved", ticker, range_start.date(), range_end.date(), len(clean))
-    return rows
+    = ``store_daily_raw(fetch_daily_raw(...))`` - the two halves are separate so a caller
+    can parallelise the network part while keeping the file writes sequential."""
+    fetched = fetch_daily_raw(ticker, ranges, dataset=dataset, max_cost_usd=max_cost_usd, client=client)
+    return store_daily_raw(ticker, fetched, dataset=dataset, root=root, coverage_file=coverage_file, prune=prune)
 
 
 _RECENT = pd.Timedelta(days=7)

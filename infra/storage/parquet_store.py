@@ -82,7 +82,10 @@ def read_partitioned(
 
 def _atomic_write(df: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    # Dot-prefixed so pyarrow's dataset discovery (which skips "." / "_" names) never
+    # reads an in-flight or orphaned temp file as data - a concurrent reader (the
+    # dashboard during a cycle write) or a run killed mid-write would otherwise see it.
+    tmp = path.with_name(f".{path.name}.tmp")
     df.to_parquet(
         tmp,
         engine="pyarrow",
