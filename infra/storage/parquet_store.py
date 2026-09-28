@@ -109,7 +109,15 @@ def prune_rows(root: Path, column: str, values: Iterable) -> int:
         part = pd.read_parquet(path, engine="pyarrow")
         if column not in part.columns:
             continue
-        keep = ~part[column].astype(str).isin({str(v) for v in values})
+        col = part[column]
+        if pd.api.types.is_datetime64_any_dtype(col):
+            # typed, not string, comparison: astype(str) renders an all-midnight column
+            # as "2026-09-23" while str(Timestamp) gives "2026-09-23 00:00:00" - a string
+            # match silently prunes nothing
+            match = col.isin(pd.to_datetime(list(values)))
+        else:
+            match = col.astype(str).isin({str(v) for v in values})
+        keep = ~match
         removed += int((~keep).sum())
         if keep.all():
             continue

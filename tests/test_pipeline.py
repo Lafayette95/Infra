@@ -140,3 +140,15 @@ def test_write_partitioned_prune_true_wipes_only_incoming_tickers_across_partiti
     parquet_store.write_partitioned(new, tmp_path, keys, prune=True)
     out = parquet_store.read_partitioned(tmp_path)
     assert sorted(zip(out["ticker"], out["v"])) == [("A", 5), ("B", 9)]
+
+
+def test_prune_rows_on_a_datetime_column_matches_by_value_not_string_form(tmp_path):
+    """Regression: string matching silently pruned nothing on an all-midnight datetime
+    column (astype(str) -> '2025-01-06' vs str(Timestamp) -> '2025-01-06 00:00:00')."""
+    from infra.storage import parquet_store
+    ts = pd.to_datetime(["2025-01-06", "2025-01-07"]).astype("datetime64[ms]")
+    parquet_store.write_partitioned(pd.DataFrame({"timestamp": ts, "ticker": ["A", "A"], "v": [1, 2]}),
+                                    tmp_path, ["timestamp", "ticker"])
+    removed = parquet_store.prune_rows(tmp_path, "timestamp", [pd.Timestamp("2025-01-06")])
+    out = parquet_store.read_partitioned(tmp_path)
+    assert removed == 1 and list(out["v"]) == [2]

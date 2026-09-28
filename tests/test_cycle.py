@@ -17,6 +17,7 @@ from infra.cycle.runner import (
     DEFAULT_STEPS, _with_backup_last, run_daily_cycle, run_scheduled_daily, scheduled_windows,
 )
 from infra.cycle.universe import daily_universe, snapshot_grid_floor
+from infra.dashboard.wirp_selectors import build_schedule
 from infra.pipeline import daily as dl
 from infra.storage import contract_store, parquet_store
 
@@ -287,3 +288,106 @@ def test_px_standalone_function_usable_without_runner(env):
     paths, fake, _ = env
     out = backfill_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS, refresh_contracts=False)
     assert out["rows"] > 0 and not out["fetch_errors"]
+
+
+# ------------------------------------------------------------------------- derived: WIRP
+from infra.cycle.derived import DERIVED_METRICS, backfill_daily_derived  # noqa: E402
+from infra.processing import statistics as stats  # noqa: E402
+
+ZQ = [("ZQQ6", "2026-08-31"), ("ZQU6", "2026-09-30"), ("ZQV6", "2026-10-30"),
+      ("ZQX6", "2026-11-30"), ("ZQZ6", "2026-12-31")]
+WEEK = pd.date_range("2026-09-21", "2026-09-25")  # after Sep 16's meeting, before Oct 28's
+
+
+def _settle(paths, rows) -> None:
+    """rows: (ticker, day, price) written straight to the daily store (no API)."""
+    df = pd.DataFrame(rows, columns=["ticker", "timestamp", "settlement_price"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"]).astype("datetime64[ms]")
+    df["open_interest"] = pd.array([None] * len(df), dtype="Int64")
+    parquet_store.write_partitioned(stats.encode_daily(df[stats.DAILY_COLUMNS]),
+                                    paths.daily_futures_dir, stats.DAILY_KEYS)
+
+
+@pytest.fixture
+def zq_env(tmp_path):
+    """A flat 4.00% curve: every meeting prices an exact hold. Uses the REAL
+    FOMC_MEETINGS schedule (Sep 16 past, Oct 28 and Dec 9 upcoming)."""
+    paths = CyclePaths.under(tmp_path / "db")
+    _contracts(paths, "ZQ", ZQ)
+    _settle(paths, [("ZQQ6", "2026-08-28", 96.0)])  # August: the flat anchor month
+    _settle(paths, [(t, d, 96.0) for t, _ in ZQ[1:] for d in WEEK])
+    return paths
+
+
+def _wirp(paths) -> pd.DataFrame:
+    return parquet_store.read_partitioned(paths.wirp_dir)
+
+
+def test_derived_persists_wirp_for_every_day_with_settlements(zq_env):
+    report = run_daily_cycle(WEEK[0], WEEK[-1], steps=["derived"], run_day=WEEK[-1], paths=zq_env)
+    assert report.ok, report.summary()
+    df = _wirp(zq_env)
+    assert sorted(df["timestamp"].unique()) == list(WEEK)
+    held = df[df["outcome_step"] == 0]
+    assert (held["probability"] == 1.0).all()  # flat curve -> certain hold everywhere
+    assert set(df["meeting_date"].dt.date.astype(str)) == {"2026-10-28", "2026-12-09"}
+
+
+def test_derived_output_matches_the_dashboard_function_exactly(zq_env):
+    """No second WIRP implementation: the stored rows ARE build_schedule's output."""
+    backfill_daily_derived(WEEK[0], WEEK[-1], paths=zq_env)
+    stored = _wirp(zq_env)
+    stored = stored[stored["timestamp"] == WEEK[2]].sort_values(["meeting_date", "outcome_step"])
+    direct, _ = build_schedule("close", today=WEEK[2], contracts_file=zq_env.contracts_file,
+                               close_root=zq_env.daily_futures_dir)
+    direct = direct.sort_values(["meeting_date", "outcome_step"])
+    assert list(stored["probability"]) == pytest.approx(list(direct["probability"]))
+    assert list(stored["implied_rate"]) == pytest.approx(list(direct["implied_rate"]))
+
+
+def test_recomputed_day_replaces_its_rows_no_stale_outcome_levels(zq_env):
+    day = WEEK[2]
+    # November (backing October's meeting) priced 12.5bp higher -> a 50/50 hold/+25 split
+    _settle(zq_env, [("ZQX6", day, 95.875)])
+    backfill_daily_derived(day, day, paths=zq_env)
+    before = _wirp(zq_env)
+    assert len(before[(before["timestamp"] == day) & (before["meeting_date"] == D("2026-10-28"))]) == 2
+
+    _settle(zq_env, [("ZQX6", day, 96.0)])  # revised back to flat -> a single hold level
+    backfill_daily_derived(day, day, paths=zq_env)
+    after = _wirp(zq_env)
+    octo = after[(after["timestamp"] == day) & (after["meeting_date"] == D("2026-10-28"))]
+    assert list(octo["outcome_step"]) == [0] and octo["probability"].iloc[0] == 1.0
+
+
+def test_derived_revision_detected_against_previous_vintage(zq_env):
+    assert run_daily_cycle(WEEK[0], WEEK[-1], steps=["derived", "backup"], run_day=WEEK[-1], paths=zq_env).ok
+    _settle(zq_env, [("ZQX6", WEEK[1], 95.875)])  # an input changes for an already-computed day
+    report = run_daily_cycle(WEEK[0], WEEK[-1], steps=["derived", "backup"],
+                             run_day=WEEK[-1] + pd.Timedelta(days=3), paths=zq_env)
+    rev = next(c for c in report.outcome("derived").checks if c.name == "wirp_no_revisions")
+    assert not rev.passed and set(rev.details["timestamp"]) == {WEEK[1]}
+    assert report.outcome("backup").status == "skipped"
+
+
+def test_derived_presence_fails_with_the_reason_when_anchor_is_missing(tmp_path):
+    paths = CyclePaths.under(tmp_path / "db")
+    _contracts(paths, "ZQ", ZQ)
+    _settle(paths, [(t, d, 96.0) for t, _ in ZQ[1:] for d in WEEK])  # no August anchor
+    report = run_daily_cycle(WEEK[0], WEEK[-1], steps=["derived"], run_day=WEEK[-1], paths=paths)
+    pres = next(c for c in report.outcome("derived").checks if c.name == "wirp_present")
+    assert not pres.passed and len(pres.details) == len(WEEK)
+    assert pres.details["reason"].str.contains("anchor").all()
+
+
+def test_wirp_implausible_move_check(zq_env):
+    _settle(zq_env, [("ZQX6", d, 93.0) for d in WEEK])  # November at 7% vs a 4% anchor
+    report = run_daily_cycle(WEEK[0], WEEK[-1], steps=["derived"], run_day=WEEK[-1], paths=zq_env)
+    moves = next(c for c in report.outcome("derived").checks if c.name == "wirp_moves_plausible")
+    assert not moves.passed
+
+
+def test_derived_depends_on_px_and_raw():
+    from infra.cycle.derived import DERIVED_STEP
+    assert set(DERIVED_STEP.depends_on) == {"px", "raw"}
+    assert "wirp" in DERIVED_METRICS
