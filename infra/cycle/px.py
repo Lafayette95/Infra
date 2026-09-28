@@ -7,7 +7,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from infra.config import DAILY_BACKFILL, MAX_COST_USD, DailyBackfillSpec
+from infra.api import databento_client as api
+from infra.config import DAILY_BACKFILL, MAX_COST_USD, SCHEMA_STATISTICS, DailyBackfillSpec
 from infra.cycle.checks import revision_check
 from infra.cycle.core import Check, Severity, Step, StepContext
 from infra.cycle.paths import CyclePaths
@@ -27,6 +28,39 @@ OUTLIER_MIN_HISTORY = 20
 # their prior day from earlier runs instead - widening their fetch would silently turn
 # the scheduled run's T-3 revision window into a much longer one.
 PRIOR_SETTLEMENT_DAYS = 7
+
+
+def fetch_window(m: UniverseMember, start: pd.Timestamp, end: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """``[w0, w1)`` to fetch for one member: its universe days within the window, plus
+    PRIOR_SETTLEMENT_DAYS before its first day if it rolls in mid-window."""
+    w0, w1 = max(m.first, start), min(m.last, end) + _ONE_DAY
+    if m.first > start:
+        w0 -= pd.Timedelta(days=PRIOR_SETTLEMENT_DAYS)
+    return w0, w1
+
+
+def plan_daily_px_data(
+    start,
+    end,
+    *,
+    paths: CyclePaths | None = None,
+    force_refetch: bool = False,
+    specs: dict[str, DailyBackfillSpec] = DAILY_BACKFILL,
+) -> tuple[dict[str, tuple[UniverseMember, list]], dict[str, str]]:
+    """What ``backfill_daily_px_data`` WOULD fetch - ``{ticker: (member, gaps)}`` for
+    tickers with something to fetch, plus universe errors. No API, no definitions pulled
+    (uses the contracts already on disk), so a dry run is free."""
+    paths = paths or CyclePaths.default()
+    start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
+    members, errors = daily_universe(start, end, paths=paths, specs=specs, refresh_contracts=False)
+    plan = {}
+    for m in members.values():
+        w0, w1 = fetch_window(m, start, end)
+        gaps = dl.plan_daily_update(m.ticker, w0, w1, coverage_file=paths.daily_futures_coverage,
+                                    force_refetch=force_refetch)
+        if gaps:
+            plan[m.ticker] = (m, gaps)
+    return plan, errors
 
 
 def backfill_daily_px_data(
@@ -55,9 +89,7 @@ def backfill_daily_px_data(
     rows = 0
     if fetch_missing:
         for m in members.values():
-            w0, w1 = max(m.first, start), min(m.last, end) + _ONE_DAY
-            if m.first > start:
-                w0 -= pd.Timedelta(days=PRIOR_SETTLEMENT_DAYS)
+            w0, w1 = fetch_window(m, start, end)
             try:
                 gaps = dl.plan_daily_update(
                     m.ticker, w0, w1, coverage_file=paths.daily_futures_coverage,
@@ -71,8 +103,22 @@ def backfill_daily_px_data(
                     )
             except Exception as exc:
                 fetch_errors[m.ticker] = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
-    return {"members": members, "universe_errors": universe_errors,
-            "fetch_errors": fetch_errors, "rows": rows}
+    return {"members": members, "universe_errors": universe_errors, "fetch_errors": fetch_errors,
+            "rows": rows, "available_end": _availability(members, end, client) if fetch_missing else {}}
+
+
+def _availability(members: dict[str, UniverseMember], end: pd.Timestamp, client) -> dict[str, pd.Timestamp]:
+    """Each dataset's advertised available end, recorded for the presence check - only
+    looked up when the window reaches the present (history backfills never need it)."""
+    if end < pd.Timestamp.now(tz="UTC").tz_localize(None).normalize() - pd.Timedelta(days=7):
+        return {}
+    out = {}
+    for ds in {m.dataset for m in members.values()}:
+        try:
+            out[ds] = api.available_end(ds, SCHEMA_STATISTICS, client)
+        except Exception:  # unknown availability -> the check falls back to the window end
+            pass
+    return out
 
 
 # ------------------------------------------------------------------------ checks
@@ -103,37 +149,62 @@ def _check_fetch_ok(ctx: StepContext):
     return False, f"{len(problems)} fetch error(s)", details
 
 
-def _expected_on(ctx: StepContext) -> tuple[pd.Timestamp, list[UniverseMember]]:
-    day = last_weekday(ctx.end)
-    return day, [m for m in _members(ctx).values() if day >= ctx.start and m.expected_on(day)]
+def complete_day(ctx: StepContext, dataset: str) -> pd.Timestamp:
+    """The latest weekday ``dataset`` has FULLY published within the window: the day before
+    its advertised available end (GLBX runs ~8h behind now, Eurex ~a day - see
+    api.available_end), capped at the window's end. Without a recorded availability
+    (history runs, offline tests), just the window's last weekday."""
+    available = ctx.output.get("available_end", {}).get(dataset)
+    cap = ctx.end if available is None else min(ctx.end, available.normalize() - _ONE_DAY)
+    return last_weekday(cap)
+
+
+def _expected(ctx: StepContext) -> dict[str, tuple[pd.Timestamp, list[UniverseMember]]]:
+    """``{dataset: (its complete day, members expected to have settled that day)}``."""
+    out = {}
+    for ds in sorted({m.dataset for m in _members(ctx).values()}):
+        day = complete_day(ctx, ds)
+        members = [m for m in _members(ctx).values()
+                   if m.dataset == ds and day >= ctx.start and m.expected_on(day)]
+        if members:
+            out[ds] = (day, members)
+    return out
+
+
+def _settled_on(ctx: StepContext) -> set[tuple[str, pd.Timestamp]]:
+    df = _settlements(ctx)
+    return set(zip(df["ticker"], df["timestamp"]))
 
 
 def _check_present(ctx: StepContext):
-    """Test (a). Only judged for datasets that published SOMETHING that day - a dataset
-    with nothing at all is ambiguous (holiday vs not-yet-published) and is reported by
-    the separate, warning-level px_dataset_present check instead."""
-    day, expected = _expected_on(ctx)
+    """Test (a): per dataset, every expected contract settled on the latest day that
+    dataset has fully published. Only judged for datasets that published SOMETHING that
+    day - nothing at all is ambiguous (exchange holiday) and is reported by the separate,
+    warning-level px_dataset_present check instead."""
+    expected, have = _expected(ctx), _settled_on(ctx)
     if not expected:
-        return True, "no contracts expected (window has no weekday)", None
-    have = _settlements(ctx)
-    have = set(have.loc[have["timestamp"] == day, "ticker"])
-    live_datasets = {m.dataset for m in expected if m.ticker in have}
-    missing = [m for m in expected if m.dataset in live_datasets and m.ticker not in have]
+        return True, "no contracts expected (window has no complete weekday)", None
+    missing, judged = [], []
+    for ds, (day, members) in expected.items():
+        if not any((m.ticker, day) in have for m in members):
+            continue
+        judged.append(f"{ds} {day.date()}")
+        missing += [(m.root, m.ticker, ds, day) for m in members if (m.ticker, day) not in have]
+    n = sum(len(ms) for _, ms in expected.values())
     if not missing:
-        return True, f"all {len(expected)} expected settlements present for {day.date()}", None
-    details = pd.DataFrame([(m.root, m.ticker, m.dataset) for m in missing], columns=["root", "ticker", "dataset"])
-    return False, f"{len(missing)} of {len(expected)} settlements missing for {day.date()}", details
+        return True, f"all {n} expected settlements present ({'; '.join(judged) or 'no dataset judged'})", None
+    details = pd.DataFrame(missing, columns=["root", "ticker", "dataset", "timestamp"])
+    return False, f"{len(missing)} of {n} expected settlements missing", details
 
 
 def _check_dataset_present(ctx: StepContext):
-    day, expected = _expected_on(ctx)
-    have = _settlements(ctx)
-    have = set(have.loc[have["timestamp"] == day, "ticker"])
-    empty = sorted({m.dataset for m in expected} - {m.dataset for m in expected if m.ticker in have})
+    expected, have = _expected(ctx), _settled_on(ctx)
+    empty = [f"{ds} on {day.date()}" for ds, (day, members) in expected.items()
+             if not any((m.ticker, day) in have for m in members)]
     if not empty:
-        return True, f"every dataset has settlements for {day.date()}", None
-    return False, (f"no settlements at all for {', '.join(empty)} on {day.date()} - exchange "
-                   f"holiday, or not published yet (no exchange calendar to tell them apart)"), None
+        return True, "every dataset has settlements for its latest complete day", None
+    return False, (f"no settlements at all for {', '.join(empty)} - exchange holiday, or a "
+                   f"publication problem (no exchange calendar to tell them apart)"), None
 
 
 def _check_sane(ctx: StepContext):

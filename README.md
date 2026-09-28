@@ -58,6 +58,14 @@ Prefer `.v.0` for bonds: the calendar front sits in an expiring, thin contract f
 
 `/rnd` and `/wirp` are read-only (never fetch) - populate their data first via
 `scripts/update_daily_options.py` and `scripts/update_futures.py` / `scripts/update_daily.py` respectively.
+## Daily cycle (CLAUDE.md section 12)
+```
+$PY scripts/run_daily_cycle.py --scheduled --dry-run              # free: price tonight's T-3..T run
+$PY scripts/run_daily_cycle.py --start 2026-06-01 --end 2026-09-25 # history backfill (px, raw, derived, bmk, backup)
+prefect server start                                                # then, in another shell:
+PREFECT_API_URL=http://127.0.0.1:4200/api $PY scripts/serve_daily_cycle.py   # Tue-Sat 10:00 UTC
+```
+
 `scripts/backfill_wirp.py` computes WIRP's historical time series outside the dashboard entirely (no API, no Dash - see CLAUDE.md section 3's "point-in-time cutoff" convention).
 
 ## Cost protection

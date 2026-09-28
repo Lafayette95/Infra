@@ -9,6 +9,7 @@ Cost guardrails enforced at this boundary:
 from __future__ import annotations
 
 import os
+import time
 from typing import Sequence
 
 import databento as db
@@ -198,6 +199,32 @@ def fetch_statistics(
     contract over ``[start, end)``. Long format: one row per (stat_type, update)."""
     validate_absolute_symbol(symbol)
     return _get_range(dataset, SCHEMA_STATISTICS, [symbol], start, end, "raw_symbol", max_cost_usd, client)
+
+
+_AVAILABLE_END_TTL_S = 300.0
+_available_end_cache: dict[tuple[str, str], tuple[float, pd.Timestamp]] = {}
+
+
+def available_end(dataset: str, schema: str, client: db.Historical | None = None) -> pd.Timestamp:
+    """The latest instant ``schema`` can be queried for on ``dataset`` (tz-naive UTC), from
+    the free ``metadata.get_dataset_range``. Any request ending after it is rejected
+    (422). Verified 2026-09-28 at 19:34 UTC: GLBX advertised 11:34:56 - exactly 8h behind
+    now - and requests ending anywhere past it were rejected (``dataset_unavailable_range``),
+    even though another 422's message claimed availability "up to 19:20"; that message is
+    not the queryable bound, this is. XEUR advertised the previous day's 22:00. Note also
+    that omitting ``end`` does NOT mean "up to available": Databento forward-fills ``end``
+    from ``start``'s precision (a date = that one day). Cached for a few minutes: free,
+    but otherwise called once per contract."""
+    key = (dataset, schema)
+    hit = _available_end_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _AVAILABLE_END_TTL_S:
+        return hit[1]
+    client = client or get_client()
+    rng = client.metadata.get_dataset_range(dataset=dataset)
+    raw = rng.get("schema", {}).get(schema, rng)["end"]
+    end = pd.Timestamp(raw).tz_convert("UTC").tz_localize(None)
+    _available_end_cache[key] = (time.monotonic(), end)
+    return end
 
 
 def _utc(ts: pd.Timestamp) -> pd.Timestamp:

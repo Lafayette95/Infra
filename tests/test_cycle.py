@@ -40,11 +40,12 @@ class FakeStats:
     a (ticker, day) price; ``silent`` tickers return nothing (missing data)."""
 
     def __init__(self):
-        self.calls, self.prices, self.silent = [], {}, set()
+        self.calls, self.prices, self.silent, self.skip = [], {}, set(), set()
 
     def __call__(self, dataset, symbol, start, end, **_):
         self.calls.append((symbol, D(start), D(end)))
-        days = [d for d in pd.date_range(start, end, freq="D", inclusive="left") if d.weekday() < 5]
+        days = [d for d in pd.date_range(start, end, freq="D", inclusive="left")
+                if d.weekday() < 5 and (symbol, d) not in self.skip]
         if symbol in self.silent or not days:
             return pd.DataFrame(columns=["ts_recv", "ts_ref", "stat_type", "price", "quantity"])
         base = 100.0 + (hash(symbol) % 7)
@@ -498,3 +499,65 @@ def test_carry_is_recognised_but_not_implemented_and_unknown_risk_rejected(stir_
 def test_bmk_steps_registered_in_dependency_order():
     names = [s.name for s in DEFAULT_STEPS]
     assert names == ["px", "raw", "derived", "bmk_risk", "bmk_pnl", "backup"]
+
+
+def test_px_plan_is_free_and_matches_what_backfill_then_fetches(env, monkeypatch):
+    from infra.cycle.px import plan_daily_px_data
+    paths, fake, opts = env
+
+    def no_definitions(*a, **k):
+        raise AssertionError("a dry-run plan must never pull definitions")
+
+    monkeypatch.setattr(api, "fetch_definitions", no_definitions)
+    plan, errors = plan_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS)
+    assert not errors and fake.calls == []  # nothing fetched by planning
+    backfill_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS, refresh_contracts=False)
+    assert sorted(plan) == sorted(c[0] for c in fake.calls)
+    assert plan_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS)[0] == {}  # now covered
+    forced, _ = plan_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS, force_refetch=True)
+    assert sorted(forced) == sorted(plan)  # force_refetch plans the covered window again
+
+
+
+# ------------------------------------------------- presence vs publication lag
+def _with_availability(monkeypatch, available: dict):
+    import infra.cycle.px as px_mod
+    monkeypatch.setattr(px_mod, "_availability", lambda members, end, client: available)
+
+
+def test_presence_judges_each_dataset_on_its_own_latest_complete_day(env, monkeypatch):
+    paths, fake, opts = env
+    # GLBX published through Thu Jan 9 (available Fri 08:00); Eurex only through Wed Jan 8
+    _with_availability(monkeypatch, {"GLBX.MDP3": D("2025-01-10 08:00"), "XEUR.EOBI": D("2025-01-09 22:00")})
+    fake.skip = {("ZNH5", D("2025-01-10")), ("ZNM5", D("2025-01-10")), ("FGBL SI 20250306 PS", D("2025-01-10")),
+                 ("FGBL SI 20250306 PS", D("2025-01-09"))}  # not published yet - must NOT fail
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-10",
+                             paths=paths, options=opts)
+    present = next(c for c in report.outcome("px").checks if c.name == "px_present")
+    assert present.passed, present.message
+    assert "GLBX.MDP3 2025-01-09" in present.message and "XEUR.EOBI 2025-01-08" in present.message
+
+
+def test_presence_fails_on_a_gap_inside_a_dataset_complete_day(env, monkeypatch):
+    paths, fake, opts = env
+    _with_availability(monkeypatch, {"GLBX.MDP3": D("2025-01-10 08:00"), "XEUR.EOBI": D("2025-01-10 08:00")})
+    fake.skip = {("ZNM5", D("2025-01-09"))}  # GLBX published Jan 9 for ZNH5 but not ZNM5
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-10",
+                             paths=paths, options=opts)
+    present = next(c for c in report.outcome("px").checks if c.name == "px_present")
+    assert not present.passed
+    assert list(zip(present.details["ticker"], present.details["timestamp"])) == [("ZNM5", D("2025-01-09"))]
+
+
+def test_bmk_presence_checks_every_settled_day_not_just_the_last(stir_env):
+    from infra.cycle.bmk import _presence
+    from infra.cycle.core import StepContext
+    paths, opts = stir_env
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-01-10", paths=paths, options=opts)
+    assert report.ok, report.summary()
+    parquet_store.prune_rows(paths.bmk_root / "Risk", "timestamp", [D("2025-01-07")])  # a mid-window hole
+    ctx = StepContext(D("2025-01-06"), D("2025-01-10"), D("2025-01-10"), paths,
+                      output=report.outcome("bmk_risk").output)
+    passed, _, details = _presence(lambda p: p.bmk_root / "Risk", "risk")(ctx)
+    assert not passed and set(details["timestamp"]) == {D("2025-01-07")}

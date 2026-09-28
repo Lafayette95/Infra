@@ -28,7 +28,6 @@ from infra.config import DAILY_BACKFILL, FUTURES_ROOTS, DailyBackfillSpec, Futur
 from infra.cycle.checks import revision_check
 from infra.cycle.core import Check, Severity, Step, StepContext
 from infra.cycle.paths import CyclePaths
-from infra.cycle.px import last_weekday
 from infra.cycle.universe import UniverseMember, daily_universe
 from infra.pipeline import daily as dl
 from infra.storage import parquet_store
@@ -192,22 +191,25 @@ def _read(ctx: StepContext, store) -> pd.DataFrame:
 
 
 def _presence(store, what: str, needs_prior: bool = False):
-    """Test (a): every universe contract that settled on the latest weekday has a row
-    (for pnl: also needs an earlier settlement, else no row is expected)."""
+    """Test (a): EVERY (contract, day) in the window where the contract was in the
+    universe and settled has a row - not just the last day, which under the datasets'
+    publication lag (see api.available_end) may have no settlements yet and would then
+    check nothing. For pnl a row also needs an earlier settlement to diff against."""
 
     def fn(ctx: StepContext):
-        day = last_weekday(ctx.end)
         members = ctx.output.get("members", {})
-        settled = _settlements(list(members), ctx.start - _PRIOR_LOOKBACK, day, ctx.paths)
+        settled = _settlements(list(members), ctx.start - _PRIOR_LOOKBACK, ctx.end, ctx.paths)
         if needs_prior:
             settled = settled[settled.groupby("ticker")["timestamp"].shift(1).notna()]
-        expected = {t for t in settled.loc[settled["timestamp"] == day, "ticker"]
-                    if members[t].expected_on(day)}
-        have = set(_read(ctx, store).query("timestamp == @day")["ticker"])
-        missing = sorted(expected - have)
+        settled = settled[settled["timestamp"] >= ctx.start]
+        expected = {(t, d) for t, d in zip(settled["ticker"], settled["timestamp"])
+                    if members[t].expected_on(d)}
+        rows = _read(ctx, store)
+        missing = sorted(expected - set(zip(rows["ticker"], rows["timestamp"])))
         if not missing:
-            return True, f"{what} present for all {len(expected)} settled contracts on {day.date()}", None
-        return False, f"{len(missing)} contract(s) missing {what} on {day.date()}", pd.DataFrame({"ticker": missing})
+            return True, f"{what} present for all {len(expected)} settled contract-days", None
+        return (False, f"{len(missing)} settled contract-day(s) missing {what}",
+                pd.DataFrame(missing, columns=["ticker", "timestamp"]))
 
     return fn
 

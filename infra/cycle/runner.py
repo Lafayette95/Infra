@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from typing import Callable
 
 import pandas as pd
 
@@ -51,6 +52,26 @@ def _log_check(step: str, r: CheckResult) -> None:
         log.error("[%s] %s: FAILED - %s", step, r.name, r.message)
 
 
+def execute_step(step: Step, ctx: StepContext) -> StepOutcome:
+    """Run ONE step and then its checks. Never raises: a step that raises becomes an
+    ``error`` outcome, a blocking check a ``failed`` one."""
+    try:
+        ctx.output = step.fn(ctx) or {}
+    except Exception as exc:
+        log.exception("[%s] step raised", step.name)
+        return StepOutcome(step.name, "error", ctx.start, ctx.end, error=f"{type(exc).__name__}: {exc}")
+    results = [c.run(ctx) for c in step.checks]
+    for r in results:
+        _log_check(step.name, r)
+    status = "failed" if any(r.blocking for r in results) else "ok"
+    return StepOutcome(step.name, status, ctx.start, ctx.end, results, ctx.output)
+
+
+# How a step gets executed - the default runs it inline; infra.cycle.flows swaps in one
+# that runs it as a Prefect task. Ordering, checks and halting stay here either way.
+Executor = Callable[[Step, StepContext], StepOutcome]
+
+
 def run_steps(
     windows: dict[str, tuple[pd.Timestamp, pd.Timestamp]],
     *,
@@ -59,6 +80,7 @@ def run_steps(
     force_refetch: bool,
     options: dict | None = None,
     registry: tuple[Step, ...] = DEFAULT_STEPS,
+    execute: Executor = execute_step,
 ) -> CycleReport:
     """Run the registry's steps named in ``windows`` (in registry order - which is also
     dependency order), each over its own inclusive ``(start, end)``."""
@@ -79,18 +101,7 @@ def run_steps(
             log.warning("[%s] skipped - upstream not ok: %s", step.name, blocked)
             continue
         ctx = StepContext(start, end, run_day, paths, force_refetch, reference, dict(options or {}))
-        try:
-            ctx.output = step.fn(ctx) or {}
-        except Exception as exc:
-            log.exception("[%s] step raised", step.name)
-            outcomes[step.name] = StepOutcome(step.name, "error", start, end,
-                                              error=f"{type(exc).__name__}: {exc}")
-            continue
-        results = [c.run(ctx) for c in step.checks]
-        for r in results:
-            _log_check(step.name, r)
-        status = "failed" if any(r.blocking for r in results) else "ok"
-        outcomes[step.name] = StepOutcome(step.name, status, start, end, results, ctx.output)
+        outcomes[step.name] = execute(step, ctx)
     report = CycleReport(run_day, list(outcomes.values()))
     log.info("%s", report.summary())
     return report
@@ -106,6 +117,7 @@ def run_daily_cycle(
     paths: CyclePaths | None = None,
     options: dict | None = None,
     registry: tuple[Step, ...] = DEFAULT_STEPS,
+    execute: Executor = execute_step,
 ) -> CycleReport:
     """Every requested step (default: all, backup included) over the same inclusive
     ``[start, end]`` - the history-backfill entry point."""
@@ -114,7 +126,7 @@ def run_daily_cycle(
         {n: (start, end) for n in names},
         run_day=pd.Timestamp(run_day).normalize() if run_day is not None else _today(),
         paths=paths or CyclePaths.default(), force_refetch=force_refetch,
-        options=options, registry=registry,
+        options=options, registry=registry, execute=execute,
     )
 
 
@@ -140,11 +152,12 @@ def run_scheduled_daily(
     revision_window_days: dict[str, int] | None = None,
     options: dict | None = None,
     registry: tuple[Step, ...] = DEFAULT_STEPS,
+    execute: Executor = execute_step,
 ) -> CycleReport:
     """The scheduler's entry point: T-N..T per step, ``force_refetch=True``."""
     today = pd.Timestamp(today).normalize() if today is not None else _today()
     return run_steps(
         scheduled_windows(today, registry, revision_window_days),
         run_day=today, paths=paths or CyclePaths.default(), force_refetch=True,
-        options=options, registry=registry,
+        options=options, registry=registry, execute=execute,
     )

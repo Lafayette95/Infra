@@ -86,17 +86,43 @@ def fetch_and_store_daily(
         coverage_store.clear_key(coverage_file, ticker)
     rows = 0
     for range_start, range_end in ranges:
+        query_end, covered_end = bounded_by_availability(dataset, range_end, client)
+        if query_end <= range_start:
+            continue  # nothing in this range is queryable yet; not covered, retried later
         raw = api.fetch_statistics(
-            dataset, ticker, range_start, range_end, max_cost_usd=max_cost_usd, client=client
+            dataset, ticker, range_start, query_end, max_cost_usd=max_cost_usd, client=client
         )
         clean = stats.clean_daily_statistics(raw, ticker, dataset)
         parquet_store.write_partitioned(stats.encode_daily(clean), root, stats.DAILY_KEYS)
         # Recorded even when empty (holidays, or a contract not yet publishing stats)
-        # so we never pay to re-ask.
-        coverage_store.record_covered(coverage_file, ticker, [(range_start, range_end)])
+        # so we never pay to re-ask - but never past the last COMPLETE available day.
+        if covered_end > range_start:
+            coverage_store.record_covered(coverage_file, ticker, [(range_start, covered_end)])
         rows += len(clean)
         log.info("%s %s->%s: %d daily rows saved", ticker, range_start.date(), range_end.date(), len(clean))
     return rows
+
+
+_RECENT = pd.Timedelta(days=7)
+
+
+def bounded_by_availability(
+    dataset: str, range_end: pd.Timestamp, client=None, *, now: pd.Timestamp | None = None,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """``(query_end, covered_end)`` for a range ending at ``range_end``. Databento rejects
+    any request ending after the dataset's advertised available end (e.g. "today,
+    inclusive", as the daily cycle asks - GLBX runs ~8h behind now), so the query is
+    CLAMPED to it; coverage is recorded only up to the start of that day, so a partial or
+    not-yet-published day is never claimed as covered and a later normal run fills it in
+    (see api.available_end for the verified behavior). Ranges ending well in the past
+    skip the (free) metadata lookup entirely."""
+    now = pd.Timestamp.now(tz="UTC").tz_localize(None) if now is None else pd.Timestamp(now)
+    if range_end < now - _RECENT:
+        return range_end, range_end
+    available = api.available_end(dataset, api.SCHEMA_STATISTICS, client)
+    if range_end <= available:
+        return range_end, range_end
+    return available, available.normalize()
 
 
 def load_daily(
