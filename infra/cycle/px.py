@@ -21,6 +21,12 @@ _ONE_DAY = pd.Timedelta(days=1)
 OUTLIER_K = 10.0
 OUTLIER_LOOKBACK = 60
 OUTLIER_MIN_HISTORY = 20
+# A contract that rolls INTO the universe mid-window is also fetched this many calendar
+# days before its first universe day, so that day still has a prior settlement to diff
+# against (the bmk pnl step). Contracts in the universe from the window's start get
+# their prior day from earlier runs instead - widening their fetch would silently turn
+# the scheduled run's T-3 revision window into a much longer one.
+PRIOR_SETTLEMENT_DAYS = 7
 
 
 def backfill_daily_px_data(
@@ -50,6 +56,8 @@ def backfill_daily_px_data(
     if fetch_missing:
         for m in members.values():
             w0, w1 = max(m.first, start), min(m.last, end) + _ONE_DAY
+            if m.first > start:
+                w0 -= pd.Timedelta(days=PRIOR_SETTLEMENT_DAYS)
             try:
                 gaps = dl.plan_daily_update(
                     m.ticker, w0, w1, coverage_file=paths.daily_futures_coverage,

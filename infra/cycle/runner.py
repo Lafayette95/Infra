@@ -17,6 +17,7 @@ import pandas as pd
 
 from infra.cycle import vintage
 from infra.cycle.backup import BACKUP_STEP
+from infra.cycle.bmk import PNL_STEP, RISK_STEP
 from infra.cycle.core import CheckResult, CycleReport, Severity, Step, StepContext, StepOutcome
 from infra.cycle.derived import DERIVED_STEP
 from infra.cycle.paths import CyclePaths
@@ -32,7 +33,7 @@ def _with_backup_last(steps: tuple[Step, ...]) -> tuple[Step, ...]:
     return (*others, dataclasses.replace(BACKUP_STEP, depends_on=tuple(s.name for s in others)))
 
 
-DEFAULT_STEPS: tuple[Step, ...] = _with_backup_last((PX_STEP, RAW_STEP, DERIVED_STEP))
+DEFAULT_STEPS: tuple[Step, ...] = _with_backup_last((PX_STEP, RAW_STEP, DERIVED_STEP, RISK_STEP, PNL_STEP))
 
 
 def _today() -> pd.Timestamp:

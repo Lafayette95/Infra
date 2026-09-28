@@ -391,3 +391,110 @@ def test_derived_depends_on_px_and_raw():
     from infra.cycle.derived import DERIVED_STEP
     assert set(DERIVED_STEP.depends_on) == {"px", "raw"}
     assert "wirp" in DERIVED_METRICS
+
+
+# ----------------------------------------------------------------------------- bmk
+from infra.cycle.bmk import backfill_daily_pnl, backfill_daily_risk  # noqa: E402
+
+ZQ25 = [("ZQF5", "2025-01-31"), ("ZQG5", "2025-02-28"), ("ZQH5", "2025-03-31")]
+ZQ_SPECS = {"ZQ": DailyBackfillSpec(2)}
+
+
+@pytest.fixture
+def stir_env(tmp_path, monkeypatch):
+    """ZQ, 2 nearest months. FakeStats prices rise 0.01 per CALENDAR day, so a
+    weekday-to-weekday move is exactly 1bp and Friday-to-Monday is 3bp."""
+    paths = CyclePaths.under(tmp_path / "db")
+    _contracts(paths, "ZQ", ZQ25)
+    monkeypatch.setattr(api, "fetch_statistics", FakeStats())
+    return paths, {"specs": ZQ_SPECS, "refresh_contracts": False}
+
+
+def _store(paths, sub) -> pd.DataFrame:
+    df = parquet_store.read_partitioned(paths.bmk_root / sub)
+    df["ticker"] = df["ticker"].astype(str)
+    return df.sort_values(["ticker", "timestamp"]).reset_index(drop=True)
+
+
+def test_stir_dv01_is_point_value_x_one_bp(stir_env):
+    paths, opts = stir_env
+    run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk"], run_day="2025-01-10",
+                    paths=paths, options=opts)
+    risk = _store(paths, "Risk")
+    assert set(risk["ticker"]) == {"ZQF5", "ZQG5"}
+    assert risk["value"].tolist() == pytest.approx([41.67] * len(risk))
+    assert (risk["currency"] == "USD").all()
+
+
+def test_pnl_is_price_change_x_point_value_and_per_dv01_is_the_bp_move(stir_env):
+    paths, opts = stir_env
+    report = run_daily_cycle("2025-01-06", "2025-01-13", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-01-13", paths=paths, options=opts)
+    assert report.ok, report.summary()
+    pnl = _store(paths, "Pnl").set_index(["ticker", "timestamp"])
+    tue = pnl.loc[("ZQF5", D("2025-01-07"))]
+    assert tue["price_change"] == pytest.approx(0.01) and tue["pnl"] == pytest.approx(41.67)
+    assert tue["pnl_per_dv01"] == pytest.approx(1.0)          # 1bp, weekday to weekday
+    mon = pnl.loc[("ZQF5", D("2025-01-13"))]
+    assert mon["prev_timestamp"] == D("2025-01-10") and mon["pnl_per_dv01"] == pytest.approx(3.0)
+
+
+def test_first_day_of_a_history_has_no_pnl_rather_than_a_guess(stir_env):
+    paths, opts = stir_env
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-01-10", paths=paths, options=opts)
+    assert report.ok, report.summary()
+    assert D("2025-01-06") not in set(_store(paths, "Pnl")["timestamp"])
+
+
+def test_contract_rolling_in_mid_window_still_gets_first_day_pnl(stir_env):
+    paths, opts = stir_env
+    # ZQF5 expires Fri Jan 31 -> ZQH5 enters the 2-contract universe Sat Feb 1
+    report = run_daily_cycle("2025-01-27", "2025-02-07", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-02-07", paths=paths, options=opts)
+    assert report.ok, report.summary()
+    pnl = _store(paths, "Pnl").set_index(["ticker", "timestamp"])
+    first = pnl.loc[("ZQH5", D("2025-02-03"))]
+    assert first["prev_timestamp"] == D("2025-01-31")  # fetched thanks to PRIOR_SETTLEMENT_DAYS
+
+
+def test_bond_futures_dv01_unavailable_with_reason_and_only_warns(env):
+    paths, fake, opts = env
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-01-10", paths=paths, options=opts)
+    assert report.ok, report.summary()
+    cov = next(c for c in report.outcome("bmk_risk").checks if c.name == "dv01_coverage")
+    assert not cov.passed and cov.severity.value == "warn"
+    assert cov.details["method"].str.contains("cheapest-to-deliver").all()
+    pnl = _store(paths, "Pnl")
+    assert pnl["pnl"].notna().all() and pnl["pnl_per_dv01"].isna().all()  # pnl yes, per-DV01 no
+    assert set(pnl.loc[pnl["root"] == "FGBL", "currency"]) == {"EUR"}
+
+
+def test_pnl_consistency_check_catches_a_stored_row_that_disagrees_with_the_spec(stir_env):
+    """The check guards the COMPUTATION: run it directly against a store holding a row
+    whose pnl != price_change x point value (e.g. a future code change breaking it)."""
+    from infra.cycle.bmk import _check_pnl_consistent
+    from infra.cycle.core import StepContext
+    paths, opts = stir_env
+    run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk", "bmk_pnl"],
+                    run_day="2025-01-10", paths=paths, options=opts)
+    ctx = StepContext(D("2025-01-06"), D("2025-01-10"), D("2025-01-10"), paths)
+    assert _check_pnl_consistent(ctx)[0]
+    tampered = _store(paths, "Pnl").head(1).assign(pnl=1.0)
+    parquet_store.write_partitioned(tampered, paths.bmk_root / "Pnl", ["timestamp", "ticker", "bmk"])
+    passed, _, details = _check_pnl_consistent(ctx)
+    assert not passed and len(details) == 1
+
+
+def test_carry_is_recognised_but_not_implemented_and_unknown_risk_rejected(stir_env):
+    paths, _ = stir_env
+    with pytest.raises(NotImplementedError):
+        backfill_daily_risk("2025-01-06", "2025-01-10", risk="carry", paths=paths, specs=ZQ_SPECS)
+    with pytest.raises(KeyError):
+        backfill_daily_risk("2025-01-06", "2025-01-10", risk="vega", paths=paths, specs=ZQ_SPECS)
+
+
+def test_bmk_steps_registered_in_dependency_order():
+    names = [s.name for s in DEFAULT_STEPS]
+    assert names == ["px", "raw", "derived", "bmk_risk", "bmk_pnl", "backup"]
