@@ -7,6 +7,11 @@ anything the runner doesn't - swap Prefect out and only this file changes.
 """
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+from contextlib import contextmanager
+
 from prefect import flow, get_run_logger, task
 from prefect.cache_policies import NO_CACHE
 
@@ -51,10 +56,25 @@ def prefect_execute(step, ctx: StepContext) -> StepOutcome:
     return StepOutcome(step.name, "error", ctx.start, ctx.end, error=f"{type(exc).__name__}: {exc}")
 
 
+@contextmanager
+def _stay_awake():
+    """Hold off idle sleep for the length of a run (macOS ``caffeinate -i``, tied to this
+    process). On a laptop the scheduled wake only guarantees the run STARTS - a Mac going
+    back to sleep mid-fetch would stall it. No-op where caffeinate doesn't exist."""
+    exe = shutil.which("caffeinate")
+    proc = subprocess.Popen([exe, "-i", "-w", str(os.getpid())]) if exe else None
+    try:
+        yield
+    finally:
+        if proc is not None:
+            proc.terminate()
+
+
 @flow(name="daily-cycle")
 def daily_cycle_flow(today: str | None = None) -> str:
     """What the schedule runs: every step over T-N..T (per-step N), force_refetch on."""
-    report = run_scheduled_daily(today, execute=prefect_execute)
+    with _stay_awake():
+        report = run_scheduled_daily(today, execute=prefect_execute)
     get_run_logger().info(report.summary())
     report.raise_for_status()  # a failed cycle is a failed flow run
     return report.summary()
@@ -63,7 +83,8 @@ def daily_cycle_flow(today: str | None = None) -> str:
 @flow(name="daily-cycle-backfill")
 def backfill_flow(start: str, end: str, steps: list[str] | None = None, force_refetch: bool = False) -> str:
     """History backfill through Prefect (for run tracking in the UI)."""
-    report = run_daily_cycle(start, end, steps=steps, force_refetch=force_refetch, execute=prefect_execute)
+    with _stay_awake():
+        report = run_daily_cycle(start, end, steps=steps, force_refetch=force_refetch, execute=prefect_execute)
     get_run_logger().info(report.summary())
     report.raise_for_status()
     return report.summary()

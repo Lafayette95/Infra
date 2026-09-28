@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Serves the daily cycle's schedule (Tue-Sat 10:00 UTC) against the local Prefect server,
+     running each due flow run. Restarted by launchd if it exits (e.g. while the server is
+     still starting up). Template: scripts/install_launchd.sh. CLAUDE.md section 12. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.infra.daily-cycle</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__ENV_BIN__/python</string>
+    <string>__REPO__/scripts/serve_daily_cycle.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>__ENV_BIN__:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PYTHONPATH</key><string>__REPO__</string>
+    <key>PREFECT_API_URL</key><string>http://127.0.0.1:4200/api</string>
+    <key>PREFECT_SERVER_ANALYTICS_ENABLED</key><string>false</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>__LOG_DIR__/daily-cycle.log</string>
+  <key>StandardErrorPath</key><string>__LOG_DIR__/daily-cycle.log</string>
+</dict>
+</plist>

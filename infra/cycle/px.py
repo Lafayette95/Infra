@@ -162,8 +162,9 @@ def _members(ctx: StepContext) -> dict[str, UniverseMember]:
     return ctx.output.get("members", {})
 
 
-def _settlements(ctx: StepContext, lookback: pd.Timedelta = pd.Timedelta(0)) -> pd.DataFrame:
-    df = dl.read_daily_from_disk(list(_members(ctx)), ctx.start - lookback, ctx.end + _ONE_DAY,
+def _settlements(ctx: StepContext, lookback: pd.Timedelta = pd.Timedelta(0),
+                 lookahead: pd.Timedelta = pd.Timedelta(0)) -> pd.DataFrame:
+    df = dl.read_daily_from_disk(list(_members(ctx)), ctx.start - lookback, ctx.end + _ONE_DAY + lookahead,
                                  root=ctx.paths.daily_futures_dir)
     df["ticker"] = df["ticker"].astype(str)
     return df.dropna(subset=["settlement_price"])
@@ -289,8 +290,16 @@ def peer_outliers(
             df[candidate & df["next_dev"].isna()][cols].reset_index(drop=True))
 
 
+# The reversal test needs each judged day's NEXT session, which for the window's last day
+# lies after the window. Read it if it's already on disk - only days inside the window are
+# ever JUDGED, so this is a data-quality lookup, not look-ahead in any value computed.
+# Without it, non-overlapping history windows (e.g. monthly) never judged a boundary day:
+# ESRZ6's bad print on 2025-10-31 slipped through an Oct-2025 window this way.
+_NEXT_SESSION_LOOKAHEAD = pd.Timedelta(days=10)
+
+
 def _outliers(ctx: StepContext):
-    hist = _settlements(ctx, lookback=pd.Timedelta(days=180))
+    hist = _settlements(ctx, lookback=pd.Timedelta(days=180), lookahead=_NEXT_SESSION_LOOKAHEAD)
     return peer_outliers(hist, _members(ctx), ctx.start, ctx.end)
 
 

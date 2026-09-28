@@ -682,3 +682,20 @@ def test_px_fetches_run_concurrently_but_writes_never_overlap(env, monkeypatch):
     assert not out["fetch_errors"] and out["rows"] > 0
     assert state["max_fetch"] == 3   # all three contracts in flight at once
     assert state["max_store"] == 1   # file writes strictly one at a time
+
+
+def test_a_bad_print_on_a_windows_last_day_is_judged_using_the_next_session_on_disk(stir_env, monkeypatch):
+    """Regression: with non-overlapping (e.g. monthly) history windows, a print on a
+    window's last day was 'pending' in that window and never looked at again - ESRZ6 on
+    2025-10-31 slipped through that way. The check now reads the next session if it's on
+    disk, while still only judging days inside the window."""
+    paths, opts = stir_env
+    fake = FakeStats()
+    monkeypatch.setattr(api, "fetch_statistics", fake)
+    opts = {**opts, "specs": {"ZQ": DailyBackfillSpec(3)}}
+    fake.prices[("ZQG5", D("2025-01-10"))] = 150.0  # bad print on a Friday, normal again Monday
+    run_daily_cycle("2024-10-01", "2025-01-17", steps=["px"], run_day="2025-01-17", paths=paths, options=opts)
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-17",
+                             paths=paths, options=opts)  # the window ENDS on the bad-print day
+    out = next(c for c in report.outcome("px").checks if c.name == "px_outliers")
+    assert not out.passed and list(out.details["timestamp"]) == [D("2025-01-10")]
