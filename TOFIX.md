@@ -130,3 +130,27 @@ any existing test already calls `load_options` against real default paths (a sea
 for `load_options(` in `tests/` at that time didn't turn up an end-to-end test of it at
 all - if one gets added later without this fix, it's at risk of the same leak this
 entry describes).
+
+---
+
+## Daily cycle has no exchange holiday calendar - can't tell a holiday from missing data
+
+**Found:** 2026-09-28, while building the daily cycle's presence check (CLAUDE.md 12).
+**Where:** `infra/cycle/px.py` (`_check_present`, `_check_dataset_present`).
+**Status:** open, worked around.
+
+**The issue:** test (a) "today's data is there" needs to know which days each exchange
+was open. The project only knows weekends. On an exchange holiday no contract of that
+dataset has a settlement - indistinguishable from "the run happened before settlement
+was published" or "Databento hasn't made it available yet".
+
+**Current workaround:** `px_present` (fail) only judges datasets that published at least
+one settlement that day, so a holiday can't fail the cycle; `px_dataset_present` (warn)
+reports any dataset with nothing at all. Consequence: a genuinely missing whole-dataset
+day only warns - it does not fail the cycle.
+
+**Fix options:** (1) a real exchange calendar, e.g. `pandas_market_calendars` (new
+dependency; its CME rates / CBOT / Eurex calendars would need verifying against the
+exchanges' own holiday notices, per this project's verify-first habit); (2) a hand-kept
+holiday list per dataset in `infra/config.py` with source URLs, like `FOMC_MEETINGS`.
+Either lets `px_dataset_present` become a hard `fail` on non-holidays.

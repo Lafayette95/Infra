@@ -80,14 +80,66 @@ def read_partitioned(
     return df.drop(columns=[c for c in _PARTITION_COLS if c in df.columns])
 
 
-def write_partitioned(df: pd.DataFrame, root: Path, key_columns: list[str]) -> list[Path]:
+def _atomic_write(df: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    df.to_parquet(
+        tmp,
+        engine="pyarrow",
+        index=False,
+        compression=PARQUET_COMPRESSION,
+        compression_level=PARQUET_COMPRESSION_LEVEL,
+    )
+    os.replace(tmp, path)
+
+
+def prune_rows(root: Path, column: str, values: Iterable) -> int:
+    """Delete EVERY row whose ``column`` is in ``values``, across all year/quarter files
+    under ``root`` (not just the partitions a later write touches). Returns rows removed.
+
+    Storage-level only: a caller that also tracks coverage must reset it for the pruned
+    keys, or the manifest will still claim history that no longer exists on disk (see
+    infra.pipeline.daily.fetch_and_store_daily).
+    """
+    if not has_data(root):
+        return 0
+    values = set(values)
+    removed = 0
+    for path in sorted(root.rglob(PARQUET_FILE_NAME)):
+        part = pd.read_parquet(path, engine="pyarrow")
+        if column not in part.columns:
+            continue
+        keep = ~part[column].astype(str).isin({str(v) for v in values})
+        removed += int((~keep).sum())
+        if keep.all():
+            continue
+        if keep.any():
+            _atomic_write(part[keep].reset_index(drop=True), path)
+        else:
+            path.unlink()
+    return removed
+
+
+def write_partitioned(
+    df: pd.DataFrame,
+    root: Path,
+    key_columns: list[str],
+    *,
+    prune: bool = False,
+    prune_column: str = "ticker",
+) -> list[Path]:
     """Merge encoded rows into their year/quarter files, de-duplicating on ``key_columns``.
 
-    Existing rows with the same key are replaced by the new ones. Each file is
-    written to a temp path and atomically moved into place.
+    ``prune=False`` (default): append - existing history is kept, and only rows sharing
+    a key with an incoming row are replaced by it. ``prune=True``: first delete the ENTIRE
+    stored history of every instrument (``prune_column`` value, a ticker by default)
+    present in ``df``, then write ``df`` - the instrument's history becomes exactly the
+    incoming rows. Each file is written to a temp path and atomically moved into place.
     """
     if df.empty:
         return []
+    if prune:
+        prune_rows(root, prune_column, df[prune_column].unique())
     written: list[Path] = []
     df = add_partition_columns(df)
     for (year, quarter), part in df.groupby(_PARTITION_COLS, sort=True):
@@ -101,16 +153,7 @@ def write_partitioned(df: pd.DataFrame, root: Path, key_columns: list[str]) -> l
             .sort_values(key_columns)
             .reset_index(drop=True)
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        part.to_parquet(
-            tmp,
-            engine="pyarrow",
-            index=False,
-            compression=PARQUET_COMPRESSION,
-            compression_level=PARQUET_COMPRESSION_LEVEL,
-        )
-        os.replace(tmp, path)
+        _atomic_write(part, path)
         written.append(path)
     return written
 

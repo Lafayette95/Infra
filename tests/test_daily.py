@@ -151,3 +151,58 @@ def test_dataset_required_when_fetching(tmp_path):
     with pytest.raises(ValueError):
         dl.load_daily(["SR3Z4"], "2025-01-01", "2025-01-05",
                       root=tmp_path / "D", coverage_file=tmp_path / "c.parquet")
+
+
+# ------------------------------------------------------------ force_refetch / prune
+def _fake_stats_fetch(calls, price_fn):
+    def fake_fetch(dataset, symbol, start, end, **_):
+        calls.append((symbol, start, end))
+        days = pd.date_range(start, end, freq="D", inclusive="left")
+        return _raw_stat_rows([d + pd.Timedelta(hours=19) for d in days], list(days), [3] * len(days),
+                              price=[price_fn(d) for d in days])
+    return fake_fetch
+
+
+def test_force_refetch_requeries_covered_range_and_overwrites_revisions(tmp_path, monkeypatch):
+    root, cov = tmp_path / "Daily", tmp_path / "cov.parquet"
+    calls: list[tuple] = []
+    monkeypatch.setattr(api, "fetch_statistics", _fake_stats_fetch(calls, lambda d: 95.0))
+    kw = dict(dataset="GLBX.MDP3", root=root, coverage_file=cov)
+    dl.load_daily(["SR3Z4"], "2025-01-06", "2025-01-09", **kw)
+    assert len(calls) == 1
+
+    # Upstream revises Jan 7. A normal call never sees it (range covered, Rule 2.1)...
+    monkeypatch.setattr(api, "fetch_statistics", _fake_stats_fetch(
+        calls, lambda d: 95.5 if d == D("2025-01-07") else 95.0))
+    df = dl.load_daily(["SR3Z4"], "2025-01-06", "2025-01-09", **kw)
+    assert len(calls) == 1 and (df["settlement_price"] == 95.0).all()
+
+    # ...force_refetch re-queries the whole window and the revised value wins.
+    df = dl.load_daily(["SR3Z4"], "2025-01-06", "2025-01-09", force_refetch=True, **kw).set_index("timestamp")
+    assert len(calls) == 2 and calls[1][1:] == (D("2025-01-06"), D("2025-01-09"))
+    assert df.loc[D("2025-01-07"), "settlement_price"] == 95.5
+    assert df.loc[D("2025-01-06"), "settlement_price"] == 95.0
+
+
+def test_force_refetch_defaults_off():
+    import inspect
+    assert inspect.signature(dl.load_daily).parameters["force_refetch"].default is False
+    assert inspect.signature(dl.plan_daily_update).parameters["force_refetch"].default is False
+
+
+def test_prune_replaces_one_tickers_whole_history_and_its_coverage(tmp_path, monkeypatch):
+    from infra.storage import coverage_store
+    root, cov = tmp_path / "Daily", tmp_path / "cov.parquet"
+    calls: list[tuple] = []
+    monkeypatch.setattr(api, "fetch_statistics", _fake_stats_fetch(calls, lambda d: 95.0))
+    kw = dict(dataset="GLBX.MDP3", root=root, coverage_file=cov)
+    # two quarters of history for SR3Z4, plus another ticker that must be untouched
+    dl.load_daily(["SR3Z4", "SR3H5"], "2024-12-30", "2025-01-03", **kw)
+
+    dl.load_daily(["SR3Z4"], "2025-01-02", "2025-01-03", force_refetch=True, prune=True, **kw)
+    out = dl.read_daily_from_disk(["SR3Z4", "SR3H5"], D("2024-01-01"), D("2026-01-01"), root=root)
+    z4 = out[out["ticker"] == "SR3Z4"]
+    assert list(z4["timestamp"]) == [D("2025-01-02")]  # 2024 partition rows gone too
+    assert len(out[out["ticker"] == "SR3H5"]) == 4       # other ticker untouched
+    assert coverage_store.read_covered(cov, "SR3Z4") == [(D("2025-01-02"), D("2025-01-03"))]
+    assert coverage_store.read_covered(cov, "SR3H5") == [(D("2024-12-30"), D("2025-01-03"))]

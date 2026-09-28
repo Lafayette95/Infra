@@ -35,6 +35,16 @@ DAILY_FUTURES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "futures.parquet"
 DAILY_OPTIONS_DIR = DAILY_ROOT / "Options"
 DAILY_OPTIONS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "options.parquet"
 
+# Daily-cycle outputs (infra/cycle, CLAUDE.md section 12). Derived metrics ARE persisted
+# here (unlike the dashboard's on-demand analytics) because the cycle's revision checks
+# need yesterday's values on disk to compare against.
+DERIVED_ROOT = DATABASE_ROOT / "Derived"
+WIRP_DIR = DERIVED_ROOT / "WIRP"
+BMK_ROOT = DATABASE_ROOT / "Bmk"
+# Full dated snapshots of the database, one per cycle run day (``_vintages/YYYY-MM-DD``) -
+# the baseline each run's "no revisions" check compares against.
+VINTAGE_ROOT = DATABASE_ROOT / "_vintages"
+
 # ------------------------------------------------------------------ API settings
 SCHEMA_OHLCV = "ohlcv-1m"
 SCHEMA_DEFINITION = "definition"
@@ -158,6 +168,44 @@ TRADING_HOURS: dict[str, TradingSession] = {
         source="https://www.newsquawk.com/headlines/from-6th-july-2026-ice-will-be-aligning-the-trading-hours-of-uk-fistir-contracts-with-those-of-european-contracts-as-such-gilt-and-sonia-futures-will-open-at-1am-london-time-and-close-at-9pm",
     ),
 }
+
+# ------------------------------------------------------------------ daily cycle
+# Operational parameters of the scheduled daily cycle (infra/cycle, CLAUDE.md section 12).
+# Deliberately separate from FUTURES_ROOTS: that describes the instrument universe itself,
+# this describes how the scheduled pipeline operates on it - a root can stay in the
+# universe while being switched off here (ICE, for now).
+@dataclass(frozen=True)
+class DailyBackfillSpec:
+    n_contracts: int  # nearest unexpired contracts on the root's expiry cycle (c.0 .. c.N-1)
+    enabled: bool = True
+
+
+DAILY_BACKFILL: dict[str, DailyBackfillSpec] = {
+    # STIR, monthly cycle: 12 = a full year of monthly expiries.
+    "ZQ": DailyBackfillSpec(12),
+    "SR1": DailyBackfillSpec(12),
+    # STIR, quarterly cycle (serials excluded by FuturesRoot.expiry_months).
+    "SR3": DailyBackfillSpec(21),
+    "ESR": DailyBackfillSpec(6),
+    # Bond futures: front + one deferred.
+    "ZT": DailyBackfillSpec(2),
+    "ZF": DailyBackfillSpec(2),
+    "ZN": DailyBackfillSpec(2),
+    "TN": DailyBackfillSpec(2),
+    "ZB": DailyBackfillSpec(2),
+    "UB": DailyBackfillSpec(2),
+    "FGBL": DailyBackfillSpec(2),
+    "FGBM": DailyBackfillSpec(2),
+    "FGBS": DailyBackfillSpec(2),
+    "FBTP": DailyBackfillSpec(2),
+    # ICE excluded for now: ~99% of the daily cycle's API cost (2026-09-28 cost check).
+    "SO3": DailyBackfillSpec(0, enabled=False),
+    "R": DailyBackfillSpec(0, enabled=False),
+}
+
+# How many BUSINESS days back the scheduled run re-fetches (force_refetch=True) to catch
+# upstream revisions. Global catch-all default; each cycle step can override its own.
+DEFAULT_REVISION_WINDOW_DAYS = 3
 
 # Relative (kind, rank) pairs offered per root (dashboard Expiry dropdown, defaults).
 DEFAULT_RELATIVE_RANKS: tuple[tuple[str, int], ...] = (

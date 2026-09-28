@@ -57,3 +57,17 @@ def record_covered(path: Path, key: str, intervals: list[Interval]) -> None:
     tmp = path.with_suffix(".tmp")
     out.to_parquet(tmp, engine="pyarrow", index=False, compression="zstd", compression_level=5)
     tmp.replace(path)
+
+
+def clear_key(path: Path, key: str) -> None:
+    """Forget every covered interval for ``key`` - used when that key's stored history is
+    pruned, so the manifest never claims data that is no longer on disk."""
+    if not path.exists():
+        return
+    df = read_all(path)
+    kept = df[df["key"] != str(key)]
+    if len(kept) == len(df):
+        return
+    tmp = path.with_suffix(".tmp")
+    kept.to_parquet(tmp, engine="pyarrow", index=False, compression="zstd", compression_level=5)
+    tmp.replace(path)
