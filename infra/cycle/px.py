@@ -19,9 +19,24 @@ from infra.pipeline import daily as dl
 
 _ONE_DAY = pd.Timedelta(days=1)
 
-# Custom outlier check: a day-over-day settlement move larger than OUTLIER_K times the
-# contract's own median absolute daily move over its prior OUTLIER_LOOKBACK moves.
-OUTLIER_K = 10.0
+# Custom outlier check (test c): a BAD PRINT, not a big market day. Each move is first put
+# in units of its own contract's typical move (z = move / median |move| over the prior
+# OUTLIER_LOOKBACK moves), then compared with its peers' z the same day. A contract is
+# flagged when it (1) moved a lot by its own standard (|z| >= OUTLIER_Z_MIN), (2) was out
+# of line with its peers (|z - median peer z| >= OUTLIER_DEV_MIN), and (3) that deviation
+# REVERSED at its next session by at least OUTLIER_REVERSAL of its size. Calibrated
+# 2026-09-28 on a year of real settlements (2025-07 .. 2026-09, 19,324 contract-days): it
+# flags exactly three prints - ESRM7 and ESRU7 on 2026-09-11 (a ~40bp kink mid-strip,
+# gone next session) and ESRZ6 on 2025-10-31 (-6bp while every neighbour rose, +5.75bp
+# back) - and none of NFP 2025-08-01, the ECB-dated EUR days, 2026-04-08, or FOMC
+# 2026-06-17/07-29. Each condition is load-bearing: without (1) a nearly-expired contract
+# that barely moved on a shock day looks "out of line"; without (3) an FOMC meeting-month
+# contract repricing alone looks like a bad print. Cost of (3): a print can only be judged
+# once its next session exists - the latest day is reported as pending (warn), not judged.
+OUTLIER_Z_MIN = 5.0
+OUTLIER_DEV_MIN = 6.0
+OUTLIER_REVERSAL = 0.5
+OUTLIER_PEERS = 4  # nearest same-root contracts by expiry
 OUTLIER_LOOKBACK = 60
 OUTLIER_MIN_HISTORY = 20
 # A contract that rolls INTO the universe mid-window is also fetched this many calendar
@@ -229,23 +244,71 @@ def _check_sane(ctx: StepContext):
     return False, f"{len(bad)} non-positive / non-finite settlement(s)", bad
 
 
+def peer_outliers(
+    settle: pd.DataFrame, members: dict[str, UniverseMember], start: pd.Timestamp, end: pd.Timestamp,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """``(flagged, pending)`` bad-print candidates for days in ``[start, end]`` - see the
+    OUTLIER_* constants for the rule and its calibration. ``settle`` needs history
+    before ``start`` (for each contract's own scale). Peers: the OUTLIER_PEERS nearest
+    same-root contracts by expiry; a root with too few contracts that day (bond futures
+    carry 2) falls back to every same-currency, same-category contract (e.g. the USD
+    Treasury complex) - a contract with fewer than 2 peers isn't judged."""
+    from infra.config import FUTURES_ROOTS
+    df = settle[settle["ticker"].isin(members)].sort_values(["ticker", "timestamp"]).copy()
+    df["move"] = df.groupby("ticker")["settlement_price"].diff()
+    df["scale"] = df.groupby("ticker")["move"].transform(
+        lambda m: m.abs().shift(1).rolling(OUTLIER_LOOKBACK, min_periods=OUTLIER_MIN_HISTORY).median())
+    df["z"] = df["move"] / df["scale"]
+    df = df[np.isfinite(df["z"]) & (df["timestamp"] >= start)]
+    cols = ["ticker", "timestamp", "move", "z", "dev", "peers"]
+    if df.empty:
+        return pd.DataFrame(columns=cols), pd.DataFrame(columns=cols)
+    df["root"] = df["ticker"].map(lambda t: members[t].root)
+    df["expiry"] = df["ticker"].map(lambda t: members[t].last)
+    df["group"] = df["root"].map(lambda r: (FUTURES_ROOTS[r].currency, FUTURES_ROOTS[r].category))
+
+    devs, pools = [], []
+    for _, day in df.groupby("timestamp"):
+        for idx, r in day.iterrows():
+            peers = day[(day["root"] == r["root"]) & (day.index != idx)]
+            if len(peers) >= 2:
+                peers = peers.iloc[(peers["expiry"] - r["expiry"]).abs().argsort()[:OUTLIER_PEERS]]
+                pool = "root"
+            else:
+                peers = day[(day["group"] == r["group"]) & (day.index != idx)]
+                pool = "currency+category"
+            devs.append((idx, r["z"] - peers["z"].median() if len(peers) >= 2 else np.nan))
+            pools.append((idx, pool))
+    df["dev"] = pd.Series(dict(devs))
+    df["peers"] = pd.Series(dict(pools))
+    df = df.dropna(subset=["dev"])
+    df["next_dev"] = df.groupby("ticker")["dev"].shift(-1)
+    candidate = (df["z"].abs() >= OUTLIER_Z_MIN) & (df["dev"].abs() >= OUTLIER_DEV_MIN) & (df["timestamp"] <= end)
+    reverted = (np.sign(df["next_dev"]) == -np.sign(df["dev"])) & (df["next_dev"].abs() >= OUTLIER_REVERSAL * df["dev"].abs())
+    return (df[candidate & reverted][cols + ["next_dev"]].reset_index(drop=True),
+            df[candidate & df["next_dev"].isna()][cols].reset_index(drop=True))
+
+
+def _outliers(ctx: StepContext):
+    hist = _settlements(ctx, lookback=pd.Timedelta(days=180))
+    return peer_outliers(hist, _members(ctx), ctx.start, ctx.end)
+
+
 def _check_outliers(ctx: StepContext):
-    """Test (c): flags a move > OUTLIER_K x the contract's own recent median |move|.
-    Contracts with too little history, or a zero median (rarely-moving deep deferreds),
-    are not judged rather than guessed at."""
-    hist = _settlements(ctx, lookback=pd.Timedelta(days=180)).sort_values(["ticker", "timestamp"])
-    flagged = []
-    for ticker, g in hist.groupby("ticker"):
-        moves = g.set_index("timestamp")["settlement_price"].diff().dropna()
-        for day, move in moves[moves.index >= ctx.start].items():
-            prior = moves[moves.index < day].tail(OUTLIER_LOOKBACK).abs()
-            scale = prior.median() if len(prior) >= OUTLIER_MIN_HISTORY else 0.0
-            if scale > 0 and abs(move) > OUTLIER_K * scale:
-                flagged.append((ticker, day, move, scale))
-    if not flagged:
-        return True, f"no moves > {OUTLIER_K:g}x recent median", None
-    details = pd.DataFrame(flagged, columns=["ticker", "timestamp", "move", "median_abs_move"])
-    return False, f"{len(details)} outlier move(s)", details
+    """Test (c): bad prints - a move far out of line with its peers that reversed next session."""
+    flagged, pending = _outliers(ctx)
+    if flagged.empty:
+        return True, f"no bad prints ({len(pending)} candidate(s) awaiting their next session)", None
+    return False, f"{len(flagged)} bad print(s): off-peer moves that reversed next session", flagged
+
+
+def _check_outliers_pending(ctx: StepContext):
+    """Warning: a print already out of line with its peers whose next session hasn't
+    happened yet - judged (and failed, if it reverses) by the next run."""
+    _, pending = _outliers(ctx)
+    if pending.empty:
+        return True, "no off-peer prints awaiting judgement", None
+    return False, f"{len(pending)} off-peer print(s) to be judged once their next session exists", pending
 
 
 PX_CHECKS = (
@@ -256,6 +319,7 @@ PX_CHECKS = (
                    equals_in=lambda ctx: {"ticker": list(_members(ctx))}),
     Check("px_sane", _check_sane),
     Check("px_outliers", _check_outliers),
+    Check("px_outliers_pending", _check_outliers_pending, severity=Severity.WARN),
 )
 
 

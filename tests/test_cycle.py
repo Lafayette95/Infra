@@ -144,14 +144,96 @@ def test_whole_dataset_missing_is_a_warning_not_a_failure(env):
     assert px.status == "ok" and not warn.passed and "XEUR.EOBI" in warn.message
 
 
-def test_px_outlier_check_flags_a_bad_print(env):
-    paths, fake, opts = env
+# --------------------------------------------------- bad-print (peer outlier) check
+from infra.cycle.px import peer_outliers  # noqa: E402
+from infra.cycle.universe import UniverseMember  # noqa: E402
+
+DAYS = [d for d in pd.date_range("2025-01-01", "2025-03-14") if d.weekday() < 5]
+
+
+def _curve(tickers, root="ZQ", dataset="GLBX.MDP3"):
+    """Synthetic settlements: every contract drifts +0.01/weekday (so its own typical
+    |move| - the z-score unit - is 0.01), expiries one month apart."""
+    members = {t: UniverseMember(t, root, dataset, D("2025-01-01"), D("2025-04-30") + pd.DateOffset(months=i), None)
+               for i, t in enumerate(tickers)}
+    rows = [(t, d, 96.0 + 0.01 * n) for t in tickers for n, d in enumerate(DAYS)]
+    return pd.DataFrame(rows, columns=["ticker", "timestamp", "settlement_price"]), members
+
+
+def _bump(settle, ticker, days, by):
+    m = (settle["ticker"] == ticker) & settle["timestamp"].isin(days)
+    settle.loc[m, "settlement_price"] += by
+    return settle
+
+
+WIN = (D("2025-03-03"), D("2025-03-14"))
+SHOCK = D("2025-03-05")
+
+
+def test_a_one_day_off_curve_print_that_reverts_is_flagged():
+    settle, members = _curve(["A", "B", "C", "D", "E"])
+    _bump(settle, "C", [SHOCK], 0.10)  # 10bp kink mid-strip, gone next session
+    flagged, _ = peer_outliers(settle, members, *WIN)
+    assert list(zip(flagged["ticker"], flagged["timestamp"])) == [("C", SHOCK)]
+
+
+def test_a_coherent_curve_wide_shock_is_not_flagged():
+    settle, members = _curve(["A", "B", "C", "D", "E"])
+    for t in "ABCDE":
+        _bump(settle, t, [d for d in DAYS if d >= SHOCK], 0.10)  # NFP-style repricing, persists
+    flagged, pending = peer_outliers(settle, members, *WIN)
+    assert flagged.empty and pending.empty
+
+
+def test_a_lone_move_that_persists_is_not_flagged():
+    """An FOMC meeting-month contract repricing alone: out of line with its peers, but it
+    HOLDS next session - a market move, not a bad print."""
+    settle, members = _curve(["A", "B", "C", "D", "E"])
+    _bump(settle, "C", [d for d in DAYS if d >= SHOCK], 0.10)
+    flagged, _ = peer_outliers(settle, members, *WIN)
+    assert flagged.empty
+
+
+def test_a_contract_that_barely_moved_on_a_shock_day_is_not_flagged():
+    """The near-expiry front month on NFP day: 'out of line' only because it DIDN'T move."""
+    settle, members = _curve(["A", "B", "C", "D", "E"])
+    for t in "BCDE":
+        _bump(settle, t, [d for d in DAYS if d >= SHOCK], 0.10)
+    flagged, _ = peer_outliers(settle, members, *WIN)
+    assert "A" not in set(flagged["ticker"])
+
+
+def test_an_off_curve_print_on_the_last_day_is_pending_not_judged():
+    settle, members = _curve(["A", "B", "C", "D", "E"])
+    last = D("2025-03-14")
+    _bump(settle, "C", [last], 0.10)
+    flagged, pending = peer_outliers(settle, members, *WIN)
+    assert flagged.empty and list(pending["ticker"]) == ["C"]
+
+
+def test_thin_roots_fall_back_to_the_currency_bond_complex():
+    """Bond futures carry 2 contracts per root - too few same-root peers - so they're
+    judged against every same-currency bond future that day."""
+    zn, m1 = _curve(["ZNH5", "ZNM5"], root="ZN")
+    zf, m2 = _curve(["ZFH5", "ZFM5"], root="ZF")
+    settle, members = pd.concat([zn, zf], ignore_index=True), {**m1, **m2}
+    _bump(settle, "ZNM5", [SHOCK], 0.10)
+    flagged, _ = peer_outliers(settle, members, *WIN)
+    assert list(flagged["ticker"]) == ["ZNM5"] and set(flagged["peers"]) == {"currency+category"}
+
+
+def test_px_outlier_check_fails_the_step_end_to_end(stir_env, monkeypatch):
+    paths, opts = stir_env
+    fake = FakeStats()
+    monkeypatch.setattr(api, "fetch_statistics", fake)
+    opts = {**opts, "specs": {"ZQ": DailyBackfillSpec(3)}}
     run_daily_cycle("2024-10-01", "2025-01-03", steps=["px"], run_day="2025-01-03", paths=paths, options=opts)
-    fake.prices[("ZNH5", D("2025-01-08"))] = 150.0  # absurd jump vs a steady 0.01/day drift
+    fake.prices[("ZQG5", D("2025-01-08"))] = 150.0  # absurd one-day print, normal again next day
     report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-10",
                              paths=paths, options=opts)
     out = next(c for c in report.outcome("px").checks if c.name == "px_outliers")
-    assert not out.passed and "ZNH5" in set(out.details["ticker"])
+    assert not out.passed and set(out.details["ticker"]) == {"ZQG5"}
+    assert report.outcome("px").status == "failed"
 
 
 def test_last_weekday():
