@@ -80,9 +80,11 @@ FUTURES_ROOTS: dict[str, FuturesRoot] = {
         FuturesRoot("SR3", _CME, "SR3.FUT", "3M SOFR", "STIR"),
         FuturesRoot("ESR", _CME, "ESR.FUT", "3M €STR", "STIR"),
         FuturesRoot("SO3", _ICE, "SO3.FUT", "3M SONIA", "STIR", ticker_regex=_ICE_QUARTERLY),
-        # 30-Day Fed Funds: MONTHLY cycle (all 12 months), not quarterly like the rest of
-        # this universe - verified against the real API 2026-09-21 (61 outrights, every
-        # calendar month present).
+        # Both MONTHLY cycle (all 12 months), not quarterly like the rest of this
+        # universe - verified against the real API 2026-09-21 (SR1: 26 outrights, ZQ:
+        # 61 outrights, both with every calendar month present).
+        FuturesRoot("SR1", _CME, "SR1.FUT", "1M SOFR", "STIR",
+                   expiry_months=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)),
         FuturesRoot("ZQ", _CME, "ZQ.FUT", "30-Day Fed Funds", "STIR",
                    expiry_months=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)),
         # ---- Bonds: US Treasuries (CBOT, via GLBX.MDP3)
