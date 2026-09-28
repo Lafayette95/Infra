@@ -182,3 +182,41 @@ OPTIONS_UNIVERSE: dict[str, str] = {
     # (e.g. "SR3U6 C9762.5"), same convention as the futures root plus ".OPT".
     "SR3.OPT": "GLBX.MDP3",
 }
+
+# ------------------------------------------------------------------ FOMC meeting schedule
+# Source of truth for infra.analytics.wirp (World Interest Rate Probability - implied
+# Fed rate-move probabilities backed out of 30-Day Fed Funds futures, ZQ). A rate
+# decision is conventionally effective the calendar day AFTER the meeting's last day
+# (the day the FOMC statement is released) - ``end_date`` is that split day; see
+# infra.analytics.wirp.solve_post_meeting_rate and CLAUDE.md section 11.
+@dataclass(frozen=True)
+class FOMCMeeting:
+    start_date: str  # "YYYY-MM-DD", first day of the (usually 2-day) meeting
+    end_date: str  # "YYYY-MM-DD", decision/announcement day
+    has_projections: bool  # Summary of Economic Projections released alongside (informational)
+
+
+# Verified against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,
+# 2026-09-28. The Fed publishes next year's calendar around July of the prior year -
+# re-check that page (and re-verify existing dates) when extending this list.
+# 2025-08-22 was a "notation vote only" (no live 2-day meeting / rate decision in the
+# normal sense) and is deliberately excluded - treating it as a regular meeting would
+# corrupt the August 2025 month-to-meeting mapping.
+FOMC_MEETINGS: tuple[FOMCMeeting, ...] = (
+    FOMCMeeting("2025-01-28", "2025-01-29", False),
+    FOMCMeeting("2025-03-18", "2025-03-19", True),
+    FOMCMeeting("2025-05-06", "2025-05-07", False),
+    FOMCMeeting("2025-06-17", "2025-06-18", True),
+    FOMCMeeting("2025-07-29", "2025-07-30", False),
+    FOMCMeeting("2025-09-16", "2025-09-17", True),
+    FOMCMeeting("2025-10-28", "2025-10-29", False),
+    FOMCMeeting("2025-12-09", "2025-12-10", True),
+    FOMCMeeting("2026-01-27", "2026-01-28", False),
+    FOMCMeeting("2026-03-17", "2026-03-18", True),
+    FOMCMeeting("2026-04-28", "2026-04-29", False),
+    FOMCMeeting("2026-06-16", "2026-06-17", True),
+    FOMCMeeting("2026-07-28", "2026-07-29", False),
+    FOMCMeeting("2026-09-15", "2026-09-16", True),
+    FOMCMeeting("2026-10-27", "2026-10-28", False),
+    FOMCMeeting("2026-12-08", "2026-12-09", True),
+)

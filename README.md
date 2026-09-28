@@ -49,6 +49,16 @@ average volume, default 5 - smooths thin single sessions like a Sunday open so t
 flip the front contract for one day), e.g. `ZN.v.0`.
 Prefer `.v.0` for bonds: the calendar front sits in an expiring, thin contract for weeks.
 
+## Dashboard pages
+| Page | Path | What it shows |
+|---|---|---|
+| Futures | `/` | Candlesticks + volume for any absolute or relative ticker. |
+| Risk-Neutral Density | `/rnd` | Market-implied PDF for a SOFR future at option expiry (Breeden-Litzenberger). |
+| WIRP | `/wirp` | Implied Fed rate-move probability per upcoming FOMC meeting, from ZQ (30-Day Fed Funds futures) - a LIVE/CLOSE toggle switches source. |
+
+`/rnd` and `/wirp` are read-only (never fetch) - populate their data first via
+`scripts/update_daily_options.py` and `scripts/update_futures.py` / `scripts/update_daily.py` respectively.
+
 ## Cost protection
 - Disk first: only date ranges absent from the coverage manifest are requested.
 - Every request is priced via `metadata.get_cost` and refused above `INFRA_MAX_COST_USD` (default $5).

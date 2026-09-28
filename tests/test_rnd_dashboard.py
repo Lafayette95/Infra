@@ -92,13 +92,13 @@ def test_density_figure_no_weekend_rangebreak():
 
 
 # ------------------------------------------------------------------------- app shell
-def test_app_builds_with_both_pages_registered():
+def test_app_builds_with_all_pages_registered():
     import dash
     app = create_app()
     layout = app.layout()
     assert layout is not None
     paths = {p["relative_path"] for p in dash.page_registry.values()}
-    assert paths == {"/", "/rnd"}
+    assert paths == {"/", "/rnd", "/wirp"}
 
 
 def test_create_app_is_idempotent_across_calls():
