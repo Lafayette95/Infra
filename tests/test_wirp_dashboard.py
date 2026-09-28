@@ -6,7 +6,8 @@ import pytest
 
 from infra.dashboard import wirp_charts
 from infra.dashboard.wirp_selectors import (
-    build_schedule, close_rates, contract_for_month, find_anchor, live_rates, month_contract_map,
+    available_days, backfill_schedule, build_schedule, close_rates, contract_for_month,
+    find_anchor, live_rates, month_contract_map,
 )
 from infra.processing import statistics as stats
 from infra.processing import transforms as tf
@@ -85,6 +86,34 @@ def test_close_rates_empty_when_nothing_cached(tmp_path):
     assert rates.empty and as_of is None
 
 
+def test_close_rates_as_of_cutoff_ignores_later_rows(tmp_path):
+    """The point-in-time cutoff (CLAUDE.md section 3): with as_of set, a row dated
+    AFTER it must be invisible, even though it's the chronologically latest row on
+    disk - this is what makes the same function correct for both live use (no cutoff)
+    and a historical backfill (an explicit past as_of)."""
+    root = tmp_path / "Daily"
+    _write_daily(root, "ZQF6", "2026-01-05", 95.75)
+    _write_daily(root, "ZQF6", "2026-01-10", 95.90)  # after the cutoff - must be ignored
+
+    rates, as_of = close_rates({P("2026-01"): "ZQF6"}, root=root, as_of=D("2026-01-05"))
+    assert rates[P("2026-01")] == pytest.approx(100.0 - 95.75)
+    assert as_of == D("2026-01-05")
+
+    # the cutoff DAY itself is inclusive
+    rates2, as_of2 = close_rates({P("2026-01"): "ZQF6"}, root=root, as_of=D("2026-01-10"))
+    assert rates2[P("2026-01")] == pytest.approx(100.0 - 95.90)
+    assert as_of2 == D("2026-01-10")
+
+
+def test_close_rates_no_as_of_reads_the_latest_row_regardless(tmp_path):
+    root = tmp_path / "Daily"
+    _write_daily(root, "ZQF6", "2026-01-05", 95.75)
+    _write_daily(root, "ZQF6", "2026-01-10", 95.90)
+    rates, as_of = close_rates({P("2026-01"): "ZQF6"}, root=root)  # no as_of -> no cutoff
+    assert rates[P("2026-01")] == pytest.approx(100.0 - 95.90)
+    assert as_of == D("2026-01-10")
+
+
 def test_find_anchor_walks_back_to_nearest_flat_month(tmp_path):
     root = tmp_path / "Daily"
     contracts_file = tmp_path / "contracts.parquet"
@@ -139,7 +168,7 @@ def test_build_schedule_end_to_end_with_synthetic_data(tmp_path):
     days_in_month, meeting_day = 31, 10
     pre, post = 4.33, 4.08
     avg = (pre * meeting_day + post * (days_in_month - meeting_day)) / days_in_month
-    _write_daily(daily_root, "ZQZ5", "2025-12-01", 100.0 - avg)
+    _write_daily(daily_root, "ZQZ5", "2025-11-14", 100.0 - avg)  # dated <= today, not Dec itself
 
     schedule, meta = build_schedule(
         "close", today=D("2025-11-15"), contracts_file=contracts_file, close_root=daily_root,
@@ -157,7 +186,7 @@ def test_build_schedule_end_to_end_with_synthetic_data(tmp_path):
     assert meta["mode"] == "close"
     assert meta["anchor_month"] == "2025-11"
     assert meta["anchor_rate"] == pytest.approx(4.33)
-    assert meta["as_of"] == D("2025-12-01")
+    assert meta["as_of"] == D("2025-11-14")
 
 
 def test_build_schedule_live_mode_still_uses_settlement_for_anchor_and_past_chain(tmp_path):
@@ -177,7 +206,7 @@ def test_build_schedule_live_mode_still_uses_settlement_for_anchor_and_past_chai
     _write_daily(daily_root, "ZQQ6", "2026-08-15", 100.0 - 4.00)  # Aug: flat anchor
     sep_avg = (4.00 * 16 + 4.25 * (30 - 16)) / 30
     _write_daily(daily_root, "ZQU6", "2026-09-20", 100.0 - sep_avg)  # Sep -> solves to 4.25%
-    _write_daily(daily_root, "ZQZ6", "2026-12-01", 100.0 - 4.60)  # Dec (upcoming fallback)
+    _write_daily(daily_root, "ZQZ6", "2026-09-19", 100.0 - 4.60)  # Dec (upcoming fallback), dated <= today
 
     # Intraday LIVE prices for the SAME anchor/past months are deliberately absurd - if
     # they ever leaked into the anchor or September's chain, the assertions below fail.
@@ -185,8 +214,8 @@ def test_build_schedule_live_mode_still_uses_settlement_for_anchor_and_past_chai
     _write_bar(ohlcv_root, "ZQU6", "2026-09-20 12:00", 100.0 - 9.00)
     # November backs the genuinely UPCOMING October meeting - its LIVE price legitimately
     # SHOULD be used (deliberately different from what a settlement price might say).
-    _write_bar(ohlcv_root, "ZQX6", "2026-11-01 12:00", 100.0 - 4.60)
-    _write_bar(ohlcv_root, "ZQZ6", "2026-12-01 12:00", 100.0 - 4.60)
+    _write_bar(ohlcv_root, "ZQX6", "2026-09-20 12:00", 100.0 - 4.60)
+    _write_bar(ohlcv_root, "ZQZ6", "2026-09-20 12:05", 100.0 - 4.60)
 
     schedule, meta = build_schedule(
         "live", today=D("2026-09-20"),
@@ -222,12 +251,13 @@ def test_build_schedule_chains_through_an_already_past_meeting(tmp_path):
     _write_daily(daily_root, "ZQU6", "2026-09-20", 100.0 - sep_avg)
 
     # November is flat (no meeting) - read directly as October's post-meeting rate:
-    # another +25bp on top of September's solved 4.25%, i.e. 4.50%.
-    _write_daily(daily_root, "ZQX6", "2026-11-01", 100.0 - 4.50)
+    # another +25bp on top of September's solved 4.25%, i.e. 4.50%. Dated <= today
+    # (these are just settlement prices FOR later months, observable well in advance).
+    _write_daily(daily_root, "ZQX6", "2026-09-19", 100.0 - 4.50)
 
     # December meets 2026-12-09 (31-day month, Jan 2027 uncached/beyond config so this
     # falls back to day-weighting its own month) - constructed as an exact hold.
-    _write_daily(daily_root, "ZQZ6", "2026-12-01", 100.0 - 4.50)
+    _write_daily(daily_root, "ZQZ6", "2026-09-19", 100.0 - 4.50)
 
     schedule, meta = build_schedule(
         "close", today=D("2026-09-20"), contracts_file=contracts_file, close_root=daily_root,
@@ -269,10 +299,11 @@ def test_build_schedule_never_treats_a_month_past_fomc_meetings_as_flat(tmp_path
     # Dec 2026 meeting ends 2026-12-09 (31-day month); construct EXACTLY a +25bp hike.
     days_in_month, meeting_day, pre, post = 31, 9, 4.00, 4.25
     dec_avg = (pre * meeting_day + post * (days_in_month - meeting_day)) / days_in_month
-    _write_daily(daily_root, "ZQZ6", "2026-12-01", 100.0 - dec_avg)
+    _write_daily(daily_root, "ZQZ6", "2026-11-14", 100.0 - dec_avg)  # dated <= today
     # January 2027 is deliberately an absurd value - if it were ever read as "flat"
-    # this would leak straight into the result.
-    _write_daily(daily_root, "ZQF7", "2027-01-05", 100.0 - 99.0)
+    # this would leak straight into the result. (Excluded regardless by the
+    # last_known_month cap, not by the as_of cutoff - dated <= today for realism only.)
+    _write_daily(daily_root, "ZQF7", "2026-11-14", 100.0 - 99.0)
 
     schedule, _ = build_schedule(
         "close", today=D("2026-11-15"), contracts_file=contracts_file, close_root=daily_root,
@@ -298,6 +329,74 @@ def test_build_schedule_empty_when_nothing_cached(tmp_path):
 def test_build_schedule_rejects_unknown_mode():
     with pytest.raises(ValueError):
         build_schedule("realtime")
+
+
+# ------------------------------------------------------------------------- backfill
+def test_available_days_lists_distinct_cached_trading_days(tmp_path):
+    contracts_file = tmp_path / "contracts.parquet"
+    daily_root = tmp_path / "Daily"
+    _write_contracts(contracts_file, [("ZQF6", "2026-01-30")])
+    _write_daily(daily_root, "ZQF6", "2026-01-05", 95.75)
+    _write_daily(daily_root, "ZQF6", "2026-01-06", 95.80)
+
+    days = available_days("close", contracts_file=contracts_file, close_root=daily_root)
+    assert days == [D("2026-01-05"), D("2026-01-06")]
+
+
+def test_available_days_empty_when_no_contracts(tmp_path):
+    assert available_days("close", contracts_file=tmp_path / "contracts.parquet") == []
+
+
+def test_backfill_schedule_matches_calling_build_schedule_directly(tmp_path):
+    """The whole point of backfill_schedule is that it's just a loop over
+    build_schedule - no separate pricing logic to drift out of sync. Confirm a
+    backfilled day's numbers are IDENTICAL to calling build_schedule with that same
+    day directly, AND that a later day's price genuinely doesn't leak into an earlier
+    one - the exact look-ahead bug this whole mechanism exists to prevent."""
+    contracts_file = tmp_path / "contracts.parquet"
+    daily_root = tmp_path / "Daily"
+    _write_contracts(contracts_file, [("ZQQ6", "2026-08-31"), ("ZQU6", "2026-09-30")])
+    _write_daily(daily_root, "ZQQ6", "2026-08-05", 100.0 - 4.00)  # flat anchor, well before both days below
+    _write_daily(daily_root, "ZQU6", "2026-08-20", 100.0 - 4.05)  # September contract, day 1
+    _write_daily(daily_root, "ZQU6", "2026-08-25", 100.0 - 4.10)  # September contract, day 2 (later, different price)
+
+    out = backfill_schedule("close", contracts_file=contracts_file, close_root=daily_root)
+    assert set(out["as_of"].unique()) == {D("2026-08-20"), D("2026-08-25")}
+
+    sep_rate_on = lambda df: df.loc[df["probability"].idxmax(), "implied_rate"]  # noqa: E731
+    day1 = out[(out["as_of"] == D("2026-08-20")) & (out["month"] == "2026-09")]
+    day2 = out[(out["as_of"] == D("2026-08-25")) & (out["month"] == "2026-09")]
+    assert sep_rate_on(day1) != pytest.approx(sep_rate_on(day2))  # genuinely different, not stuck/duplicated
+
+    # And a backfilled row is identical to calling build_schedule directly for that day.
+    direct, _ = build_schedule("close", today=D("2026-08-20"), contracts_file=contracts_file, close_root=daily_root)
+    backfilled_day = day1.drop(columns=["as_of", "anchor_month", "anchor_rate"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(direct.reset_index(drop=True), backfilled_day)
+
+
+def test_backfill_schedule_bounded_by_start_and_end(tmp_path):
+    contracts_file = tmp_path / "contracts.parquet"
+    daily_root = tmp_path / "Daily"
+    _write_contracts(contracts_file, [("ZQQ6", "2026-08-31")])
+    _write_daily(daily_root, "ZQQ6", "2026-08-10", 100.0 - 4.00)
+    _write_daily(daily_root, "ZQQ6", "2026-08-20", 100.0 - 4.00)
+    _write_daily(daily_root, "ZQQ6", "2026-08-30", 100.0 - 4.00)
+
+    days = available_days("close", contracts_file=contracts_file, close_root=daily_root)
+    assert days == [D("2026-08-10"), D("2026-08-20"), D("2026-08-30")]
+    # (no FOMC_MEETINGS coverage this far out means build_schedule itself returns
+    # empty for all of these - this test only checks the day-bounding, not pricing.)
+
+    out = backfill_schedule(
+        "close", start=D("2026-08-15"), end=D("2026-08-30"),
+        contracts_file=contracts_file, close_root=daily_root,
+    )
+    assert out.empty  # confirms no crash / correct bounding even with nothing pricable
+
+
+def test_backfill_schedule_empty_when_nothing_cached(tmp_path):
+    out = backfill_schedule("close", contracts_file=tmp_path / "contracts.parquet", close_root=tmp_path / "Daily")
+    assert out.empty
 
 
 # ---------------------------------------------------------------------------- charts

@@ -58,6 +58,7 @@ Prefer `.v.0` for bonds: the calendar front sits in an expiring, thin contract f
 
 `/rnd` and `/wirp` are read-only (never fetch) - populate their data first via
 `scripts/update_daily_options.py` and `scripts/update_futures.py` / `scripts/update_daily.py` respectively.
+`scripts/backfill_wirp.py` computes WIRP's historical time series outside the dashboard entirely (no API, no Dash - see CLAUDE.md section 3's "point-in-time cutoff" convention).
 
 ## Cost protection
 - Disk first: only date ranges absent from the coverage manifest are requested.

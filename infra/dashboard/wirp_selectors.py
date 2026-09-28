@@ -52,42 +52,56 @@ def month_contract_map(months: list[pd.Period], contracts: pd.DataFrame) -> dict
 
 def _latest_rates(
     month_tickers: dict[pd.Period, str], root: Path, columns: list[str], decode, price_column: str,
+    *, as_of: pd.Timestamp | None = None,
 ) -> tuple[pd.Series, pd.Timestamp | None]:
-    """Shared read for close_rates/live_rates: the LATEST cached price per ticker,
-    converted to that ticker's implied average rate."""
+    """Shared read for close_rates/live_rates: the LATEST cached price per ticker AS
+    OF ``as_of`` (default: no cutoff, i.e. the latest row in the whole dataset),
+    converted to that ticker's implied average rate.
+
+    This ``as_of`` cutoff is what makes the function usable for BOTH live dashboard
+    use (the default) and a point-in-time historical backfill (an explicit ``as_of``) -
+    see CLAUDE.md section 3's "point-in-time cutoff" convention, and
+    infra.dashboard.wirp_selectors.backfill_schedule for the worked example. Without
+    it, asking "what did this look like on day X" would silently read whatever the
+    LATEST cached row happens to be regardless of X - look-ahead bias, not history.
+    """
     if not month_tickers:
         return pd.Series(dtype="float64"), None
-    raw = parquet_store.read_partitioned(root, equals_in={"ticker": list(month_tickers.values())})
+    end = as_of + pd.Timedelta(days=1) if as_of is not None else None  # read_partitioned's end is exclusive
+    raw = parquet_store.read_partitioned(root, end=end, equals_in={"ticker": list(month_tickers.values())})
     if raw is None or raw.empty:
         return pd.Series(dtype="float64"), None
     df = decode(raw[columns]).dropna(subset=[price_column])
     if df.empty:
         return pd.Series(dtype="float64"), None
     latest = df.sort_values("timestamp").groupby("ticker", observed=True).last()
-    as_of = df["timestamp"].max()
+    latest_as_of = df["timestamp"].max()
     ticker_to_month = {t: m for m, t in month_tickers.items()}
     rates = {
         ticker_to_month[ticker]: wirp.implied_rate(row[price_column])
         for ticker, row in latest.iterrows() if ticker in ticker_to_month
     }
-    return pd.Series(rates).sort_index(), as_of
+    return pd.Series(rates).sort_index(), latest_as_of
 
 
 def close_rates(
-    month_tickers: dict[pd.Period, str], *, root: Path = DAILY_FUTURES_DIR,
+    month_tickers: dict[pd.Period, str], *, root: Path = DAILY_FUTURES_DIR, as_of: pd.Timestamp | None = None,
 ) -> tuple[pd.Series, pd.Timestamp | None]:
-    """CLOSE mode: latest cached OFFICIAL SETTLEMENT price per contract."""
-    return _latest_rates(month_tickers, root, stats.DAILY_COLUMNS, stats.decode_daily, "settlement_price")
+    """CLOSE mode: latest cached OFFICIAL SETTLEMENT price per contract, as of
+    ``as_of`` (default: no cutoff - the latest row on disk)."""
+    return _latest_rates(month_tickers, root, stats.DAILY_COLUMNS, stats.decode_daily, "settlement_price", as_of=as_of)
 
 
 def live_rates(
-    month_tickers: dict[pd.Period, str], *, root: Path = FUTURES_DIR,
+    month_tickers: dict[pd.Period, str], *, root: Path = FUTURES_DIR, as_of: pd.Timestamp | None = None,
 ) -> tuple[pd.Series, pd.Timestamp | None]:
-    """LIVE mode: latest cached 1-MINUTE bar close per contract. Not a real-time feed
-    (this project only ever calls Databento's Historical API) - it's the freshest bar
-    already on disk; ``as_of`` is always surfaced next to it (infra.dashboard.
-    wirp_charts) so the page never implies it's more current than it is."""
-    return _latest_rates(month_tickers, root, tf.FUTURES_COLUMNS, tf.decode_futures, "close")
+    """LIVE mode: latest cached 1-MINUTE bar close per contract, as of ``as_of``
+    (default: no cutoff - the latest row on disk). Not a real-time feed (this project
+    only ever calls Databento's Historical API) - it's the freshest bar already on
+    disk; ``as_of`` (the return value, not the cutoff parameter of the same name - see
+    infra.dashboard.wirp_charts) is always surfaced next to it so the page never
+    implies it's more current than it is."""
+    return _latest_rates(month_tickers, root, tf.FUTURES_COLUMNS, tf.decode_futures, "close", as_of=as_of)
 
 
 def find_anchor(
@@ -152,9 +166,12 @@ def build_schedule(
     # settled fact - not a live-evolving prediction - so they always read from the
     # official settlement, regardless of the LIVE/CLOSE toggle. Only genuinely upcoming
     # meetings (and the reference months used to price them) follow the toggle: those
-    # are real forecasts a viewer might want to watch move intraday.
-    settlement_fn = lambda mt: close_rates(mt, root=close_root)  # noqa: E731
-    toggle_fn = settlement_fn if mode == "close" else (lambda mt: live_rates(mt, root=live_root))
+    # are real forecasts a viewer might want to watch move intraday. Both are cut off
+    # at ``today`` (CLAUDE.md section 3's "point-in-time cutoff" convention) - without
+    # it, calling this with a PAST ``today`` (a backfill) would silently read whatever
+    # the latest cached row happens to be now, not what was known as of that day.
+    settlement_fn = lambda mt: close_rates(mt, root=close_root, as_of=today)  # noqa: E731
+    toggle_fn = settlement_fn if mode == "close" else (lambda mt: live_rates(mt, root=live_root, as_of=today))
 
     anchor = find_anchor(earliest_upcoming_month, contracts, settlement_fn, all_meeting_months)
     if anchor is None:
@@ -230,3 +247,65 @@ def build_schedule(
         ),
     }
     return schedule, meta
+
+
+def available_days(
+    mode: str,
+    *,
+    contracts_file: Path = FUTURES_CONTRACTS_FILE,
+    close_root: Path = DAILY_FUTURES_DIR,
+    live_root: Path = FUTURES_DIR,
+) -> list[pd.Timestamp]:
+    """Distinct trading days with ANY cached ZQ price data for ``mode`` - the valid
+    ``today`` values ``backfill_schedule`` can meaningfully iterate over."""
+    contracts = zq_contracts(contracts_file)
+    tickers = contracts["ticker"].tolist()
+    if not tickers:
+        return []
+    root = close_root if mode == "close" else live_root
+    raw = parquet_store.read_partitioned(root, equals_in={"ticker": tickers}, columns=["timestamp"])
+    if raw is None or raw.empty:
+        return []
+    return sorted(pd.to_datetime(raw["timestamp"]).dt.normalize().unique())
+
+
+def backfill_schedule(
+    mode: str,
+    *,
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
+    contracts_file: Path = FUTURES_CONTRACTS_FILE,
+    close_root: Path = DAILY_FUTURES_DIR,
+    live_root: Path = FUTURES_DIR,
+) -> pd.DataFrame:
+    """A historical WIRP time series: re-runs ``build_schedule`` for every cached
+    trading day (optionally bounded to ``[start, end)``) and stacks the results - one
+    row per (as-of day, meeting, outcome level), ``infra.analytics.wirp.
+    meeting_schedule``'s own long format plus an ``as_of`` column.
+
+    Deliberately just a loop over ``build_schedule`` - no separate backfill-only
+    pricing logic - so a backfilled day is computed exactly the way the live dashboard
+    would have shown it THAT day (CLAUDE.md section 3's cutoff convention makes this
+    possible: ``build_schedule``'s own ``today``/``as_of`` plumbing is what stops a
+    backfill from leaking in today's actual latest price). No API calls; read-only
+    against whatever's already cached (``scripts/backfill_wirp.py`` is the CLI wrapper).
+    """
+    days = available_days(mode, contracts_file=contracts_file, close_root=close_root, live_root=live_root)
+    if start is not None:
+        days = [d for d in days if d >= pd.Timestamp(start)]
+    if end is not None:
+        days = [d for d in days if d < pd.Timestamp(end)]
+
+    rows = []
+    for day in days:
+        schedule, meta = build_schedule(
+            mode, today=day, contracts_file=contracts_file, close_root=close_root, live_root=live_root,
+        )
+        if schedule.empty:
+            continue
+        schedule = schedule.copy()
+        schedule.insert(0, "as_of", day)
+        schedule["anchor_month"] = meta["anchor_month"]
+        schedule["anchor_rate"] = meta["anchor_rate"]
+        rows.append(schedule)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
