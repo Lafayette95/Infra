@@ -53,6 +53,22 @@ API_ATTEMPTS = 3
 RETRY_PAUSE_S = 5.0
 
 
+def is_transient(exc: BaseException) -> bool:
+    """Worth retrying: a server-side (5xx) error, rate limiting (429), or a dropped
+    connection. Never a client error (4xx - e.g. 422 range unavailable) or the cost guard:
+    those are deterministic and retrying just repeats them. Added 2026-09-29 after the first
+    scheduled run lost 7 contracts to transient failures that succeeded on a manual retry."""
+    import aiohttp
+    import requests
+    from databento.common.error import BentoClientError, BentoServerError
+    if isinstance(exc, BentoServerError):
+        return True
+    if isinstance(exc, BentoClientError):
+        return getattr(exc, "http_status", None) == 429
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout, aiohttp.ClientConnectionError,
+                            ConnectionError, TimeoutError))
+
+
 def call_with_deadline(
     fn: Callable[[], T],
     *,
@@ -61,8 +77,9 @@ def call_with_deadline(
     attempts: int = API_ATTEMPTS,
     pause_s: float = RETRY_PAUSE_S,
 ) -> T:
-    """``fn()`` with a hard wall-clock deadline per attempt; raises ``ApiTimeout`` if every
-    attempt overruns. Exceptions raised BY ``fn`` propagate at once (not retried)."""
+    """``fn()`` with a hard wall-clock deadline per attempt, retried (up to ``attempts``) on
+    a hang or a transient failure (``is_transient``); raises ``ApiTimeout`` if every attempt
+    hangs. A non-transient exception raised BY ``fn`` propagates at once."""
     for attempt in range(1, attempts + 1):
         box: dict = {}
 
@@ -76,9 +93,15 @@ def call_with_deadline(
         worker.start()
         worker.join(deadline_s)
         if not worker.is_alive():
-            if "error" in box:
-                raise box["error"]
-            return box["value"]
+            if "error" not in box:
+                return box["value"]
+            exc = box["error"]
+            if not is_transient(exc) or attempt == attempts:
+                raise exc
+            log.warning("%s: transient %s: %s (attempt %d/%d)", what, type(exc).__name__,
+                        str(exc).splitlines()[0][:160], attempt, attempts)
+            time.sleep(pause_s)
+            continue
         log.warning("%s: no response within %.0fs (attempt %d/%d)", what, deadline_s, attempt, attempts)
         if attempt < attempts:
             time.sleep(pause_s)
@@ -124,7 +147,7 @@ def estimate_cost(
             start=_utc(start),
             end=_utc(end),
         ),
-        what=f"get_cost {dataset} {schema}", deadline_s=META_DEADLINE_S,
+        what=f"get_cost {dataset} {schema} {list(symbols)[:2]}", deadline_s=META_DEADLINE_S,
     ))
 
 

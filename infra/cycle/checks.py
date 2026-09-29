@@ -17,9 +17,15 @@ _ONE_DAY = pd.Timedelta(days=1)
 
 
 def _equal(old: pd.Series, new: pd.Series, rtol: float, atol: float) -> np.ndarray:
-    """Element-wise equality with NA == NA; numeric columns within tolerance (on-disk
-    fixed-point integers compare exactly either way)."""
+    """Element-wise "not revised": NA == NA; numeric columns within tolerance (on-disk
+    fixed-point integers compare exactly either way); and a value arriving where the
+    vintage had NONE is a FILLED GAP, not a revision - e.g. open interest, which the
+    exchange publishes the next session (CLAUDE.md 8), so the latest day's OI is always
+    missing in a vintage and filled by the next run's trailing re-fetch. Counting that as a
+    revision failed the first scheduled run (49 x Friday's OI arriving Monday) and would
+    have failed every run. A value that CHANGES or DISAPPEARS is still a revision."""
     both_na = old.isna().to_numpy() & new.isna().to_numpy()
+    filled = old.isna().to_numpy() & ~new.isna().to_numpy()
     if pd.api.types.is_numeric_dtype(old) and pd.api.types.is_numeric_dtype(new):
         a = pd.to_numeric(old, errors="coerce").astype("float64").to_numpy()
         b = pd.to_numeric(new, errors="coerce").astype("float64").to_numpy()
@@ -27,7 +33,7 @@ def _equal(old: pd.Series, new: pd.Series, rtol: float, atol: float) -> np.ndarr
             same = np.isclose(a, b, rtol=rtol, atol=atol)
     else:
         same = (old.astype(str) == new.astype(str)).to_numpy()
-    return both_na | same
+    return both_na | filled | same
 
 
 def compare_to_vintage(

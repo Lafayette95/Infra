@@ -699,3 +699,22 @@ def test_a_bad_print_on_a_windows_last_day_is_judged_using_the_next_session_on_d
                              paths=paths, options=opts)  # the window ENDS on the bad-print day
     out = next(c for c in report.outcome("px").checks if c.name == "px_outliers")
     assert not out.passed and list(out.details["timestamp"]) == [D("2025-01-10")]
+
+
+def test_a_late_value_filling_a_gap_is_not_a_revision_but_a_changed_or_retracted_one_is(tmp_path):
+    """Regression (first scheduled run, 2026-09-29): Friday's open interest is published
+    Monday, so a vintage always holds the latest day's OI as missing; the next run fills it.
+    That's new data, not a revision - it failed every run until this was fixed."""
+    keys = ["timestamp", "ticker"]
+    ts = pd.to_datetime(["2026-09-24", "2026-09-25", "2026-09-25"]).astype("datetime64[ms]")
+    old = pd.DataFrame({"timestamp": ts, "ticker": ["A", "A", "B"],
+                        "oi": pd.array([100, None, 7], dtype="Int32"), "px": [1.0, 2.0, 3.0]})
+    new = pd.DataFrame({"timestamp": ts, "ticker": ["A", "A", "B"],
+                        "oi": pd.array([100, 250, None], dtype="Int32"), "px": [1.0, 2.5, 3.0]})
+    parquet_store.write_partitioned(old, tmp_path / "old", keys)
+    parquet_store.write_partitioned(new, tmp_path / "new", keys)
+    diffs = compare_to_vintage(tmp_path / "new", tmp_path / "old", keys, D("2026-09-01"), D("2026-09-30"))
+    got = set(zip(diffs["ticker"], diffs["column"]))
+    assert ("A", "oi") not in got           # missing -> 250: a filled gap
+    assert ("A", "px") in got               # 2.0 -> 2.5: a real revision
+    assert ("B", "oi") in got               # 7 -> missing: a retraction is a revision too

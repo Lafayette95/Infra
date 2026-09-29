@@ -64,3 +64,48 @@ def test_every_client_call_in_the_api_module_is_wrapped():
                 line = src.splitlines()[node.lineno - 1]
                 assert "lambda" in line or "lambda" in src.splitlines()[node.lineno - 2], (
                     f"unwrapped Databento call: {segment}")
+
+
+# ------------------------------------------------------------ transient-error retries
+from databento.common.error import BentoClientError, BentoServerError  # noqa: E402
+
+
+def _flaky(exc, fail_times):
+    calls = []
+
+    def fn():
+        calls.append(1)
+        if len(calls) <= fail_times:
+            raise exc
+        return "ok"
+    return fn, calls
+
+
+def test_a_transient_server_error_is_retried_and_recovers():
+    fn, calls = _flaky(BentoServerError(http_status=503, message="unavailable"), fail_times=2)
+    assert api.call_with_deadline(fn, what="t", attempts=3, **FAST) == "ok" and len(calls) == 3
+
+
+def test_rate_limiting_429_is_retried():
+    fn, calls = _flaky(BentoClientError(http_status=429, message="too many requests"), fail_times=1)
+    assert api.call_with_deadline(fn, what="t", attempts=3, **FAST) == "ok" and len(calls) == 2
+
+
+def test_a_dropped_connection_is_retried():
+    import requests
+    fn, calls = _flaky(requests.ConnectionError("reset by peer"), fail_times=1)
+    assert api.call_with_deadline(fn, what="t", attempts=3, **FAST) == "ok"
+
+
+def test_client_errors_are_never_retried():
+    fn, calls = _flaky(BentoClientError(http_status=422, message="dataset_unavailable_range"), fail_times=5)
+    with pytest.raises(BentoClientError):
+        api.call_with_deadline(fn, what="t", attempts=3, **FAST)
+    assert len(calls) == 1
+
+
+def test_a_transient_error_that_persists_is_raised_after_the_last_attempt():
+    fn, calls = _flaky(BentoServerError(http_status=502, message="bad gateway"), fail_times=9)
+    with pytest.raises(BentoServerError):
+        api.call_with_deadline(fn, what="t", attempts=3, **FAST)
+    assert len(calls) == 3

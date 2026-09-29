@@ -4,6 +4,7 @@ the cycle's point-in-time contract universe, through the existing daily pipeline
 """
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -17,6 +18,7 @@ from infra.cycle.paths import CyclePaths
 from infra.cycle.universe import UniverseMember, daily_universe
 from infra.pipeline import daily as dl
 
+log = logging.getLogger(__name__)
 _ONE_DAY = pd.Timedelta(days=1)
 
 # Custom outlier check (test c): a BAD PRINT, not a big market day. Each move is first put
@@ -132,6 +134,7 @@ def backfill_daily_px_data(
                                                coverage_file=paths.daily_futures_coverage)
                 except Exception as exc:
                     fetch_errors[ticker] = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
+                    log.warning("px fetch failed for %s: %s", ticker, fetch_errors[ticker])
     return {"members": members, "universe_errors": universe_errors, "fetch_errors": fetch_errors,
             "rows": rows, "available_end": _availability(members, end, client) if fetch_missing else {}}
 
@@ -176,7 +179,7 @@ def _check_fetch_ok(ctx: StepContext):
     if not problems:
         return True, f"{len(_members(ctx))} contracts, {ctx.output.get('rows', 0)} rows written", None
     details = pd.DataFrame({"what": list(problems), "error": list(problems.values())})
-    return False, f"{len(problems)} fetch error(s)", details
+    return False, f"{len(problems)} fetch error(s): {', '.join(list(problems)[:10])}", details
 
 
 def complete_day(ctx: StepContext, dataset: str) -> pd.Timestamp:

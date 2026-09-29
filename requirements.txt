@@ -8,3 +8,8 @@ python-dotenv>=1.0
 dash>=2.17
 plotly>=5.22
 pytest>=8.0
+prefect>=3.8,<3.9  # daily-cycle scheduling (infra/cycle/flows.py); 3.8.7 verified 2026-09-28
+# Prefect 3.8 declares sqlalchemy<3.0 but its server-side scheduler crashes on SQLAlchemy 2.1
+# ("Can't evaluate bulk DML statement") - no scheduled runs are ever created, silently.
+# Found 2026-09-29 when the first scheduled run never fired; 2.0.54 verified working.
+sqlalchemy[asyncio]>=2.0,<2.1
