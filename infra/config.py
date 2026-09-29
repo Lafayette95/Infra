@@ -44,6 +44,10 @@ BMK_ROOT = DATABASE_ROOT / "Bmk"
 # Full dated snapshots of the database, one per cycle run day (``_vintages/YYYY-MM-DD``) -
 # the baseline each run's "no revisions" check compares against.
 VINTAGE_ROOT = DATABASE_ROOT / "_vintages"
+# Sidecar log of every value the pipeline TOUCHED (a bad print NA'd or rolled, ...): the
+# data stores keep exactly what the vendor delivered; readers overlay this at read time.
+# infra.storage.adjustment_store, CLAUDE.md section 12.
+ADJUSTMENTS_DIR = DATABASE_ROOT / "_adjustments"
 
 # ------------------------------------------------------------------ API settings
 SCHEMA_OHLCV = "ohlcv-1m"
@@ -189,26 +193,36 @@ TRADING_HOURS: dict[str, TradingSession] = {
 class DailyBackfillSpec:
     n_contracts: int  # nearest unexpired contracts on the root's expiry cycle (c.0 .. c.N-1)
     enabled: bool = True
+    # What happens to a detected bad print, by the contract's rank that day: ranks below
+    # strict_ranks are "NA" (strict - the value is dropped, never replaced), the rest "roll"
+    # (the last good settlement is carried forward). CLAUDE.md section 12.
+    strict_ranks: int = 0
+
+    def bad_print_policy(self, rank: int) -> str:
+        return "NA" if rank < self.strict_ranks else "roll"
 
 
 DAILY_BACKFILL: dict[str, DailyBackfillSpec] = {
+    # Bad-print policy (strict_ranks): STIR - the first HALF of the saved contracts
+    # (n_contracts // 2) are strict "NA", the rest "roll"; bond futures - the front
+    # contract strict, the deferred "roll".
     # STIR, monthly cycle: 12 = a full year of monthly expiries.
-    "ZQ": DailyBackfillSpec(12),
-    "SR1": DailyBackfillSpec(12),
+    "ZQ": DailyBackfillSpec(12, strict_ranks=6),
+    "SR1": DailyBackfillSpec(12, strict_ranks=6),
     # STIR, quarterly cycle (serials excluded by FuturesRoot.expiry_months).
-    "SR3": DailyBackfillSpec(21),
-    "ESR": DailyBackfillSpec(6),
+    "SR3": DailyBackfillSpec(21, strict_ranks=10),
+    "ESR": DailyBackfillSpec(6, strict_ranks=3),
     # Bond futures: front + one deferred.
-    "ZT": DailyBackfillSpec(2),
-    "ZF": DailyBackfillSpec(2),
-    "ZN": DailyBackfillSpec(2),
-    "TN": DailyBackfillSpec(2),
-    "ZB": DailyBackfillSpec(2),
-    "UB": DailyBackfillSpec(2),
-    "FGBL": DailyBackfillSpec(2),
-    "FGBM": DailyBackfillSpec(2),
-    "FGBS": DailyBackfillSpec(2),
-    "FBTP": DailyBackfillSpec(2),
+    "ZT": DailyBackfillSpec(2, strict_ranks=1),
+    "ZF": DailyBackfillSpec(2, strict_ranks=1),
+    "ZN": DailyBackfillSpec(2, strict_ranks=1),
+    "TN": DailyBackfillSpec(2, strict_ranks=1),
+    "ZB": DailyBackfillSpec(2, strict_ranks=1),
+    "UB": DailyBackfillSpec(2, strict_ranks=1),
+    "FGBL": DailyBackfillSpec(2, strict_ranks=1),
+    "FGBM": DailyBackfillSpec(2, strict_ranks=1),
+    "FGBS": DailyBackfillSpec(2, strict_ranks=1),
+    "FBTP": DailyBackfillSpec(2, strict_ranks=1),
     # ICE excluded for now: ~99% of the daily cycle's API cost (2026-09-28 cost check).
     "SO3": DailyBackfillSpec(0, enabled=False),
     "R": DailyBackfillSpec(0, enabled=False),

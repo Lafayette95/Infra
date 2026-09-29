@@ -28,8 +28,17 @@ class UniverseMember:
     root: str
     dataset: str
     first: pd.Timestamp  # first day it is in the universe (inclusive)
-    last: pd.Timestamp  # last day it is in the universe (inclusive)
+    last: pd.Timestamp  # last day it is in the universe (inclusive) - NOT its expiry: a
+    #                     contract still alive at the window's end has last == window end
     activation: pd.Timestamp | None  # listing date, from the definitions snapshot
+    expiry: pd.Timestamp | None = None  # real expiry (contracts table) - orders the curve
+
+    @property
+    def curve_order(self) -> pd.Timestamp:
+        """Where the contract sits on its root's curve. Its expiry, never ``last``: on a
+        short window every live contract shares the same ``last`` (the window end), which
+        would make "nearest contracts" and ranks arbitrary."""
+        return self.expiry if self.expiry is not None else self.last
 
     def expected_on(self, day: pd.Timestamp) -> bool:
         """In the universe on ``day`` AND already listed then."""
@@ -80,11 +89,22 @@ def daily_universe(
             continue
         ranks = [RelativeSpec(root, "c", r) for r in range(spec.n_contracts)]
         windows, _ = needed_contract_windows(ranks, cfg, contracts, start, end + _ONE_DAY)
-        activation = contracts.drop_duplicates("ticker").set_index("ticker")["activation"]
+        meta = contracts.drop_duplicates("ticker").set_index("ticker")
         for ticker, (w0, w1) in windows.items():
-            act = activation.get(ticker)
+            act, exp = meta["activation"].get(ticker), meta["expiry"].get(ticker)
             members[ticker] = UniverseMember(
                 ticker, root, cfg.dataset, pd.Timestamp(w0), pd.Timestamp(w1) - _ONE_DAY,
                 None if act is None or pd.isna(act) else pd.Timestamp(act),
+                None if exp is None or pd.isna(exp) else pd.Timestamp(exp),
             )
     return members, errors
+
+
+def rank_on(ticker: str, day: pd.Timestamp, members: dict[str, UniverseMember]) -> int:
+    """The contract's rank on its root's curve that day (0 = front): its position, by
+    expiry, among the root's universe members alive that day - i.e. its relative
+    calendar rank c.N, which is exactly how the universe was built."""
+    m = members[ticker]
+    alive = sorted((o for o in members.values() if o.root == m.root and o.first <= day <= o.last),
+                   key=lambda o: (o.curve_order, o.ticker))
+    return [o.ticker for o in alive].index(ticker)

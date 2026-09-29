@@ -69,7 +69,8 @@ def fetch_and_store_daily_options(
             dataset, ids, range_start, range_end, max_cost_usd=max_cost_usd, client=client
         )
         clean = stats.clean_daily_option_statistics(raw, definitions, dataset)
-        parquet_store.write_partitioned(stats.encode_daily_options(clean), root, stats.DAILY_OPTIONS_KEYS)
+        parquet_store.write_partitioned(stats.encode_daily_options(clean), root, stats.DAILY_OPTIONS_KEYS,
+        coalesce=True)  # settlement and OI are published in different sessions (CLAUDE.md 8)
         for instrument_id in ids:
             coverage_store.record_covered(coverage_file, str(instrument_id), [(range_start, range_end)])
         rows += len(clean)

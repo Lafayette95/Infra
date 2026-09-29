@@ -15,8 +15,9 @@ from infra.config import DAILY_BACKFILL, MAX_COST_USD, SCHEMA_STATISTICS, DailyB
 from infra.cycle.checks import revision_check
 from infra.cycle.core import Check, Severity, Step, StepContext
 from infra.cycle.paths import CyclePaths
-from infra.cycle.universe import UniverseMember, daily_universe
+from infra.cycle.universe import UniverseMember, daily_universe, rank_on
 from infra.pipeline import daily as dl
+from infra.storage import adjustment_store
 
 log = logging.getLogger(__name__)
 _ONE_DAY = pd.Timedelta(days=1)
@@ -99,6 +100,7 @@ def backfill_daily_px_data(
     max_cost_usd: float = MAX_COST_USD,
     client=None,
     workers: int = PX_FETCH_WORKERS,
+    run_day: pd.Timestamp | None = None,
 ) -> dict:
     """Settlement/OI for every universe contract over the days it is in the universe,
     within ``[start, end]`` (inclusive). Per-contract failures are collected, not raised,
@@ -135,8 +137,10 @@ def backfill_daily_px_data(
                 except Exception as exc:
                     fetch_errors[ticker] = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
                     log.warning("px fetch failed for %s: %s", ticker, fetch_errors[ticker])
+    treated, pending = treat_bad_prints(start, end, members, specs, paths, run_day=run_day)
     return {"members": members, "universe_errors": universe_errors, "fetch_errors": fetch_errors,
-            "rows": rows, "available_end": _availability(members, end, client) if fetch_missing else {}}
+            "rows": rows, "available_end": _availability(members, end, client) if fetch_missing else {},
+            "bad_prints": treated, "pending_bad_prints": pending}
 
 
 def _availability(members: dict[str, UniverseMember], end: pd.Timestamp, client) -> dict[str, pd.Timestamp]:
@@ -168,7 +172,7 @@ def _members(ctx: StepContext) -> dict[str, UniverseMember]:
 def _settlements(ctx: StepContext, lookback: pd.Timedelta = pd.Timedelta(0),
                  lookahead: pd.Timedelta = pd.Timedelta(0)) -> pd.DataFrame:
     df = dl.read_daily_from_disk(list(_members(ctx)), ctx.start - lookback, ctx.end + _ONE_DAY + lookahead,
-                                 root=ctx.paths.daily_futures_dir)
+                                 root=ctx.paths.daily_futures_dir, adjusted=False)  # px judges RAW data
     df["ticker"] = df["ticker"].astype(str)
     return df.dropna(subset=["settlement_price"])
 
@@ -268,7 +272,7 @@ def peer_outliers(
     if df.empty:
         return pd.DataFrame(columns=cols), pd.DataFrame(columns=cols)
     df["root"] = df["ticker"].map(lambda t: members[t].root)
-    df["expiry"] = df["ticker"].map(lambda t: members[t].last)
+    df["expiry"] = df["ticker"].map(lambda t: members[t].curve_order)
     df["group"] = df["root"].map(lambda r: (FUTURES_ROOTS[r].currency, FUTURES_ROOTS[r].category))
 
     devs, pools = [], []
@@ -301,23 +305,72 @@ def peer_outliers(
 _NEXT_SESSION_LOOKAHEAD = pd.Timedelta(days=10)
 
 
-def _outliers(ctx: StepContext):
-    hist = _settlements(ctx, lookback=pd.Timedelta(days=180), lookahead=_NEXT_SESSION_LOOKAHEAD)
-    return peer_outliers(hist, _members(ctx), ctx.start, ctx.end)
+BAD_PRINT_SOURCE = "px_bad_print"  # this process's name in the adjustments log
+
+
+def treat_bad_prints(
+    start: pd.Timestamp, end: pd.Timestamp, members: dict[str, UniverseMember],
+    specs: dict[str, DailyBackfillSpec], paths: CyclePaths, *, run_day: pd.Timestamp | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Detect bad prints in ``[start, end]`` on the RAW settlements (``peer_outliers``) and
+    treat each by its contract's policy that day (``DailyBackfillSpec.bad_print_policy``
+    of its rank): ``NA`` drops the value, ``roll`` carries the last good settlement
+    forward. Treatments go to the adjustments log - the stored settlement is never
+    changed - replacing this process's earlier verdicts for the window, so a print later
+    corrected upstream stops being adjusted. Returns ``(treated, pending)``."""
+    run_day = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize() if run_day is None else pd.Timestamp(run_day)
+    hist = dl.read_daily_from_disk(list(members), start - pd.Timedelta(days=180),
+                                   end + _ONE_DAY + _NEXT_SESSION_LOOKAHEAD,
+                                   root=paths.daily_futures_dir, adjusted=False)
+    hist["ticker"] = hist["ticker"].astype(str)
+    hist = hist.dropna(subset=["settlement_price"])
+    flagged, pending = peer_outliers(hist, members, start, end)
+    adjustment_store.clear(paths.adjustments_dir, store=dl.STORE, source=BAD_PRINT_SOURCE,
+                           keys=list(members), start=start, end=end)
+    rows, done = [], {}  # done: (ticker, day) -> adjusted value, for consecutive bad prints
+    for r in flagged.sort_values(["ticker", "timestamp"]).itertuples(index=False):
+        m = members[r.ticker]
+        rank = rank_on(r.ticker, r.timestamp, members)
+        policy = specs[m.root].bad_print_policy(rank)
+        series = hist.loc[hist["ticker"] == r.ticker].set_index("timestamp")["settlement_price"]
+        original, adjusted, note = float(series[r.timestamp]), np.nan, ""
+        if policy == "roll":
+            for day in reversed(series.index[series.index < r.timestamp]):
+                value = done.get((r.ticker, day), series[day])
+                if np.isfinite(value):
+                    adjusted = float(value)
+                    break
+            else:
+                policy, note = "NA", " (roll had no earlier good value - NA instead)"
+        done[(r.ticker, r.timestamp)] = adjusted
+        rows.append({
+            "store": dl.STORE, "timestamp": r.timestamp, "key": r.ticker, "column": "settlement_price",
+            "action": policy, "original": original, "adjusted": adjusted, "source": BAD_PRINT_SOURCE,
+            "detail": (f"rank {rank}: off-peer move (z {r.z:.1f}, peer deviation {r.dev:.1f}) "
+                       f"reversed next session ({r.next_dev:.1f}){note}"),
+            "run_day": run_day,
+        })
+    treated = pd.DataFrame(rows, columns=adjustment_store.COLUMNS)
+    adjustment_store.record(paths.adjustments_dir, treated)
+    return treated, pending
 
 
 def _check_outliers(ctx: StepContext):
-    """Test (c): bad prints - a move far out of line with its peers that reversed next session."""
-    flagged, pending = _outliers(ctx)
-    if flagged.empty:
-        return True, f"no bad prints ({len(pending)} candidate(s) awaiting their next session)", None
-    return False, f"{len(flagged)} bad print(s): off-peer moves that reversed next session", flagged
+    """Test (c), an EXCEPTION not a stop: bad prints found and how each was treated
+    (NA / roll, per the contract's policy) - the run continues on the treated data."""
+    treated = ctx.output.get("bad_prints", pd.DataFrame())
+    if treated.empty:
+        n = len(ctx.output.get("pending_bad_prints", []))
+        return True, f"no bad prints ({n} candidate(s) awaiting their next session)", None
+    counts = ", ".join(f"{n} {a}" for a, n in treated["action"].value_counts().items())
+    details = treated[["key", "timestamp", "action", "original", "adjusted", "detail"]].rename(columns={"key": "ticker"})
+    return False, f"{len(treated)} bad print(s) treated ({counts})", details
 
 
 def _check_outliers_pending(ctx: StepContext):
     """Warning: a print already out of line with its peers whose next session hasn't
-    happened yet - judged (and failed, if it reverses) by the next run."""
-    _, pending = _outliers(ctx)
+    happened yet - judged (and treated, if it reverses) by the next run."""
+    pending = ctx.output.get("pending_bad_prints", pd.DataFrame())
     if pending.empty:
         return True, "no off-peer prints awaiting judgement", None
     return False, f"{len(pending)} off-peer print(s) to be judged once their next session exists", pending
@@ -330,7 +383,7 @@ PX_CHECKS = (
     revision_check(lambda p: p.daily_futures_dir, ["timestamp", "ticker"], name="px_no_revisions",
                    equals_in=lambda ctx: {"ticker": list(_members(ctx))}),
     Check("px_sane", _check_sane),
-    Check("px_outliers", _check_outliers),
+    Check("px_outliers", _check_outliers, severity=Severity.WARN),
     Check("px_outliers_pending", _check_outliers_pending, severity=Severity.WARN),
 )
 
@@ -339,6 +392,7 @@ def _run(ctx: StepContext) -> dict:
     opts = ctx.options
     return backfill_daily_px_data(
         ctx.start, ctx.end, paths=ctx.paths, force_refetch=ctx.force_refetch,
+        run_day=ctx.run_day,
         **{k: opts[k] for k in ("fetch_missing", "refresh_contracts", "specs", "max_cost_usd", "client",
                                 "workers") if k in opts},
     )

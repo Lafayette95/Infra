@@ -258,3 +258,28 @@ def test_range_entirely_beyond_availability_is_skipped_and_not_covered(tmp_path,
     rows = dl.fetch_and_store_daily("SR3Z6", [(today, today + pd.Timedelta(days=1))], dataset="GLBX.MDP3",
                                     root=tmp_path / "D", coverage_file=cov)
     assert rows == 0 and coverage_store.read_covered(cov, "SR3Z6") == []
+
+
+def test_a_fetch_that_sees_only_the_next_days_OI_never_wipes_the_previous_settlement(tmp_path, monkeypatch):
+    """Regression (2026-09-29): a fetch starting on day X also receives day X-1's open
+    interest (published the next morning, ts_ref = X-1). That produced an OI-only row for
+    X-1 which REPLACED the stored complete row - wiping X-1's settlement. Every scheduled
+    run lost the settlement of the day before its window; so did every backfill boundary."""
+    root, cov = tmp_path / "Daily", tmp_path / "cov.parquet"
+    kw = dict(dataset="GLBX.MDP3", root=root, coverage_file=cov)
+
+    def fetch(dataset, symbol, start, end, **_):
+        days = [d for d in pd.date_range(start, end, freq="D", inclusive="left")]
+        settle = _raw_stat_rows([d + pd.Timedelta(hours=19) for d in days], days, [3] * len(days),
+                                price=[95.0 + 0.01 * d.day for d in days])
+        oi = _raw_stat_rows([d + pd.Timedelta(hours=1) for d in days],   # received morning of d,
+                            [d - pd.Timedelta(days=1) for d in days],    # about the PRIOR day
+                            [9] * len(days), quantity=[1000 + d.day for d in days])
+        return pd.concat([settle, oi], ignore_index=True)
+
+    monkeypatch.setattr(api, "fetch_statistics", fetch)
+    dl.load_daily(["SR3Z6"], "2026-09-21", "2026-09-24", **kw)          # stores Sep 21-23 settlements
+    dl.load_daily(["SR3Z6"], "2026-09-24", "2026-09-26", force_refetch=True, **kw)  # sees Sep 23's OI only
+    df = dl.read_daily_from_disk(["SR3Z6"], D("2026-09-21"), D("2026-09-26"), root=root).set_index("timestamp")
+    assert df.loc[D("2026-09-23"), "settlement_price"] == pytest.approx(95.23)  # NOT wiped
+    assert df.loc[D("2026-09-23"), "open_interest"] == 1024                      # and the OI filled in

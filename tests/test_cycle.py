@@ -222,18 +222,65 @@ def test_thin_roots_fall_back_to_the_currency_bond_complex():
     assert list(flagged["ticker"]) == ["ZNM5"] and set(flagged["peers"]) == {"currency+category"}
 
 
-def test_px_outlier_check_fails_the_step_end_to_end(stir_env, monkeypatch):
+def _bad_print_env(stir_env, monkeypatch, strict_ranks):
     paths, opts = stir_env
     fake = FakeStats()
     monkeypatch.setattr(api, "fetch_statistics", fake)
-    opts = {**opts, "specs": {"ZQ": DailyBackfillSpec(3)}}
+    opts = {**opts, "specs": {"ZQ": DailyBackfillSpec(3, strict_ranks=strict_ranks)}}
     run_daily_cycle("2024-10-01", "2025-01-03", steps=["px"], run_day="2025-01-03", paths=paths, options=opts)
     fake.prices[("ZQG5", D("2025-01-08"))] = 150.0  # absurd one-day print, normal again next day
-    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-10",
-                             paths=paths, options=opts)
-    out = next(c for c in report.outcome("px").checks if c.name == "px_outliers")
-    assert not out.passed and set(out.details["ticker"]) == {"ZQG5"}
-    assert report.outcome("px").status == "failed"
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-01-10", paths=paths, options=opts)
+    return paths, opts, fake, report
+
+
+def _settle_on(paths, ticker, day, adjusted):
+    df = dl.read_daily_from_disk([ticker], day, day + pd.Timedelta(days=1), root=paths.daily_futures_dir,
+                                 adjusted=adjusted, adjustments_dir=paths.adjustments_dir)
+    return df["settlement_price"].iloc[0]
+
+
+def test_bad_print_is_rolled_recorded_and_the_run_continues(stir_env, monkeypatch):
+    paths, _, _, report = _bad_print_env(stir_env, monkeypatch, strict_ranks=0)  # ZQG5 (rank 1): roll
+    assert report.ok, report.summary()
+    check = next(c for c in report.outcome("px").checks if c.name == "px_outliers")
+    assert not check.passed and check.severity.value == "warn"
+    assert list(check.details["action"]) == ["roll"]
+    day, prev = D("2025-01-08"), D("2025-01-07")
+    assert _settle_on(paths, "ZQG5", day, adjusted=False) == pytest.approx(150.0)   # raw untouched
+    assert _settle_on(paths, "ZQG5", day, adjusted=True) == pytest.approx(_settle_on(paths, "ZQG5", prev, False))
+    pnl = _store(paths, "Pnl").set_index(["ticker", "timestamp"])
+    assert pnl.loc[("ZQG5", day), "price_change"] == pytest.approx(0.0)  # downstream sees the rolled value
+
+
+def test_strict_rank_bad_print_is_set_to_na(stir_env, monkeypatch):
+    paths, _, _, report = _bad_print_env(stir_env, monkeypatch, strict_ranks=2)  # ZQG5 is rank 1 < 2: NA
+    assert report.ok, report.summary()
+    check = next(c for c in report.outcome("px").checks if c.name == "px_outliers")
+    assert list(check.details["action"]) == ["NA"]
+    assert pd.isna(_settle_on(paths, "ZQG5", D("2025-01-08"), adjusted=True))
+    pnl = _store(paths, "Pnl")
+    assert not ((pnl["ticker"] == "ZQG5") & (pnl["timestamp"] == D("2025-01-08"))).any()  # no guessed row
+
+
+def test_a_print_corrected_upstream_stops_being_adjusted(stir_env, monkeypatch):
+    from infra.storage import adjustment_store
+    paths, opts, fake, _ = _bad_print_env(stir_env, monkeypatch, strict_ranks=0)
+    assert len(adjustment_store.read(paths.adjustments_dir, store=dl.STORE)) == 1
+    del fake.prices[("ZQG5", D("2025-01-08"))]  # the vendor fixes the print
+    run_scheduled_daily("2025-01-10", paths=paths, options=opts)  # trailing re-fetch picks it up
+    assert adjustment_store.read(paths.adjustments_dir, store=dl.STORE).empty
+
+
+def test_bad_print_policy_table():
+    from infra.config import DAILY_BACKFILL
+    for root in ("ZT", "ZF", "ZN", "TN", "ZB", "UB", "FGBL", "FGBM", "FGBS", "FBTP"):
+        spec = DAILY_BACKFILL[root]
+        assert [spec.bad_print_policy(r) for r in range(spec.n_contracts)] == ["NA", "roll"]
+    for root in ("ZQ", "SR1", "SR3", "ESR"):  # STIR: first HALF strict (n // 2)
+        spec = DAILY_BACKFILL[root]
+        policies = [spec.bad_print_policy(r) for r in range(spec.n_contracts)]
+        assert policies == ["NA"] * (spec.n_contracts // 2) + ["roll"] * (spec.n_contracts - spec.n_contracts // 2)
 
 
 def test_last_weekday():
@@ -256,7 +303,9 @@ def test_full_cycle_writes_a_vintage_and_second_day_compares_against_it(env):
     assert vintage.list_vintages(paths) == [D("2025-01-10"), D("2025-01-13")]
 
 
-def test_upstream_revision_is_caught_fails_px_and_skips_backup(env):
+def test_upstream_revision_is_an_exception_logged_not_a_stop(env):
+    """A revised settlement is caught and reported with its details, but it's an
+    EXCEPTION, not a failure: px stays ok, everything downstream runs, the day is backed up."""
     paths, fake, opts = env
     assert run_daily_cycle("2025-01-06", "2025-01-10", run_day="2025-01-10", paths=paths, options=opts).ok
     fake.prices[("ZNH5", D("2025-01-09"))] = 99.0  # exchange revises an already-published day
@@ -264,12 +313,10 @@ def test_upstream_revision_is_caught_fails_px_and_skips_backup(env):
     report = run_scheduled_daily("2025-01-13", paths=paths, options=opts)
     px = report.outcome("px")
     rev = next(c for c in px.checks if c.name == "px_no_revisions")
-    assert not rev.passed and px.status == "failed"
-    assert (rev.details["ticker"] == "ZNH5").all() and (rev.details["column"] == "settlement_price").all()
-    assert report.outcome("backup").status == "skipped"  # a failed day never becomes a baseline
-    assert vintage.list_vintages(paths) == [D("2025-01-10")]
-    assert not report.ok
-
+    assert not rev.passed and rev.severity.value == "warn"
+    assert (rev.details["ticker"] == "ZNH5").all() and set(rev.details["kind"]) == {"changed"}
+    assert px.status == "ok" and report.ok
+    assert vintage.list_vintages(paths) == [D("2025-01-10"), D("2025-01-13")]
 
 def test_without_force_refetch_a_revision_is_never_even_seen(env):
     """Documents WHY the scheduled run force-refetches: a normal (Rule 2.1) run never
@@ -450,8 +497,7 @@ def test_derived_revision_detected_against_previous_vintage(zq_env):
                              run_day=WEEK[-1] + pd.Timedelta(days=3), paths=zq_env)
     rev = next(c for c in report.outcome("derived").checks if c.name == "wirp_no_revisions")
     assert not rev.passed and set(rev.details["timestamp"]) == {WEEK[1]}
-    assert report.outcome("backup").status == "skipped"
-
+    assert report.outcome("backup").status == "ok"  # an exception, not a stop
 
 def test_derived_presence_fails_with_the_reason_when_anchor_is_missing(tmp_path):
     paths = CyclePaths.under(tmp_path / "db")
@@ -701,10 +747,9 @@ def test_a_bad_print_on_a_windows_last_day_is_judged_using_the_next_session_on_d
     assert not out.passed and list(out.details["timestamp"]) == [D("2025-01-10")]
 
 
-def test_a_late_value_filling_a_gap_is_not_a_revision_but_a_changed_or_retracted_one_is(tmp_path):
-    """Regression (first scheduled run, 2026-09-29): Friday's open interest is published
-    Monday, so a vintage always holds the latest day's OI as missing; the next run fills it.
-    That's new data, not a revision - it failed every run until this was fixed."""
+def test_every_difference_is_a_revision_classified_by_kind(tmp_path):
+    """A value filling a gap (e.g. open interest published the next session, CLAUDE.md 8)
+    counts as a revision like any other - classified 'filled' so it's easy to read."""
     keys = ["timestamp", "ticker"]
     ts = pd.to_datetime(["2026-09-24", "2026-09-25", "2026-09-25"]).astype("datetime64[ms]")
     old = pd.DataFrame({"timestamp": ts, "ticker": ["A", "A", "B"],
@@ -714,7 +759,5 @@ def test_a_late_value_filling_a_gap_is_not_a_revision_but_a_changed_or_retracted
     parquet_store.write_partitioned(old, tmp_path / "old", keys)
     parquet_store.write_partitioned(new, tmp_path / "new", keys)
     diffs = compare_to_vintage(tmp_path / "new", tmp_path / "old", keys, D("2026-09-01"), D("2026-09-30"))
-    got = set(zip(diffs["ticker"], diffs["column"]))
-    assert ("A", "oi") not in got           # missing -> 250: a filled gap
-    assert ("A", "px") in got               # 2.0 -> 2.5: a real revision
-    assert ("B", "oi") in got               # 7 -> missing: a retraction is a revision too
+    got = {(t, c): k for t, c, k in zip(diffs["ticker"], diffs["column"], diffs["kind"])}
+    assert got == {("A", "oi"): "filled", ("A", "px"): "changed", ("B", "oi"): "retracted"}

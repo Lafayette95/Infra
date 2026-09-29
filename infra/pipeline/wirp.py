@@ -22,10 +22,10 @@ from pathlib import Path
 import pandas as pd
 
 from infra.analytics import wirp
-from infra.config import DAILY_FUTURES_DIR, FOMC_MEETINGS, FUTURES_CONTRACTS_FILE, FUTURES_DIR
+from infra.config import ADJUSTMENTS_DIR, DAILY_FUTURES_DIR, FOMC_MEETINGS, FUTURES_CONTRACTS_FILE, FUTURES_DIR
 from infra.processing import statistics as stats
 from infra.processing import transforms as tf
-from infra.storage import contract_store, parquet_store
+from infra.storage import adjustment_store, contract_store, parquet_store
 
 ROOT = "ZQ"
 _ANCHOR_LOOKBACK_MONTHS = 6  # FOMC meetings are never more than a couple months apart
@@ -57,7 +57,7 @@ def month_contract_map(months: list[pd.Period], contracts: pd.DataFrame) -> dict
 
 def _latest_rates(
     month_tickers: dict[pd.Period, str], root: Path, columns: list[str], decode, price_column: str,
-    *, as_of: pd.Timestamp | None = None,
+    *, as_of: pd.Timestamp | None = None, adjust=None,
 ) -> tuple[pd.Series, pd.Timestamp | None]:
     """Shared read for close_rates/live_rates: the LATEST cached price per ticker AS
     OF ``as_of`` (default: no cutoff, i.e. the latest row in the whole dataset),
@@ -76,7 +76,10 @@ def _latest_rates(
     raw = parquet_store.read_partitioned(root, end=end, equals_in={"ticker": list(month_tickers.values())})
     if raw is None or raw.empty:
         return pd.Series(dtype="float64"), None
-    df = decode(raw[columns]).dropna(subset=[price_column])
+    df = decode(raw[columns])
+    if adjust is not None:
+        df = adjust(df)
+    df = df.dropna(subset=[price_column])
     if df.empty:
         return pd.Series(dtype="float64"), None
     latest = df.sort_values("timestamp").groupby("ticker", observed=True).last()
@@ -91,10 +94,21 @@ def _latest_rates(
 
 def close_rates(
     month_tickers: dict[pd.Period, str], *, root: Path = DAILY_FUTURES_DIR, as_of: pd.Timestamp | None = None,
+    adjustments_dir: Path | None = None,
 ) -> tuple[pd.Series, pd.Timestamp | None]:
     """CLOSE mode: latest cached OFFICIAL SETTLEMENT price per contract, as of
-    ``as_of`` (default: no cutoff - the latest row on disk)."""
-    return _latest_rates(month_tickers, root, stats.DAILY_COLUMNS, stats.decode_daily, "settlement_price", as_of=as_of)
+    ``as_of`` (default: no cutoff - the latest row on disk), with the adjustments log
+    overlaid (a bad print NA'd or rolled - CLAUDE.md 12). An NA'd latest settlement
+    falls back to the contract's previous one, exactly as any missing settlement does."""
+    from infra.pipeline.daily import STORE
+
+    def adjust(df: pd.DataFrame) -> pd.DataFrame:
+        adj = adjustment_store.read(ADJUSTMENTS_DIR if adjustments_dir is None else adjustments_dir,
+                                    store=STORE, keys=list(month_tickers.values()))
+        return adjustment_store.apply(df, adj, key_column="ticker")
+
+    return _latest_rates(month_tickers, root, stats.DAILY_COLUMNS, stats.decode_daily, "settlement_price",
+                         as_of=as_of, adjust=adjust)
 
 
 def live_rates(
@@ -146,6 +160,7 @@ def build_schedule(
     contracts_file: Path = FUTURES_CONTRACTS_FILE,
     close_root: Path = DAILY_FUTURES_DIR,
     live_root: Path = FUTURES_DIR,
+    adjustments_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Main entry point: (long-format schedule, meta dict) for ``mode`` ("close" or
     "live"). Empty schedule + a human ``meta["status"]`` message when data isn't cached
@@ -175,7 +190,7 @@ def build_schedule(
     # at ``today`` (CLAUDE.md section 3's "point-in-time cutoff" convention) - without
     # it, calling this with a PAST ``today`` (a backfill) would silently read whatever
     # the latest cached row happens to be now, not what was known as of that day.
-    settlement_fn = lambda mt: close_rates(mt, root=close_root, as_of=today)  # noqa: E731
+    settlement_fn = lambda mt: close_rates(mt, root=close_root, as_of=today, adjustments_dir=adjustments_dir)  # noqa: E731
     toggle_fn = settlement_fn if mode == "close" else (lambda mt: live_rates(mt, root=live_root, as_of=today))
 
     anchor = find_anchor(earliest_upcoming_month, contracts, settlement_fn, all_meeting_months)
@@ -282,6 +297,7 @@ def backfill_schedule(
     contracts_file: Path = FUTURES_CONTRACTS_FILE,
     close_root: Path = DAILY_FUTURES_DIR,
     live_root: Path = FUTURES_DIR,
+    adjustments_dir: Path | None = None,
 ) -> pd.DataFrame:
     """A historical WIRP time series: re-runs ``build_schedule`` for every cached
     trading day (optionally bounded to ``[start, end)``) and stacks the results - one
@@ -305,6 +321,7 @@ def backfill_schedule(
     for day in days:
         schedule, meta = build_schedule(
             mode, today=day, contracts_file=contracts_file, close_root=close_root, live_root=live_root,
+            adjustments_dir=adjustments_dir,
         )
         if schedule.empty:
             continue

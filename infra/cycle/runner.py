@@ -41,15 +41,23 @@ def _today() -> pd.Timestamp:
     return pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
 
 
+_DETAIL_ROWS = 20  # how much of a non-passing check's details goes into the run log
+
+
 def _log_check(step: str, r: CheckResult) -> None:
+    """Passing checks at INFO. A non-passing check is logged WITH its details (first
+    rows), so an exception is still readable after the run - in the log file and the
+    Prefect UI - not only in the in-memory report: ``info`` at INFO, ``warn`` (an
+    exception: recorded, the run continues) at WARNING, ``fail`` at ERROR."""
     if r.passed:
         log.info("[%s] %s: pass - %s", step, r.name, r.message)
-    elif r.severity is Severity.INFO:
-        log.info("[%s] %s: %s", step, r.name, r.message)
-    elif r.severity is Severity.WARN:
-        log.warning("[%s] %s: %s", step, r.name, r.message)
-    else:
-        log.error("[%s] %s: FAILED - %s", step, r.name, r.message)
+        return
+    text = f"[{step}] {r.name}: {'FAILED - ' if r.severity is Severity.FAIL else ''}{r.message}"
+    if r.details is not None and not r.details.empty:
+        more = f"\n  ... {len(r.details) - _DETAIL_ROWS} more" if len(r.details) > _DETAIL_ROWS else ""
+        text += "\n" + r.details.head(_DETAIL_ROWS).to_string(index=False) + more
+    level = {Severity.INFO: logging.INFO, Severity.WARN: logging.WARNING}.get(r.severity, logging.ERROR)
+    log.log(level, "%s", text)
 
 
 def execute_step(step: Step, ctx: StepContext) -> StepOutcome:

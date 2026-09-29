@@ -68,7 +68,8 @@ def _universe(start, end, paths, specs):
 
 
 def _settlements(tickers: list[str], start, end, paths: CyclePaths) -> pd.DataFrame:
-    df = dl.read_daily_from_disk(tickers, start, end + _ONE_DAY, root=paths.daily_futures_dir)
+    df = dl.read_daily_from_disk(tickers, start, end + _ONE_DAY, root=paths.daily_futures_dir,
+                                 adjustments_dir=paths.adjustments_dir)  # cleaned (adjusted) settlements
     df["ticker"] = df["ticker"].astype(str)
     return df.dropna(subset=["settlement_price"]).sort_values(["ticker", "timestamp"])
 

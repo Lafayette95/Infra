@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hourly missed-run watchdog for the daily cycle: independent of Prefect, alerts via
+     macOS notification if the last due run left no vintage. Template:
+     scripts/install_launchd.sh. CLAUDE.md section 12. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.infra.daily-cycle-watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__ENV_BIN__/python</string>
+    <string>__REPO__/scripts/watchdog_daily_cycle.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>__ENV_BIN__:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PYTHONPATH</key><string>__REPO__</string>
+  </dict>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>__LOG_DIR__/watchdog.log</string>
+  <key>StandardErrorPath</key><string>__LOG_DIR__/watchdog.log</string>
+</dict>
+</plist>
