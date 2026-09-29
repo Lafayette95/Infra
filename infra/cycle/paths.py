@@ -19,6 +19,7 @@ class CyclePaths:
     wirp_dir: Path
     bmk_root: Path
     vintage_root: Path
+    adjustments_dir: Path
 
     @classmethod
     def default(cls) -> CyclePaths:
@@ -31,6 +32,7 @@ class CyclePaths:
             wirp_dir=config.WIRP_DIR,
             bmk_root=config.BMK_ROOT,
             vintage_root=config.VINTAGE_ROOT,
+            adjustments_dir=config.ADJUSTMENTS_DIR,
         )
 
     @classmethod

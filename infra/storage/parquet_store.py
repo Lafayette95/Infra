@@ -96,6 +96,26 @@ def _atomic_write(df: pd.DataFrame, path: Path) -> None:
     os.replace(tmp, path)
 
 
+def delete_where(root: Path, predicate) -> int:
+    """Delete every row, across all year/quarter files under ``root``, for which
+    ``predicate(frame) -> bool Series`` is True; empty files are removed. Returns rows
+    removed. Each file is rewritten atomically."""
+    if not has_data(root):
+        return 0
+    removed = 0
+    for path in sorted(root.rglob(PARQUET_FILE_NAME)):
+        part = pd.read_parquet(path, engine="pyarrow")
+        drop = predicate(part).to_numpy(dtype=bool)
+        if not drop.any():
+            continue
+        removed += int(drop.sum())
+        if drop.all():
+            path.unlink()
+        else:
+            _atomic_write(part[~drop].reset_index(drop=True), path)
+    return removed
+
+
 def prune_rows(root: Path, column: str, values: Iterable) -> int:
     """Delete EVERY row whose ``column`` is in ``values``, across all year/quarter files
     under ``root`` (not just the partitions a later write touches). Returns rows removed.
@@ -104,31 +124,20 @@ def prune_rows(root: Path, column: str, values: Iterable) -> int:
     keys, or the manifest will still claim history that no longer exists on disk (see
     infra.pipeline.daily.fetch_and_store_daily).
     """
-    if not has_data(root):
-        return 0
-    values = set(values)
-    removed = 0
-    for path in sorted(root.rglob(PARQUET_FILE_NAME)):
-        part = pd.read_parquet(path, engine="pyarrow")
+    values = list(values)
+
+    def match(part: pd.DataFrame) -> pd.Series:
         if column not in part.columns:
-            continue
+            return pd.Series(False, index=part.index)
         col = part[column]
         if pd.api.types.is_datetime64_any_dtype(col):
             # typed, not string, comparison: astype(str) renders an all-midnight column
             # as "2026-09-23" while str(Timestamp) gives "2026-09-23 00:00:00" - a string
             # match silently prunes nothing
-            match = col.isin(pd.to_datetime(list(values)))
-        else:
-            match = col.astype(str).isin({str(v) for v in values})
-        keep = ~match
-        removed += int((~keep).sum())
-        if keep.all():
-            continue
-        if keep.any():
-            _atomic_write(part[keep].reset_index(drop=True), path)
-        else:
-            path.unlink()
-    return removed
+            return col.isin(pd.to_datetime(values))
+        return col.astype(str).isin({str(v) for v in values})
+
+    return delete_where(root, match)
 
 
 def write_partitioned(
@@ -138,11 +147,17 @@ def write_partitioned(
     *,
     prune: bool = False,
     prune_column: str = "ticker",
+    coalesce: bool = False,
 ) -> list[Path]:
     """Merge encoded rows into their year/quarter files, de-duplicating on ``key_columns``.
 
     ``prune=False`` (default): append - existing history is kept, and only rows sharing
-    a key with an incoming row are replaced by it. ``prune=True``: first delete the ENTIRE
+    a key with an incoming row are replaced by it. ``coalesce=True``: a key conflict is
+    merged COLUMN BY COLUMN instead - an incoming value wins, but a MISSING incoming value
+    never erases an existing one. For stores whose rows are pivots of independently
+    published fields (the daily statistics: settlement and open interest arrive in
+    different sessions), where a partial row is a partial observation, not a retraction.
+    ``prune=True``: first delete the ENTIRE
     stored history of every instrument (``prune_column`` value, a ticker by default)
     present in ``df``, then write ``df`` - the instrument's history becomes exactly the
     incoming rows. Each file is written to a temp path and atomically moved into place.
@@ -159,6 +174,11 @@ def write_partitioned(
         if path.exists():
             existing = pd.read_parquet(path, engine="pyarrow")
             part = pd.concat([existing, part], ignore_index=True)
+        if coalesce:
+            # groupby().last() takes, per column, the last NON-null value: the incoming
+            # row's where it has one, the existing row's where it doesn't
+            columns = list(part.columns)
+            part = part.groupby(key_columns, sort=True).last().reset_index()[columns]
         part = (
             part.drop_duplicates(subset=key_columns, keep="last")
             .sort_values(key_columns)

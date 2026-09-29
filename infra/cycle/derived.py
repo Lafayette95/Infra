@@ -48,6 +48,7 @@ def compute_wirp(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> t
     settlements on disk - the exact function the dashboard uses, as of each day."""
     kw = dict(contracts_file=paths.contracts_file, close_root=paths.daily_futures_dir)
     days = [d for d in available_days("close", **kw) if start <= d <= end]
+    kw["adjustments_dir"] = paths.adjustments_dir  # WIRP reads cleaned settlements
     frames, empty = [], {}
     for day in days:
         schedule, meta = build_schedule("close", today=day, **kw)

@@ -15,15 +15,19 @@ import pandas as pd
 
 from infra.api import databento_client as api
 from infra.config import (
+    ADJUSTMENTS_DIR,
     DAILY_FUTURES_COVERAGE_FILE,
     DAILY_FUTURES_DIR,
     MAX_COST_USD,
 )
 from infra.coverage.intervals import Interval, find_missing_ranges, to_utc_day
 from infra.processing import statistics as stats
-from infra.storage import coverage_store, parquet_store
+from infra.storage import adjustment_store, coverage_store, parquet_store
 
 log = logging.getLogger(__name__)
+
+# This store's name in the adjustments log (infra.storage.adjustment_store).
+STORE = "Daily/Futures"
 
 
 def read_daily_from_disk(
@@ -32,14 +36,26 @@ def read_daily_from_disk(
     end: pd.Timestamp,
     *,
     root: Path = DAILY_FUTURES_DIR,
+    adjusted: bool = True,
+    adjustments_dir: Path | None = None,
 ) -> pd.DataFrame:
-    """Read decoded (float settlement price) daily rows with predicate pushdown. No API."""
+    """Read decoded (float settlement price) daily rows with predicate pushdown. No API.
+
+    ``adjusted=True`` (default) overlays the adjustments log - bad prints NA'd or rolled
+    (CLAUDE.md 12) - so consumers get cleaned values; ``adjusted=False`` returns exactly
+    what the vendor delivered (the px checks, which judge the raw data, use it)."""
     raw = parquet_store.read_partitioned(
         root, start=start, end=end, equals_in={"ticker": tickers}
     )
     if raw is None or raw.empty:
         return stats.decode_daily(stats.empty_daily())
     df = stats.decode_daily(raw[stats.DAILY_COLUMNS]).sort_values(stats.DAILY_KEYS)
+    if adjusted:
+        # resolved at CALL time (not bound as a default), so tests can point the module
+        # default at a temp dir (tests/conftest.py) and never read the real log
+        adjustments_dir = ADJUSTMENTS_DIR if adjustments_dir is None else adjustments_dir
+        adj = adjustment_store.read(adjustments_dir, store=STORE, start=start, end=end, keys=tickers)
+        df = adjustment_store.apply(df, adj, key_column="ticker")
     return df.reset_index(drop=True)
 
 
@@ -112,7 +128,8 @@ def store_daily_raw(
     rows = 0
     for range_start, range_end, covered_end, raw in fetched:
         clean = stats.clean_daily_statistics(raw, ticker, dataset)
-        parquet_store.write_partitioned(stats.encode_daily(clean), root, stats.DAILY_KEYS)
+        parquet_store.write_partitioned(stats.encode_daily(clean), root, stats.DAILY_KEYS,
+        coalesce=True)  # settlement and OI are published in different sessions (CLAUDE.md 8)
         # Recorded even when empty (holidays, or a contract not yet publishing stats)
         # so we never pay to re-ask - but never past the last COMPLETE available day.
         if covered_end > range_start:
