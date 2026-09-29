@@ -35,6 +35,16 @@ DAILY_FUTURES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "futures.parquet"
 DAILY_OPTIONS_DIR = DAILY_ROOT / "Options"
 DAILY_OPTIONS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "options.parquet"
 
+# Daily-cycle outputs (infra/cycle, CLAUDE.md section 12). Derived metrics ARE persisted
+# here (unlike the dashboard's on-demand analytics) because the cycle's revision checks
+# need yesterday's values on disk to compare against.
+DERIVED_ROOT = DATABASE_ROOT / "Derived"
+WIRP_DIR = DERIVED_ROOT / "WIRP"
+BMK_ROOT = DATABASE_ROOT / "Bmk"
+# Full dated snapshots of the database, one per cycle run day (``_vintages/YYYY-MM-DD``) -
+# the baseline each run's "no revisions" check compares against.
+VINTAGE_ROOT = DATABASE_ROOT / "_vintages"
+
 # ------------------------------------------------------------------ API settings
 SCHEMA_OHLCV = "ohlcv-1m"
 SCHEMA_DEFINITION = "definition"
@@ -67,9 +77,20 @@ class FuturesRoot:
     roll_offset_days: int = 0  # calendar roll this many days before expiry
     # Keep only outrights whose raw symbol matches (drops non-trading twins, serial months).
     ticker_regex: str | None = None
+    # Currency value of a 1.00 move in the quoted price, per contract (daily cycle pnl /
+    # DV01, CLAUDE.md 12). None = not yet verified against the exchange's contract specs.
+    point_value: float | None = None
+    currency: str | None = None
 
 
 _CME, _EUREX, _ICE = "GLBX.MDP3", "XEUR.EOBI", "IFLL.IMPACT"
+# Point values verified 2026-09-28 against the exchanges' own contract specs:
+#   SR3 $2,500 x IMM index ($25/bp) - cmegroup.com .../three-month-sofr.contractSpecs.html
+#   SR1, ZQ $4,167 x index ($41.67/bp) - .../one-month-sofr and .../30-day-federal-fund specs
+#   ESR EUR2,500 x index (EUR25/bp) - .../euro-short-term-rate.contractSpecs.html
+#   ZT $200,000 face = $2,000/pt; ZF/ZN/TN/ZB/UB $100,000 face = $1,000/pt - CME Treasury specs
+#   FGBL/FGBM/FGBS/FBTP EUR100,000 nominal = EUR1,000/pt (0.01 = EUR10) - eurex.com product pages
+# ICE (SO3, R) deliberately left unset: disabled in the daily cycle, not yet verified.
 # ICE symbols look like "R   FMH0025!": keep quarterly (H/M/U/Z) "!" contracts only.
 _ICE_QUARTERLY = r"FM[HMUZ]\d{4}!$"
 
@@ -77,21 +98,28 @@ FUTURES_ROOTS: dict[str, FuturesRoot] = {
     r.root: r
     for r in (
         # ---- STIR
-        FuturesRoot("SR3", _CME, "SR3.FUT", "3M SOFR", "STIR"),
-        FuturesRoot("ESR", _CME, "ESR.FUT", "3M €STR", "STIR"),
+        FuturesRoot("SR3", _CME, "SR3.FUT", "3M SOFR", "STIR", point_value=2500.0, currency="USD"),
+        FuturesRoot("ESR", _CME, "ESR.FUT", "3M €STR", "STIR", point_value=2500.0, currency="EUR"),
         FuturesRoot("SO3", _ICE, "SO3.FUT", "3M SONIA", "STIR", ticker_regex=_ICE_QUARTERLY),
+        # Both MONTHLY cycle (all 12 months), not quarterly like the rest of this
+        # universe - verified against the real API 2026-09-21 (SR1: 26 outrights, ZQ:
+        # 61 outrights, both with every calendar month present).
+        FuturesRoot("SR1", _CME, "SR1.FUT", "1M SOFR", "STIR",
+                   expiry_months=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12), point_value=4167.0, currency="USD"),
+        FuturesRoot("ZQ", _CME, "ZQ.FUT", "30-Day Fed Funds", "STIR",
+                   expiry_months=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12), point_value=4167.0, currency="USD"),
         # ---- Bonds: US Treasuries (CBOT, via GLBX.MDP3)
-        FuturesRoot("ZT", _CME, "ZT.FUT", "US 2Y Note", "Bonds"),
-        FuturesRoot("ZF", _CME, "ZF.FUT", "US 5Y Note", "Bonds"),
-        FuturesRoot("ZN", _CME, "ZN.FUT", "US 10Y Note", "Bonds"),
-        FuturesRoot("TN", _CME, "TN.FUT", "US Ultra 10Y Note", "Bonds"),
-        FuturesRoot("ZB", _CME, "ZB.FUT", "US Classic Bond", "Bonds"),
-        FuturesRoot("UB", _CME, "UB.FUT", "US Ultra Bond", "Bonds"),
+        FuturesRoot("ZT", _CME, "ZT.FUT", "US 2Y Note", "Bonds", point_value=2000.0, currency="USD"),
+        FuturesRoot("ZF", _CME, "ZF.FUT", "US 5Y Note", "Bonds", point_value=1000.0, currency="USD"),
+        FuturesRoot("ZN", _CME, "ZN.FUT", "US 10Y Note", "Bonds", point_value=1000.0, currency="USD"),
+        FuturesRoot("TN", _CME, "TN.FUT", "US Ultra 10Y Note", "Bonds", point_value=1000.0, currency="USD"),
+        FuturesRoot("ZB", _CME, "ZB.FUT", "US Classic Bond", "Bonds", point_value=1000.0, currency="USD"),
+        FuturesRoot("UB", _CME, "UB.FUT", "US Ultra Bond", "Bonds", point_value=1000.0, currency="USD"),
         # ---- Bonds: Eurex (XEUR.EOBI only has data from 2025-03-10)
-        FuturesRoot("FGBL", _EUREX, "FGBL.FUT", "Euro-Bund", "Bonds"),
-        FuturesRoot("FGBM", _EUREX, "FGBM.FUT", "Euro-Bobl", "Bonds"),
-        FuturesRoot("FGBS", _EUREX, "FGBS.FUT", "Euro-Schatz", "Bonds"),
-        FuturesRoot("FBTP", _EUREX, "FBTP.FUT", "Euro-BTP", "Bonds"),
+        FuturesRoot("FGBL", _EUREX, "FGBL.FUT", "Euro-Bund", "Bonds", point_value=1000.0, currency="EUR"),
+        FuturesRoot("FGBM", _EUREX, "FGBM.FUT", "Euro-Bobl", "Bonds", point_value=1000.0, currency="EUR"),
+        FuturesRoot("FGBS", _EUREX, "FGBS.FUT", "Euro-Schatz", "Bonds", point_value=1000.0, currency="EUR"),
+        FuturesRoot("FBTP", _EUREX, "FBTP.FUT", "Euro-BTP", "Bonds", point_value=1000.0, currency="EUR"),
         # ---- Bonds: ICE Futures Europe (data from 2018-12-23)
         FuturesRoot("R", _ICE, "R.FUT", "UK Long Gilt", "Bonds", ticker_regex=_ICE_QUARTERLY),
     )
@@ -152,6 +180,44 @@ TRADING_HOURS: dict[str, TradingSession] = {
     ),
 }
 
+# ------------------------------------------------------------------ daily cycle
+# Operational parameters of the scheduled daily cycle (infra/cycle, CLAUDE.md section 12).
+# Deliberately separate from FUTURES_ROOTS: that describes the instrument universe itself,
+# this describes how the scheduled pipeline operates on it - a root can stay in the
+# universe while being switched off here (ICE, for now).
+@dataclass(frozen=True)
+class DailyBackfillSpec:
+    n_contracts: int  # nearest unexpired contracts on the root's expiry cycle (c.0 .. c.N-1)
+    enabled: bool = True
+
+
+DAILY_BACKFILL: dict[str, DailyBackfillSpec] = {
+    # STIR, monthly cycle: 12 = a full year of monthly expiries.
+    "ZQ": DailyBackfillSpec(12),
+    "SR1": DailyBackfillSpec(12),
+    # STIR, quarterly cycle (serials excluded by FuturesRoot.expiry_months).
+    "SR3": DailyBackfillSpec(21),
+    "ESR": DailyBackfillSpec(6),
+    # Bond futures: front + one deferred.
+    "ZT": DailyBackfillSpec(2),
+    "ZF": DailyBackfillSpec(2),
+    "ZN": DailyBackfillSpec(2),
+    "TN": DailyBackfillSpec(2),
+    "ZB": DailyBackfillSpec(2),
+    "UB": DailyBackfillSpec(2),
+    "FGBL": DailyBackfillSpec(2),
+    "FGBM": DailyBackfillSpec(2),
+    "FGBS": DailyBackfillSpec(2),
+    "FBTP": DailyBackfillSpec(2),
+    # ICE excluded for now: ~99% of the daily cycle's API cost (2026-09-28 cost check).
+    "SO3": DailyBackfillSpec(0, enabled=False),
+    "R": DailyBackfillSpec(0, enabled=False),
+}
+
+# How many BUSINESS days back the scheduled run re-fetches (force_refetch=True) to catch
+# upstream revisions. Global catch-all default; each cycle step can override its own.
+DEFAULT_REVISION_WINDOW_DAYS = 3
+
 # Relative (kind, rank) pairs offered per root (dashboard Expiry dropdown, defaults).
 DEFAULT_RELATIVE_RANKS: tuple[tuple[str, int], ...] = (
     ("c", 0), ("c", 1), ("c", 2), ("c", 3), ("v", 0), ("v", 1),
@@ -175,3 +241,41 @@ OPTIONS_UNIVERSE: dict[str, str] = {
     # (e.g. "SR3U6 C9762.5"), same convention as the futures root plus ".OPT".
     "SR3.OPT": "GLBX.MDP3",
 }
+
+# ------------------------------------------------------------------ FOMC meeting schedule
+# Source of truth for infra.analytics.wirp (World Interest Rate Probability - implied
+# Fed rate-move probabilities backed out of 30-Day Fed Funds futures, ZQ). A rate
+# decision is conventionally effective the calendar day AFTER the meeting's last day
+# (the day the FOMC statement is released) - ``end_date`` is that split day; see
+# infra.analytics.wirp.solve_post_meeting_rate and CLAUDE.md section 11.
+@dataclass(frozen=True)
+class FOMCMeeting:
+    start_date: str  # "YYYY-MM-DD", first day of the (usually 2-day) meeting
+    end_date: str  # "YYYY-MM-DD", decision/announcement day
+    has_projections: bool  # Summary of Economic Projections released alongside (informational)
+
+
+# Verified against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,
+# 2026-09-28. The Fed publishes next year's calendar around July of the prior year -
+# re-check that page (and re-verify existing dates) when extending this list.
+# 2025-08-22 was a "notation vote only" (no live 2-day meeting / rate decision in the
+# normal sense) and is deliberately excluded - treating it as a regular meeting would
+# corrupt the August 2025 month-to-meeting mapping.
+FOMC_MEETINGS: tuple[FOMCMeeting, ...] = (
+    FOMCMeeting("2025-01-28", "2025-01-29", False),
+    FOMCMeeting("2025-03-18", "2025-03-19", True),
+    FOMCMeeting("2025-05-06", "2025-05-07", False),
+    FOMCMeeting("2025-06-17", "2025-06-18", True),
+    FOMCMeeting("2025-07-29", "2025-07-30", False),
+    FOMCMeeting("2025-09-16", "2025-09-17", True),
+    FOMCMeeting("2025-10-28", "2025-10-29", False),
+    FOMCMeeting("2025-12-09", "2025-12-10", True),
+    FOMCMeeting("2026-01-27", "2026-01-28", False),
+    FOMCMeeting("2026-03-17", "2026-03-18", True),
+    FOMCMeeting("2026-04-28", "2026-04-29", False),
+    FOMCMeeting("2026-06-16", "2026-06-17", True),
+    FOMCMeeting("2026-07-28", "2026-07-29", False),
+    FOMCMeeting("2026-09-15", "2026-09-16", True),
+    FOMCMeeting("2026-10-27", "2026-10-28", False),
+    FOMCMeeting("2026-12-08", "2026-12-09", True),
+)

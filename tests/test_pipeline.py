@@ -113,3 +113,54 @@ def test_dataset_required_when_fetching(tmp_path):
     with pytest.raises(ValueError):
         fut.load_futures(["SRZ4"], "2025-01-01", "2025-01-05",
                          root=tmp_path / "F", coverage_file=tmp_path / "c.parquet")
+
+
+# ------------------------------------------------------------------ prune flag
+def test_write_partitioned_prune_default_appends_and_overwrites_conflicts(tmp_path):
+    from infra.storage import parquet_store
+    keys = ["timestamp", "ticker"]
+    a = pd.DataFrame({"timestamp": pd.to_datetime(["2025-01-02", "2025-01-03"]).astype("datetime64[ms]"),
+                      "ticker": ["A", "A"], "v": [1, 2]})
+    parquet_store.write_partitioned(a, tmp_path, keys)
+    b = pd.DataFrame({"timestamp": pd.to_datetime(["2025-01-03", "2025-01-06"]).astype("datetime64[ms]"),
+                      "ticker": ["A", "A"], "v": [20, 3]})
+    parquet_store.write_partitioned(b, tmp_path, keys)
+    out = parquet_store.read_partitioned(tmp_path).sort_values("timestamp")
+    assert list(out["v"]) == [1, 20, 3]  # history kept, conflicting row overwritten
+
+
+def test_write_partitioned_prune_true_wipes_only_incoming_tickers_across_partitions(tmp_path):
+    from infra.storage import parquet_store
+    keys = ["timestamp", "ticker"]
+    ts = pd.to_datetime(["2024-11-01", "2025-05-01", "2024-11-01"]).astype("datetime64[ms]")
+    parquet_store.write_partitioned(
+        pd.DataFrame({"timestamp": ts, "ticker": ["A", "A", "B"], "v": [1, 2, 9]}), tmp_path, keys)
+    new = pd.DataFrame({"timestamp": pd.to_datetime(["2025-08-01"]).astype("datetime64[ms]"),
+                        "ticker": ["A"], "v": [5]})
+    parquet_store.write_partitioned(new, tmp_path, keys, prune=True)
+    out = parquet_store.read_partitioned(tmp_path)
+    assert sorted(zip(out["ticker"], out["v"])) == [("A", 5), ("B", 9)]
+
+
+def test_prune_rows_on_a_datetime_column_matches_by_value_not_string_form(tmp_path):
+    """Regression: string matching silently pruned nothing on an all-midnight datetime
+    column (astype(str) -> '2025-01-06' vs str(Timestamp) -> '2025-01-06 00:00:00')."""
+    from infra.storage import parquet_store
+    ts = pd.to_datetime(["2025-01-06", "2025-01-07"]).astype("datetime64[ms]")
+    parquet_store.write_partitioned(pd.DataFrame({"timestamp": ts, "ticker": ["A", "A"], "v": [1, 2]}),
+                                    tmp_path, ["timestamp", "ticker"])
+    removed = parquet_store.prune_rows(tmp_path, "timestamp", [pd.Timestamp("2025-01-06")])
+    out = parquet_store.read_partitioned(tmp_path)
+    assert removed == 1 and list(out["v"]) == [2]
+
+
+def test_orphaned_temp_file_in_a_partition_is_never_read_as_data(tmp_path):
+    """A run killed mid-write leaves its temp file behind; reads must ignore it."""
+    from infra.storage import parquet_store
+    keys = ["timestamp", "ticker"]
+    df = pd.DataFrame({"timestamp": pd.to_datetime(["2025-01-06"]).astype("datetime64[ms]"),
+                       "ticker": ["A"], "v": [1]})
+    written = parquet_store.write_partitioned(df, tmp_path, keys)[0]
+    (written.parent / f".{written.name}.tmp").write_bytes(b"not parquet - a torn write")
+    out = parquet_store.read_partitioned(tmp_path)
+    assert list(out["v"]) == [1]

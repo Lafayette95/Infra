@@ -38,7 +38,7 @@ $PY -m pytest
 ## Supported futures (`FUTURES_ROOTS` in `infra/config.py`)
 | Category | Roots | Dataset |
 |---|---|---|
-| STIR | `SR3` (SOFR), `ESR` (€STR) | GLBX.MDP3 |
+| STIR | `SR3` (3M SOFR), `ESR` (€STR), `SR1` (1M SOFR), `ZQ` (Fed Funds) — `SR1`/`ZQ` monthly cycle | GLBX.MDP3 |
 | STIR | `SO3` (SONIA) | IFLL.IMPACT |
 | US Treasuries | `ZT`, `ZF`, `ZN`, `TN` (Ultra 10Y), `ZB`, `UB` (Ultra Bond) | GLBX.MDP3 |
 | Eurex | `FGBL`, `FGBM`, `FGBS`, `FBTP` (data from 2025-03-10) | XEUR.EOBI |
@@ -48,6 +48,25 @@ Relative tickers: `<root>.c.<n>` (calendar) / `<root>.v.<n>` (trailing `VOLUME_L
 average volume, default 5 - smooths thin single sessions like a Sunday open so they don't
 flip the front contract for one day), e.g. `ZN.v.0`.
 Prefer `.v.0` for bonds: the calendar front sits in an expiring, thin contract for weeks.
+
+## Dashboard pages
+| Page | Path | What it shows |
+|---|---|---|
+| Futures | `/` | Candlesticks + volume for any absolute or relative ticker. |
+| Risk-Neutral Density | `/rnd` | Market-implied PDF for a SOFR future at option expiry (Breeden-Litzenberger). |
+| WIRP | `/wirp` | Implied Fed rate-move probability per upcoming FOMC meeting, from ZQ (30-Day Fed Funds futures) - a LIVE/CLOSE toggle switches source. |
+
+`/rnd` and `/wirp` are read-only (never fetch) - populate their data first via
+`scripts/update_daily_options.py` and `scripts/update_futures.py` / `scripts/update_daily.py` respectively.
+## Daily cycle (CLAUDE.md section 12)
+```
+$PY scripts/run_daily_cycle.py --scheduled --dry-run              # free: price tonight's T-3..T run
+$PY scripts/run_daily_cycle.py --start 2026-06-01 --end 2026-09-25 # history backfill (px, raw, derived, bmk, backup)
+prefect server start                                                # then, in another shell:
+PREFECT_API_URL=http://127.0.0.1:4200/api $PY scripts/serve_daily_cycle.py   # Tue-Sat 10:00 UTC
+```
+
+`scripts/backfill_wirp.py` computes WIRP's historical time series outside the dashboard entirely (no API, no Dash - see CLAUDE.md section 3's "point-in-time cutoff" convention).
 
 ## Cost protection
 - Disk first: only date ranges absent from the coverage manifest are requested.

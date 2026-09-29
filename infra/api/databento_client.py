@@ -8,8 +8,11 @@ Cost guardrails enforced at this boundary:
 """
 from __future__ import annotations
 
+import logging
 import os
-from typing import Sequence
+import threading
+import time
+from typing import Callable, Sequence, TypeVar
 
 import databento as db
 import pandas as pd
@@ -26,8 +29,83 @@ from infra.config import (
 from infra.relative.symbology import is_relative
 
 
+log = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
 class CostLimitExceeded(RuntimeError):
     """Estimated request cost is above the configured budget guardrail."""
+
+
+class ApiTimeout(RuntimeError):
+    """Databento didn't answer within the wall-clock deadline, on every attempt."""
+
+
+# Wall-clock deadlines WE enforce around every Databento call. The client's own
+# requests timeout is per socket read, and on 2026-09-28 a backfill still hung for 40
+# minutes blocked in an SSL read on an established connection (0% CPU, stack-sampled) -
+# fatal for an unattended scheduled job. A call that overruns is abandoned (its daemon
+# thread is left to die with the process) and retried on a fresh call; only hangs are
+# retried - real API errors (4xx, the cost guard) are raised immediately.
+DATA_DEADLINE_S = 300.0  # timeseries.get_range (payloads here are small; a year of 1m bars fits easily)
+META_DEADLINE_S = 60.0  # metadata calls (cost estimates, dataset ranges)
+API_ATTEMPTS = 3
+RETRY_PAUSE_S = 5.0
+
+
+def is_transient(exc: BaseException) -> bool:
+    """Worth retrying: a server-side (5xx) error, rate limiting (429), or a dropped
+    connection. Never a client error (4xx - e.g. 422 range unavailable) or the cost guard:
+    those are deterministic and retrying just repeats them. Added 2026-09-29 after the first
+    scheduled run lost 7 contracts to transient failures that succeeded on a manual retry."""
+    import aiohttp
+    import requests
+    from databento.common.error import BentoClientError, BentoServerError
+    if isinstance(exc, BentoServerError):
+        return True
+    if isinstance(exc, BentoClientError):
+        return getattr(exc, "http_status", None) == 429
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout, aiohttp.ClientConnectionError,
+                            ConnectionError, TimeoutError))
+
+
+def call_with_deadline(
+    fn: Callable[[], T],
+    *,
+    what: str,
+    deadline_s: float,
+    attempts: int = API_ATTEMPTS,
+    pause_s: float = RETRY_PAUSE_S,
+) -> T:
+    """``fn()`` with a hard wall-clock deadline per attempt, retried (up to ``attempts``) on
+    a hang or a transient failure (``is_transient``); raises ``ApiTimeout`` if every attempt
+    hangs. A non-transient exception raised BY ``fn`` propagates at once."""
+    for attempt in range(1, attempts + 1):
+        box: dict = {}
+
+        def target() -> None:
+            try:
+                box["value"] = fn()
+            except BaseException as exc:  # handed back to the caller's thread below
+                box["error"] = exc
+
+        worker = threading.Thread(target=target, daemon=True, name=f"databento:{what}")
+        worker.start()
+        worker.join(deadline_s)
+        if not worker.is_alive():
+            if "error" not in box:
+                return box["value"]
+            exc = box["error"]
+            if not is_transient(exc) or attempt == attempts:
+                raise exc
+            log.warning("%s: transient %s: %s (attempt %d/%d)", what, type(exc).__name__,
+                        str(exc).splitlines()[0][:160], attempt, attempts)
+            time.sleep(pause_s)
+            continue
+        log.warning("%s: no response within %.0fs (attempt %d/%d)", what, deadline_s, attempt, attempts)
+        if attempt < attempts:
+            time.sleep(pause_s)
+    raise ApiTimeout(f"{what}: no response within {deadline_s:.0f}s on {attempts} attempts")
 
 
 def get_client(api_key: str | None = None) -> db.Historical:
@@ -60,13 +138,16 @@ def estimate_cost(
 ) -> float:
     """Price a request in USD without downloading anything (free endpoint)."""
     client = client or get_client()
-    return float(client.metadata.get_cost(
-        dataset=dataset,
-        symbols=list(symbols),
-        schema=schema,
-        stype_in=stype_in,
-        start=_utc(start),
-        end=_utc(end),
+    return float(call_with_deadline(
+        lambda: client.metadata.get_cost(
+            dataset=dataset,
+            symbols=list(symbols),
+            schema=schema,
+            stype_in=stype_in,
+            start=_utc(start),
+            end=_utc(end),
+        ),
+        what=f"get_cost {dataset} {schema} {list(symbols)[:2]}", deadline_s=META_DEADLINE_S,
     ))
 
 
@@ -87,13 +168,16 @@ def _get_range(
             f"{dataset} {schema} {list(symbols)[:3]}... {start:%F}->{end:%F} would cost "
             f"${cost:.2f} > limit ${max_cost_usd:.2f}"
         )
-    store = client.timeseries.get_range(
-        dataset=dataset,
-        symbols=list(symbols),
-        schema=schema,
-        stype_in=stype_in,
-        start=_utc(start),
-        end=_utc(end),
+    store = call_with_deadline(
+        lambda: client.timeseries.get_range(
+            dataset=dataset,
+            symbols=list(symbols),
+            schema=schema,
+            stype_in=stype_in,
+            start=_utc(start),
+            end=_utc(end),
+        ),
+        what=f"get_range {dataset} {schema} {list(symbols)[:2]}", deadline_s=DATA_DEADLINE_S,
     )
     return store.to_df(price_type="float", pretty_ts=True, map_symbols=True)
 
@@ -198,6 +282,33 @@ def fetch_statistics(
     contract over ``[start, end)``. Long format: one row per (stat_type, update)."""
     validate_absolute_symbol(symbol)
     return _get_range(dataset, SCHEMA_STATISTICS, [symbol], start, end, "raw_symbol", max_cost_usd, client)
+
+
+_AVAILABLE_END_TTL_S = 300.0
+_available_end_cache: dict[tuple[str, str], tuple[float, pd.Timestamp]] = {}
+
+
+def available_end(dataset: str, schema: str, client: db.Historical | None = None) -> pd.Timestamp:
+    """The latest instant ``schema`` can be queried for on ``dataset`` (tz-naive UTC), from
+    the free ``metadata.get_dataset_range``. Any request ending after it is rejected
+    (422). Verified 2026-09-28 at 19:34 UTC: GLBX advertised 11:34:56 - exactly 8h behind
+    now - and requests ending anywhere past it were rejected (``dataset_unavailable_range``),
+    even though another 422's message claimed availability "up to 19:20"; that message is
+    not the queryable bound, this is. XEUR advertised the previous day's 22:00. Note also
+    that omitting ``end`` does NOT mean "up to available": Databento forward-fills ``end``
+    from ``start``'s precision (a date = that one day). Cached for a few minutes: free,
+    but otherwise called once per contract."""
+    key = (dataset, schema)
+    hit = _available_end_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _AVAILABLE_END_TTL_S:
+        return hit[1]
+    client = client or get_client()
+    rng = call_with_deadline(lambda: client.metadata.get_dataset_range(dataset=dataset),
+                             what=f"get_dataset_range {dataset}", deadline_s=META_DEADLINE_S)
+    raw = rng.get("schema", {}).get(schema, rng)["end"]
+    end = pd.Timestamp(raw).tz_convert("UTC").tz_localize(None)
+    _available_end_cache[key] = (time.monotonic(), end)
+    return end
 
 
 def _utc(ts: pd.Timestamp) -> pd.Timestamp:

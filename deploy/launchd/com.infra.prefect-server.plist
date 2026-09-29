@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Prefect API + UI (http://127.0.0.1:4200) and its run-history database. Template:
+     scripts/install_launchd.sh fills the __PLACEHOLDERS__ and loads it. CLAUDE.md section 12. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.infra.prefect-server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__ENV_BIN__/prefect</string>
+    <string>server</string><string>start</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>4200</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>__ENV_BIN__:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PREFECT_SERVER_ANALYTICS_ENABLED</key><string>false</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__LOG_DIR__/prefect-server.log</string>
+  <key>StandardErrorPath</key><string>__LOG_DIR__/prefect-server.log</string>
+</dict>
+</plist>

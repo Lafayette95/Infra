@@ -1,0 +1,720 @@
+"""Offline tests for the daily cycle (infra/cycle): universe, px step + checks, vintages,
+revision detection, dependency halting. Fake API throughout - no cost, and every path is
+under tmp_path (CyclePaths.under)."""
+from __future__ import annotations
+
+import pandas as pd
+import pytest
+
+from infra.api import databento_client as api
+from infra.config import DailyBackfillSpec
+from infra.cycle import vintage
+from infra.cycle.checks import compare_to_vintage
+from infra.cycle.core import Check, Step
+from infra.cycle.paths import CyclePaths
+from infra.cycle.px import backfill_daily_px_data, last_weekday
+from infra.cycle.runner import (
+    DEFAULT_STEPS, _with_backup_last, run_daily_cycle, run_scheduled_daily, scheduled_windows,
+)
+from infra.cycle.universe import daily_universe, snapshot_grid_floor
+from infra.pipeline.wirp import build_schedule
+from infra.pipeline import daily as dl
+from infra.storage import contract_store, parquet_store
+
+D = pd.Timestamp
+ZN = [("ZNH5", "2025-03-20"), ("ZNM5", "2025-06-18"), ("ZNU5", "2025-09-19")]
+FGBL = [("FGBL SI 20250306 PS", "2025-03-06"), ("FGBL SI 20250606 PS", "2025-06-06")]
+SPECS = {"ZN": DailyBackfillSpec(2), "FGBL": DailyBackfillSpec(1)}
+
+
+def _contracts(paths: CyclePaths, root: str, rows, activation="2024-01-01") -> None:
+    contract_store.write_contracts(paths.contracts_file, pd.DataFrame({
+        "root": root, "ticker": [t for t, _ in rows], "instrument_id": range(len(rows)),
+        "expiry": pd.to_datetime([e for _, e in rows]).astype("datetime64[ms]"),
+        "activation": pd.to_datetime([activation] * len(rows)).astype("datetime64[ms]"),
+    }))
+
+
+class FakeStats:
+    """Stand-in for api.fetch_statistics: one settlement per weekday. ``prices`` overrides
+    a (ticker, day) price; ``silent`` tickers return nothing (missing data)."""
+
+    def __init__(self):
+        self.calls, self.prices, self.silent, self.skip = [], {}, set(), set()
+
+    def __call__(self, dataset, symbol, start, end, **_):
+        self.calls.append((symbol, D(start), D(end)))
+        days = [d for d in pd.date_range(start, end, freq="D", inclusive="left")
+                if d.weekday() < 5 and (symbol, d) not in self.skip]
+        if symbol in self.silent or not days:
+            return pd.DataFrame(columns=["ts_recv", "ts_ref", "stat_type", "price", "quantity"])
+        base = 100.0 + (hash(symbol) % 7)
+        return pd.DataFrame({
+            "ts_recv": pd.to_datetime([d + pd.Timedelta(hours=20) for d in days], utc=True),
+            "ts_ref": pd.to_datetime(days, utc=True),
+            "stat_type": 3,
+            # a function of the DATE, never of the requested window - re-fetching a
+            # different window must return identical values for the same day
+            "price": [self.prices.get((symbol, d), base + 0.01 * (d - D("2024-01-01")).days) for d in days],
+            "quantity": None,
+        })
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    paths = CyclePaths.under(tmp_path / "db")
+    _contracts(paths, "ZN", ZN)
+    _contracts(paths, "FGBL", FGBL)
+    fake = FakeStats()
+    monkeypatch.setattr(api, "fetch_statistics", fake)
+    opts = {"specs": SPECS, "refresh_contracts": False}
+    return paths, fake, opts
+
+
+# ------------------------------------------------------------------------ paths / grid
+def test_cycle_paths_rebase_keeps_the_config_layout(tmp_path):
+    p, d = CyclePaths.under(tmp_path), CyclePaths.default()
+    assert p.daily_futures_dir == tmp_path / d.daily_futures_dir.relative_to(d.database_root)
+    assert p.vintage_root.parent == tmp_path
+
+
+def test_snapshot_grid_is_stable_across_consecutive_days():
+    days = pd.date_range("2025-01-06", "2025-01-10")
+    assert len({snapshot_grid_floor(d) for d in days}) <= 2  # at most one grid boundary crossed
+    assert all(snapshot_grid_floor(d) <= d for d in days)
+
+
+# ----------------------------------------------------------------------------- universe
+def test_universe_is_point_in_time_and_rolls_as_contracts_expire(env):
+    paths, _, _ = env
+    members, errors = daily_universe("2025-03-17", "2025-03-25", paths=paths,
+                                     specs={"ZN": DailyBackfillSpec(2)}, refresh_contracts=False)
+    assert not errors
+    assert members["ZNH5"].last == D("2025-03-20")      # leaves the universe on expiry
+    assert members["ZNU5"].first == D("2025-03-21")     # rolls in the day after
+    assert members["ZNM5"].first == D("2025-03-17") and members["ZNM5"].last == D("2025-03-25")
+
+
+def test_universe_skips_disabled_roots_and_reports_unknown_contracts(env):
+    paths, _, _ = env
+    members, errors = daily_universe(
+        "2025-01-06", "2025-01-10", paths=paths, refresh_contracts=False,
+        specs={"ZN": DailyBackfillSpec(1, enabled=False), "ZB": DailyBackfillSpec(2)})
+    assert members == {} and "ZB" in errors  # nothing cached for ZB
+
+
+def test_member_not_expected_before_its_listing_date(env):
+    paths, _, _ = env
+    _contracts(paths, "ZF", [("ZFH5", "2025-03-31")], activation="2025-01-08")
+    members, _ = daily_universe("2025-01-06", "2025-01-10", paths=paths,
+                                specs={"ZF": DailyBackfillSpec(1)}, refresh_contracts=False)
+    assert not members["ZFH5"].expected_on(D("2025-01-07"))
+    assert members["ZFH5"].expected_on(D("2025-01-08"))
+
+
+# ------------------------------------------------------------------------------ px step
+def test_px_step_fetches_only_universe_windows_and_all_checks_pass(env):
+    paths, fake, opts = env
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-10",
+                             paths=paths, options=opts)
+    assert report.ok, report.summary()
+    assert {c[0] for c in fake.calls} == {"ZNH5", "ZNM5", "FGBL SI 20250306 PS"}
+    df = dl.read_daily_from_disk(["ZNH5"], D("2025-01-01"), D("2025-02-01"), root=paths.daily_futures_dir)
+    assert len(df) == 5
+
+
+def test_px_present_fails_when_one_contract_is_missing(env):
+    paths, fake, opts = env
+    fake.silent = {"ZNM5"}
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-10",
+                             paths=paths, options=opts)
+    px = report.outcome("px")
+    check = next(c for c in px.checks if c.name == "px_present")
+    assert px.status == "failed" and not check.passed
+    assert list(check.details["ticker"]) == ["ZNM5"]
+
+
+def test_whole_dataset_missing_is_a_warning_not_a_failure(env):
+    paths, fake, opts = env
+    fake.silent = {"FGBL SI 20250306 PS"}  # the only FGBL member: looks like a holiday
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-10",
+                             paths=paths, options=opts)
+    px = report.outcome("px")
+    warn = next(c for c in px.checks if c.name == "px_dataset_present")
+    assert px.status == "ok" and not warn.passed and "XEUR.EOBI" in warn.message
+
+
+# --------------------------------------------------- bad-print (peer outlier) check
+from infra.cycle.px import peer_outliers  # noqa: E402
+from infra.cycle.universe import UniverseMember  # noqa: E402
+
+DAYS = [d for d in pd.date_range("2025-01-01", "2025-03-14") if d.weekday() < 5]
+
+
+def _curve(tickers, root="ZQ", dataset="GLBX.MDP3"):
+    """Synthetic settlements: every contract drifts +0.01/weekday (so its own typical
+    |move| - the z-score unit - is 0.01), expiries one month apart."""
+    members = {t: UniverseMember(t, root, dataset, D("2025-01-01"), D("2025-04-30") + pd.DateOffset(months=i), None)
+               for i, t in enumerate(tickers)}
+    rows = [(t, d, 96.0 + 0.01 * n) for t in tickers for n, d in enumerate(DAYS)]
+    return pd.DataFrame(rows, columns=["ticker", "timestamp", "settlement_price"]), members
+
+
+def _bump(settle, ticker, days, by):
+    m = (settle["ticker"] == ticker) & settle["timestamp"].isin(days)
+    settle.loc[m, "settlement_price"] += by
+    return settle
+
+
+WIN = (D("2025-03-03"), D("2025-03-14"))
+SHOCK = D("2025-03-05")
+
+
+def test_a_one_day_off_curve_print_that_reverts_is_flagged():
+    settle, members = _curve(["A", "B", "C", "D", "E"])
+    _bump(settle, "C", [SHOCK], 0.10)  # 10bp kink mid-strip, gone next session
+    flagged, _ = peer_outliers(settle, members, *WIN)
+    assert list(zip(flagged["ticker"], flagged["timestamp"])) == [("C", SHOCK)]
+
+
+def test_a_coherent_curve_wide_shock_is_not_flagged():
+    settle, members = _curve(["A", "B", "C", "D", "E"])
+    for t in "ABCDE":
+        _bump(settle, t, [d for d in DAYS if d >= SHOCK], 0.10)  # NFP-style repricing, persists
+    flagged, pending = peer_outliers(settle, members, *WIN)
+    assert flagged.empty and pending.empty
+
+
+def test_a_lone_move_that_persists_is_not_flagged():
+    """An FOMC meeting-month contract repricing alone: out of line with its peers, but it
+    HOLDS next session - a market move, not a bad print."""
+    settle, members = _curve(["A", "B", "C", "D", "E"])
+    _bump(settle, "C", [d for d in DAYS if d >= SHOCK], 0.10)
+    flagged, _ = peer_outliers(settle, members, *WIN)
+    assert flagged.empty
+
+
+def test_a_contract_that_barely_moved_on_a_shock_day_is_not_flagged():
+    """The near-expiry front month on NFP day: 'out of line' only because it DIDN'T move."""
+    settle, members = _curve(["A", "B", "C", "D", "E"])
+    for t in "BCDE":
+        _bump(settle, t, [d for d in DAYS if d >= SHOCK], 0.10)
+    flagged, _ = peer_outliers(settle, members, *WIN)
+    assert "A" not in set(flagged["ticker"])
+
+
+def test_an_off_curve_print_on_the_last_day_is_pending_not_judged():
+    settle, members = _curve(["A", "B", "C", "D", "E"])
+    last = D("2025-03-14")
+    _bump(settle, "C", [last], 0.10)
+    flagged, pending = peer_outliers(settle, members, *WIN)
+    assert flagged.empty and list(pending["ticker"]) == ["C"]
+
+
+def test_thin_roots_fall_back_to_the_currency_bond_complex():
+    """Bond futures carry 2 contracts per root - too few same-root peers - so they're
+    judged against every same-currency bond future that day."""
+    zn, m1 = _curve(["ZNH5", "ZNM5"], root="ZN")
+    zf, m2 = _curve(["ZFH5", "ZFM5"], root="ZF")
+    settle, members = pd.concat([zn, zf], ignore_index=True), {**m1, **m2}
+    _bump(settle, "ZNM5", [SHOCK], 0.10)
+    flagged, _ = peer_outliers(settle, members, *WIN)
+    assert list(flagged["ticker"]) == ["ZNM5"] and set(flagged["peers"]) == {"currency+category"}
+
+
+def test_px_outlier_check_fails_the_step_end_to_end(stir_env, monkeypatch):
+    paths, opts = stir_env
+    fake = FakeStats()
+    monkeypatch.setattr(api, "fetch_statistics", fake)
+    opts = {**opts, "specs": {"ZQ": DailyBackfillSpec(3)}}
+    run_daily_cycle("2024-10-01", "2025-01-03", steps=["px"], run_day="2025-01-03", paths=paths, options=opts)
+    fake.prices[("ZQG5", D("2025-01-08"))] = 150.0  # absurd one-day print, normal again next day
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-10",
+                             paths=paths, options=opts)
+    out = next(c for c in report.outcome("px").checks if c.name == "px_outliers")
+    assert not out.passed and set(out.details["ticker"]) == {"ZQG5"}
+    assert report.outcome("px").status == "failed"
+
+
+def test_last_weekday():
+    assert last_weekday(D("2025-01-11")) == D("2025-01-10")  # Sat -> Fri
+    assert last_weekday(D("2025-01-08")) == D("2025-01-08")
+
+
+# --------------------------------------------------------------- vintages / revisions
+def test_full_cycle_writes_a_vintage_and_second_day_compares_against_it(env):
+    paths, fake, opts = env
+    day1 = run_daily_cycle("2025-01-06", "2025-01-10", run_day="2025-01-10", paths=paths, options=opts)
+    assert day1.ok, day1.summary()
+    assert vintage.list_vintages(paths) == [D("2025-01-10")]
+
+    # next run day, nothing revised upstream: revision check passes against day-1 vintage
+    day2 = run_scheduled_daily("2025-01-13", paths=paths, options=opts)
+    assert day2.ok, day2.summary()
+    rev = next(c for c in day2.outcome("px").checks if c.name == "px_no_revisions")
+    assert rev.passed and "2025-01-10" in rev.message
+    assert vintage.list_vintages(paths) == [D("2025-01-10"), D("2025-01-13")]
+
+
+def test_upstream_revision_is_caught_fails_px_and_skips_backup(env):
+    paths, fake, opts = env
+    assert run_daily_cycle("2025-01-06", "2025-01-10", run_day="2025-01-10", paths=paths, options=opts).ok
+    fake.prices[("ZNH5", D("2025-01-09"))] = 99.0  # exchange revises an already-published day
+
+    report = run_scheduled_daily("2025-01-13", paths=paths, options=opts)
+    px = report.outcome("px")
+    rev = next(c for c in px.checks if c.name == "px_no_revisions")
+    assert not rev.passed and px.status == "failed"
+    assert (rev.details["ticker"] == "ZNH5").all() and (rev.details["column"] == "settlement_price").all()
+    assert report.outcome("backup").status == "skipped"  # a failed day never becomes a baseline
+    assert vintage.list_vintages(paths) == [D("2025-01-10")]
+    assert not report.ok
+
+
+def test_without_force_refetch_a_revision_is_never_even_seen(env):
+    """Documents WHY the scheduled run force-refetches: a normal (Rule 2.1) run never
+    re-queries covered days, so the revision check has nothing new to compare."""
+    paths, fake, opts = env
+    run_daily_cycle("2025-01-06", "2025-01-10", run_day="2025-01-10", paths=paths, options=opts)
+    fake.prices[("ZNH5", D("2025-01-09"))] = 99.0
+    report = run_daily_cycle("2025-01-06", "2025-01-10", run_day="2025-01-13", paths=paths, options=opts)
+    assert report.ok  # covered days not re-queried -> revision invisible
+
+
+def test_compare_to_vintage_flags_changes_and_deletions_but_not_new_rows(tmp_path):
+    keys = ["timestamp", "ticker"]
+    ts = lambda *d: pd.to_datetime(list(d)).astype("datetime64[ms]")  # noqa: E731
+    old = pd.DataFrame({"timestamp": ts("2025-01-06", "2025-01-07", "2025-01-08"),
+                        "ticker": ["A", "A", "A"], "v": [1, 2, 3]})
+    new = pd.DataFrame({"timestamp": ts("2025-01-06", "2025-01-07", "2025-01-09"),
+                        "ticker": ["A", "A", "A"], "v": [1, 5, 4]})
+    parquet_store.write_partitioned(old, tmp_path / "old", keys)
+    parquet_store.write_partitioned(new, tmp_path / "new", keys)
+    diffs = compare_to_vintage(tmp_path / "new", tmp_path / "old", keys, D("2025-01-01"), D("2025-01-31"))
+    assert sorted(diffs["column"]) == ["<row deleted>", "v"]
+    assert set(diffs["timestamp"]) == {D("2025-01-07"), D("2025-01-08")}  # Jan 9 is new history
+
+
+def test_latest_vintage_before_excludes_same_day(env):
+    paths, _, _ = env
+    vintage.snapshot(D("2025-01-10"), paths)
+    vintage.snapshot(D("2025-01-13"), paths)
+    assert vintage.latest_before(D("2025-01-13"), paths).name == "2025-01-10"
+    assert vintage.latest_before(D("2025-01-10"), paths) is None
+
+
+def test_snapshot_does_not_copy_vintages_into_themselves(env):
+    paths, _, _ = env
+    vintage.snapshot(D("2025-01-10"), paths)
+    second = vintage.snapshot(D("2025-01-13"), paths)
+    assert not (second / "_vintages").exists()
+
+
+# ------------------------------------------------------------------------ orchestration
+def test_step_that_raises_is_error_and_its_dependents_are_skipped(env):
+    paths, _, opts = env
+
+    def boom(ctx):
+        raise RuntimeError("upstream down")
+
+    registry = _with_backup_last((Step("px", boom), Step("derived", lambda ctx: {}, depends_on=("px",))))
+    report = run_daily_cycle("2025-01-06", "2025-01-10", run_day="2025-01-10", paths=paths,
+                             options=opts, registry=registry)
+    assert [o.status for o in report.outcomes] == ["error", "skipped", "skipped"]
+
+
+def test_warn_and_info_checks_do_not_block_dependents(env):
+    paths, _, opts = env
+    from infra.cycle.core import Severity
+    failing = lambda ctx: (False, "meh", None)  # noqa: E731
+    registry = _with_backup_last((
+        Step("a", lambda ctx: {}, checks=(Check("w", failing, Severity.WARN), Check("i", failing, Severity.INFO))),
+        Step("b", lambda ctx: {}, depends_on=("a",)),
+    ))
+    report = run_daily_cycle("2025-01-06", "2025-01-10", run_day="2025-01-10", paths=paths,
+                             options=opts, registry=registry)
+    assert report.ok and [o.status for o in report.outcomes] == ["ok", "ok", "ok"]
+
+
+def test_a_crashing_check_counts_as_failed_not_passed(env):
+    paths, _, opts = env
+
+    def crash(ctx):
+        raise ValueError("bug in check")
+
+    registry = (Step("a", lambda ctx: {}, checks=(Check("c", crash),)),)
+    report = run_daily_cycle("2025-01-06", "2025-01-10", run_day="2025-01-10", paths=paths,
+                             options=opts, registry=registry)
+    assert report.outcome("a").status == "failed"
+
+
+def test_scheduled_windows_are_business_days_with_per_step_overrides():
+    w = scheduled_windows(D("2025-01-13"))  # a Monday
+    assert w["px"] == (D("2025-01-08"), D("2025-01-13"))  # T-3 business days = Wed
+    w = scheduled_windows(D("2025-01-13"), overrides={"px": 1})
+    assert w["px"] == (D("2025-01-10"), D("2025-01-13"))
+
+
+def test_default_registry_order_and_backup_depends_on_everything():
+    names = [s.name for s in DEFAULT_STEPS]
+    assert names[-1] == "backup" and names[0] == "px"
+    assert set(DEFAULT_STEPS[-1].depends_on) == set(names[:-1])
+
+
+def test_unknown_step_name_raises(env):
+    paths, _, opts = env
+    with pytest.raises(KeyError):
+        run_daily_cycle("2025-01-06", "2025-01-10", steps=["nope"], paths=paths, options=opts)
+
+
+def test_px_standalone_function_usable_without_runner(env):
+    paths, fake, _ = env
+    out = backfill_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS, refresh_contracts=False)
+    assert out["rows"] > 0 and not out["fetch_errors"]
+
+
+# ------------------------------------------------------------------------- derived: WIRP
+from infra.cycle.derived import DERIVED_METRICS, backfill_daily_derived  # noqa: E402
+from infra.processing import statistics as stats  # noqa: E402
+
+ZQ = [("ZQQ6", "2026-08-31"), ("ZQU6", "2026-09-30"), ("ZQV6", "2026-10-30"),
+      ("ZQX6", "2026-11-30"), ("ZQZ6", "2026-12-31")]
+WEEK = pd.date_range("2026-09-21", "2026-09-25")  # after Sep 16's meeting, before Oct 28's
+
+
+def _settle(paths, rows) -> None:
+    """rows: (ticker, day, price) written straight to the daily store (no API)."""
+    df = pd.DataFrame(rows, columns=["ticker", "timestamp", "settlement_price"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"]).astype("datetime64[ms]")
+    df["open_interest"] = pd.array([None] * len(df), dtype="Int64")
+    parquet_store.write_partitioned(stats.encode_daily(df[stats.DAILY_COLUMNS]),
+                                    paths.daily_futures_dir, stats.DAILY_KEYS)
+
+
+@pytest.fixture
+def zq_env(tmp_path):
+    """A flat 4.00% curve: every meeting prices an exact hold. Uses the REAL
+    FOMC_MEETINGS schedule (Sep 16 past, Oct 28 and Dec 9 upcoming)."""
+    paths = CyclePaths.under(tmp_path / "db")
+    _contracts(paths, "ZQ", ZQ)
+    _settle(paths, [("ZQQ6", "2026-08-28", 96.0)])  # August: the flat anchor month
+    _settle(paths, [(t, d, 96.0) for t, _ in ZQ[1:] for d in WEEK])
+    return paths
+
+
+def _wirp(paths) -> pd.DataFrame:
+    return parquet_store.read_partitioned(paths.wirp_dir)
+
+
+def test_derived_persists_wirp_for_every_day_with_settlements(zq_env):
+    report = run_daily_cycle(WEEK[0], WEEK[-1], steps=["derived"], run_day=WEEK[-1], paths=zq_env)
+    assert report.ok, report.summary()
+    df = _wirp(zq_env)
+    assert sorted(df["timestamp"].unique()) == list(WEEK)
+    held = df[df["outcome_step"] == 0]
+    assert (held["probability"] == 1.0).all()  # flat curve -> certain hold everywhere
+    assert set(df["meeting_date"].dt.date.astype(str)) == {"2026-10-28", "2026-12-09"}
+
+
+def test_derived_output_matches_the_dashboard_function_exactly(zq_env):
+    """No second WIRP implementation: the stored rows ARE build_schedule's output."""
+    backfill_daily_derived(WEEK[0], WEEK[-1], paths=zq_env)
+    stored = _wirp(zq_env)
+    stored = stored[stored["timestamp"] == WEEK[2]].sort_values(["meeting_date", "outcome_step"])
+    direct, _ = build_schedule("close", today=WEEK[2], contracts_file=zq_env.contracts_file,
+                               close_root=zq_env.daily_futures_dir)
+    direct = direct.sort_values(["meeting_date", "outcome_step"])
+    assert list(stored["probability"]) == pytest.approx(list(direct["probability"]))
+    assert list(stored["implied_rate"]) == pytest.approx(list(direct["implied_rate"]))
+
+
+def test_recomputed_day_replaces_its_rows_no_stale_outcome_levels(zq_env):
+    day = WEEK[2]
+    # November (backing October's meeting) priced 12.5bp higher -> a 50/50 hold/+25 split
+    _settle(zq_env, [("ZQX6", day, 95.875)])
+    backfill_daily_derived(day, day, paths=zq_env)
+    before = _wirp(zq_env)
+    assert len(before[(before["timestamp"] == day) & (before["meeting_date"] == D("2026-10-28"))]) == 2
+
+    _settle(zq_env, [("ZQX6", day, 96.0)])  # revised back to flat -> a single hold level
+    backfill_daily_derived(day, day, paths=zq_env)
+    after = _wirp(zq_env)
+    octo = after[(after["timestamp"] == day) & (after["meeting_date"] == D("2026-10-28"))]
+    assert list(octo["outcome_step"]) == [0] and octo["probability"].iloc[0] == 1.0
+
+
+def test_derived_revision_detected_against_previous_vintage(zq_env):
+    assert run_daily_cycle(WEEK[0], WEEK[-1], steps=["derived", "backup"], run_day=WEEK[-1], paths=zq_env).ok
+    _settle(zq_env, [("ZQX6", WEEK[1], 95.875)])  # an input changes for an already-computed day
+    report = run_daily_cycle(WEEK[0], WEEK[-1], steps=["derived", "backup"],
+                             run_day=WEEK[-1] + pd.Timedelta(days=3), paths=zq_env)
+    rev = next(c for c in report.outcome("derived").checks if c.name == "wirp_no_revisions")
+    assert not rev.passed and set(rev.details["timestamp"]) == {WEEK[1]}
+    assert report.outcome("backup").status == "skipped"
+
+
+def test_derived_presence_fails_with_the_reason_when_anchor_is_missing(tmp_path):
+    paths = CyclePaths.under(tmp_path / "db")
+    _contracts(paths, "ZQ", ZQ)
+    _settle(paths, [(t, d, 96.0) for t, _ in ZQ[1:] for d in WEEK])  # no August anchor
+    report = run_daily_cycle(WEEK[0], WEEK[-1], steps=["derived"], run_day=WEEK[-1], paths=paths)
+    pres = next(c for c in report.outcome("derived").checks if c.name == "wirp_present")
+    assert not pres.passed and len(pres.details) == len(WEEK)
+    assert pres.details["reason"].str.contains("anchor").all()
+
+
+def test_wirp_implausible_move_check(zq_env):
+    _settle(zq_env, [("ZQX6", d, 93.0) for d in WEEK])  # November at 7% vs a 4% anchor
+    report = run_daily_cycle(WEEK[0], WEEK[-1], steps=["derived"], run_day=WEEK[-1], paths=zq_env)
+    moves = next(c for c in report.outcome("derived").checks if c.name == "wirp_moves_plausible")
+    assert not moves.passed
+
+
+def test_derived_depends_on_px_and_raw():
+    from infra.cycle.derived import DERIVED_STEP
+    assert set(DERIVED_STEP.depends_on) == {"px", "raw"}
+    assert "wirp" in DERIVED_METRICS
+
+
+# ----------------------------------------------------------------------------- bmk
+from infra.cycle.bmk import backfill_daily_pnl, backfill_daily_risk  # noqa: E402
+
+ZQ25 = [("ZQF5", "2025-01-31"), ("ZQG5", "2025-02-28"), ("ZQH5", "2025-03-31")]
+ZQ_SPECS = {"ZQ": DailyBackfillSpec(2)}
+
+
+@pytest.fixture
+def stir_env(tmp_path, monkeypatch):
+    """ZQ, 2 nearest months. FakeStats prices rise 0.01 per CALENDAR day, so a
+    weekday-to-weekday move is exactly 1bp and Friday-to-Monday is 3bp."""
+    paths = CyclePaths.under(tmp_path / "db")
+    _contracts(paths, "ZQ", ZQ25)
+    monkeypatch.setattr(api, "fetch_statistics", FakeStats())
+    return paths, {"specs": ZQ_SPECS, "refresh_contracts": False}
+
+
+def _store(paths, sub) -> pd.DataFrame:
+    df = parquet_store.read_partitioned(paths.bmk_root / sub)
+    df["ticker"] = df["ticker"].astype(str)
+    return df.sort_values(["ticker", "timestamp"]).reset_index(drop=True)
+
+
+def test_stir_dv01_is_point_value_x_one_bp(stir_env):
+    paths, opts = stir_env
+    run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk"], run_day="2025-01-10",
+                    paths=paths, options=opts)
+    risk = _store(paths, "Risk")
+    assert set(risk["ticker"]) == {"ZQF5", "ZQG5"}
+    assert risk["value"].tolist() == pytest.approx([41.67] * len(risk))
+    assert (risk["currency"] == "USD").all()
+
+
+def test_pnl_is_price_change_x_point_value_and_per_dv01_is_the_bp_move(stir_env):
+    paths, opts = stir_env
+    report = run_daily_cycle("2025-01-06", "2025-01-13", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-01-13", paths=paths, options=opts)
+    assert report.ok, report.summary()
+    pnl = _store(paths, "Pnl").set_index(["ticker", "timestamp"])
+    tue = pnl.loc[("ZQF5", D("2025-01-07"))]
+    assert tue["price_change"] == pytest.approx(0.01) and tue["pnl"] == pytest.approx(41.67)
+    assert tue["pnl_per_dv01"] == pytest.approx(1.0)          # 1bp, weekday to weekday
+    mon = pnl.loc[("ZQF5", D("2025-01-13"))]
+    assert mon["prev_timestamp"] == D("2025-01-10") and mon["pnl_per_dv01"] == pytest.approx(3.0)
+
+
+def test_first_day_of_a_history_has_no_pnl_rather_than_a_guess(stir_env):
+    paths, opts = stir_env
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-01-10", paths=paths, options=opts)
+    assert report.ok, report.summary()
+    assert D("2025-01-06") not in set(_store(paths, "Pnl")["timestamp"])
+
+
+def test_contract_rolling_in_mid_window_still_gets_first_day_pnl(stir_env):
+    paths, opts = stir_env
+    # ZQF5 expires Fri Jan 31 -> ZQH5 enters the 2-contract universe Sat Feb 1
+    report = run_daily_cycle("2025-01-27", "2025-02-07", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-02-07", paths=paths, options=opts)
+    assert report.ok, report.summary()
+    pnl = _store(paths, "Pnl").set_index(["ticker", "timestamp"])
+    first = pnl.loc[("ZQH5", D("2025-02-03"))]
+    assert first["prev_timestamp"] == D("2025-01-31")  # fetched thanks to PRIOR_SETTLEMENT_DAYS
+
+
+def test_bond_futures_dv01_unavailable_with_reason_and_only_warns(env):
+    paths, fake, opts = env
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-01-10", paths=paths, options=opts)
+    assert report.ok, report.summary()
+    cov = next(c for c in report.outcome("bmk_risk").checks if c.name == "dv01_coverage")
+    assert not cov.passed and cov.severity.value == "warn"
+    assert cov.details["method"].str.contains("cheapest-to-deliver").all()
+    pnl = _store(paths, "Pnl")
+    assert pnl["pnl"].notna().all() and pnl["pnl_per_dv01"].isna().all()  # pnl yes, per-DV01 no
+    assert set(pnl.loc[pnl["root"] == "FGBL", "currency"]) == {"EUR"}
+
+
+def test_pnl_consistency_check_catches_a_stored_row_that_disagrees_with_the_spec(stir_env):
+    """The check guards the COMPUTATION: run it directly against a store holding a row
+    whose pnl != price_change x point value (e.g. a future code change breaking it)."""
+    from infra.cycle.bmk import _check_pnl_consistent
+    from infra.cycle.core import StepContext
+    paths, opts = stir_env
+    run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk", "bmk_pnl"],
+                    run_day="2025-01-10", paths=paths, options=opts)
+    ctx = StepContext(D("2025-01-06"), D("2025-01-10"), D("2025-01-10"), paths)
+    assert _check_pnl_consistent(ctx)[0]
+    tampered = _store(paths, "Pnl").head(1).assign(pnl=1.0)
+    parquet_store.write_partitioned(tampered, paths.bmk_root / "Pnl", ["timestamp", "ticker", "bmk"])
+    passed, _, details = _check_pnl_consistent(ctx)
+    assert not passed and len(details) == 1
+
+
+def test_carry_is_recognised_but_not_implemented_and_unknown_risk_rejected(stir_env):
+    paths, _ = stir_env
+    with pytest.raises(NotImplementedError):
+        backfill_daily_risk("2025-01-06", "2025-01-10", risk="carry", paths=paths, specs=ZQ_SPECS)
+    with pytest.raises(KeyError):
+        backfill_daily_risk("2025-01-06", "2025-01-10", risk="vega", paths=paths, specs=ZQ_SPECS)
+
+
+def test_bmk_steps_registered_in_dependency_order():
+    names = [s.name for s in DEFAULT_STEPS]
+    assert names == ["px", "raw", "derived", "bmk_risk", "bmk_pnl", "backup"]
+
+
+def test_px_plan_is_free_and_matches_what_backfill_then_fetches(env, monkeypatch):
+    from infra.cycle.px import plan_daily_px_data
+    paths, fake, opts = env
+
+    def no_definitions(*a, **k):
+        raise AssertionError("a dry-run plan must never pull definitions")
+
+    monkeypatch.setattr(api, "fetch_definitions", no_definitions)
+    plan, errors = plan_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS)
+    assert not errors and fake.calls == []  # nothing fetched by planning
+    backfill_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS, refresh_contracts=False)
+    assert sorted(plan) == sorted(c[0] for c in fake.calls)
+    assert plan_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS)[0] == {}  # now covered
+    forced, _ = plan_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS, force_refetch=True)
+    assert sorted(forced) == sorted(plan)  # force_refetch plans the covered window again
+
+
+
+# ------------------------------------------------- presence vs publication lag
+def _with_availability(monkeypatch, available: dict):
+    import infra.cycle.px as px_mod
+    monkeypatch.setattr(px_mod, "_availability", lambda members, end, client: available)
+
+
+def test_presence_judges_each_dataset_on_its_own_latest_complete_day(env, monkeypatch):
+    paths, fake, opts = env
+    # GLBX published through Thu Jan 9 (available Fri 08:00); Eurex only through Wed Jan 8
+    _with_availability(monkeypatch, {"GLBX.MDP3": D("2025-01-10 08:00"), "XEUR.EOBI": D("2025-01-09 22:00")})
+    fake.skip = {("ZNH5", D("2025-01-10")), ("ZNM5", D("2025-01-10")), ("FGBL SI 20250306 PS", D("2025-01-10")),
+                 ("FGBL SI 20250306 PS", D("2025-01-09"))}  # not published yet - must NOT fail
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-10",
+                             paths=paths, options=opts)
+    present = next(c for c in report.outcome("px").checks if c.name == "px_present")
+    assert present.passed, present.message
+    assert "GLBX.MDP3 2025-01-09" in present.message and "XEUR.EOBI 2025-01-08" in present.message
+
+
+def test_presence_fails_on_a_gap_inside_a_dataset_complete_day(env, monkeypatch):
+    paths, fake, opts = env
+    _with_availability(monkeypatch, {"GLBX.MDP3": D("2025-01-10 08:00"), "XEUR.EOBI": D("2025-01-10 08:00")})
+    fake.skip = {("ZNM5", D("2025-01-09"))}  # GLBX published Jan 9 for ZNH5 but not ZNM5
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-10",
+                             paths=paths, options=opts)
+    present = next(c for c in report.outcome("px").checks if c.name == "px_present")
+    assert not present.passed
+    assert list(zip(present.details["ticker"], present.details["timestamp"])) == [("ZNM5", D("2025-01-09"))]
+
+
+def test_bmk_presence_checks_every_settled_day_not_just_the_last(stir_env):
+    from infra.cycle.bmk import _presence
+    from infra.cycle.core import StepContext
+    paths, opts = stir_env
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-01-10", paths=paths, options=opts)
+    assert report.ok, report.summary()
+    parquet_store.prune_rows(paths.bmk_root / "Risk", "timestamp", [D("2025-01-07")])  # a mid-window hole
+    ctx = StepContext(D("2025-01-06"), D("2025-01-10"), D("2025-01-10"), paths,
+                      output=report.outcome("bmk_risk").output)
+    passed, _, details = _presence(lambda p: p.bmk_root / "Risk", "risk")(ctx)
+    assert not passed and set(details["timestamp"]) == {D("2025-01-07")}
+
+
+def test_px_fetches_run_concurrently_but_writes_never_overlap(env, monkeypatch):
+    import threading
+    import time
+    paths, fake, opts = env
+    state = {"in_fetch": 0, "max_fetch": 0, "in_store": 0, "max_store": 0}
+    lock = threading.Lock()
+
+    def slow_fetch(*a, **k):
+        with lock:
+            state["in_fetch"] += 1
+            state["max_fetch"] = max(state["max_fetch"], state["in_fetch"])
+        time.sleep(0.3)
+        try:
+            return fake(*a, **k)
+        finally:
+            with lock:
+                state["in_fetch"] -= 1
+
+    real_store = dl.store_daily_raw
+
+    def watched_store(*a, **k):
+        with lock:
+            state["in_store"] += 1
+            state["max_store"] = max(state["max_store"], state["in_store"])
+        try:
+            return real_store(*a, **k)
+        finally:
+            with lock:
+                state["in_store"] -= 1
+
+    monkeypatch.setattr(api, "fetch_statistics", slow_fetch)
+    monkeypatch.setattr(dl, "store_daily_raw", watched_store)
+    out = backfill_daily_px_data("2025-01-06", "2025-01-10", paths=paths, specs=SPECS,
+                                 refresh_contracts=False, workers=3)
+    assert not out["fetch_errors"] and out["rows"] > 0
+    assert state["max_fetch"] == 3   # all three contracts in flight at once
+    assert state["max_store"] == 1   # file writes strictly one at a time
+
+
+def test_a_bad_print_on_a_windows_last_day_is_judged_using_the_next_session_on_disk(stir_env, monkeypatch):
+    """Regression: with non-overlapping (e.g. monthly) history windows, a print on a
+    window's last day was 'pending' in that window and never looked at again - ESRZ6 on
+    2025-10-31 slipped through that way. The check now reads the next session if it's on
+    disk, while still only judging days inside the window."""
+    paths, opts = stir_env
+    fake = FakeStats()
+    monkeypatch.setattr(api, "fetch_statistics", fake)
+    opts = {**opts, "specs": {"ZQ": DailyBackfillSpec(3)}}
+    fake.prices[("ZQG5", D("2025-01-10"))] = 150.0  # bad print on a Friday, normal again Monday
+    run_daily_cycle("2024-10-01", "2025-01-17", steps=["px"], run_day="2025-01-17", paths=paths, options=opts)
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px"], run_day="2025-01-17",
+                             paths=paths, options=opts)  # the window ENDS on the bad-print day
+    out = next(c for c in report.outcome("px").checks if c.name == "px_outliers")
+    assert not out.passed and list(out.details["timestamp"]) == [D("2025-01-10")]
+
+
+def test_a_late_value_filling_a_gap_is_not_a_revision_but_a_changed_or_retracted_one_is(tmp_path):
+    """Regression (first scheduled run, 2026-09-29): Friday's open interest is published
+    Monday, so a vintage always holds the latest day's OI as missing; the next run fills it.
+    That's new data, not a revision - it failed every run until this was fixed."""
+    keys = ["timestamp", "ticker"]
+    ts = pd.to_datetime(["2026-09-24", "2026-09-25", "2026-09-25"]).astype("datetime64[ms]")
+    old = pd.DataFrame({"timestamp": ts, "ticker": ["A", "A", "B"],
+                        "oi": pd.array([100, None, 7], dtype="Int32"), "px": [1.0, 2.0, 3.0]})
+    new = pd.DataFrame({"timestamp": ts, "ticker": ["A", "A", "B"],
+                        "oi": pd.array([100, 250, None], dtype="Int32"), "px": [1.0, 2.5, 3.0]})
+    parquet_store.write_partitioned(old, tmp_path / "old", keys)
+    parquet_store.write_partitioned(new, tmp_path / "new", keys)
+    diffs = compare_to_vintage(tmp_path / "new", tmp_path / "old", keys, D("2026-09-01"), D("2026-09-30"))
+    got = set(zip(diffs["ticker"], diffs["column"]))
+    assert ("A", "oi") not in got           # missing -> 250: a filled gap
+    assert ("A", "px") in got               # 2.0 -> 2.5: a real revision
+    assert ("B", "oi") in got               # 7 -> missing: a retraction is a revision too

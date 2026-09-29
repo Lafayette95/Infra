@@ -49,10 +49,77 @@ def plan_daily_update(
     end: pd.Timestamp,
     *,
     coverage_file: Path = DAILY_FUTURES_COVERAGE_FILE,
+    force_refetch: bool = False,
 ) -> list[Interval]:
-    """Date ranges of ``[start, end)`` never queried before. Touches no API."""
+    """Date ranges of ``[start, end)`` never queried before. Touches no API.
+
+    ``force_refetch=True`` ignores the coverage manifest and plans the WHOLE requested
+    range - the one deliberate exception to Rule 2.1, used only by the scheduled daily
+    cycle's short trailing window (infra.cycle) to catch upstream revisions of data we
+    already hold. Defaults to False everywhere.
+    """
     requested = (to_utc_day(start), to_utc_day(end))
+    if force_refetch:
+        return [requested] if requested[0] < requested[1] else []
     return find_missing_ranges(requested, coverage_store.read_covered(coverage_file, ticker))
+
+
+# (range_start, range_end, covered_end, raw statistics rows) per queried range
+Fetched = list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.DataFrame]]
+
+
+def fetch_daily_raw(
+    ticker: str,
+    ranges: list[Interval],
+    *,
+    dataset: str,
+    max_cost_usd: float = MAX_COST_USD,
+    client=None,
+) -> Fetched:
+    """NETWORK ONLY: query the API for ``ranges`` (each bounded by availability); touches
+    no files, so callers may run many of these concurrently (infra.cycle.px does)."""
+    out: Fetched = []
+    for range_start, range_end in ranges:
+        query_end, covered_end = bounded_by_availability(dataset, range_end, client)
+        if query_end <= range_start:
+            continue  # nothing in this range is queryable yet; not covered, retried later
+        raw = api.fetch_statistics(
+            dataset, ticker, range_start, query_end, max_cost_usd=max_cost_usd, client=client
+        )
+        out.append((range_start, range_end, covered_end, raw))
+    return out
+
+
+def store_daily_raw(
+    ticker: str,
+    fetched: Fetched,
+    *,
+    dataset: str,
+    root: Path = DAILY_FUTURES_DIR,
+    coverage_file: Path = DAILY_FUTURES_COVERAGE_FILE,
+    prune: bool = False,
+) -> int:
+    """FILES ONLY: clean, save and record coverage for what ``fetch_daily_raw`` returned.
+    Read-modify-writes shared partition files - never run two of these concurrently.
+
+    ``prune=True`` first deletes this ticker's entire stored history AND its coverage
+    record, so afterwards both describe exactly the ranges fetched here (done once, up
+    front - pruning per range would wipe the previous range's rows).
+    """
+    if prune:
+        parquet_store.prune_rows(root, "ticker", [ticker])
+        coverage_store.clear_key(coverage_file, ticker)
+    rows = 0
+    for range_start, range_end, covered_end, raw in fetched:
+        clean = stats.clean_daily_statistics(raw, ticker, dataset)
+        parquet_store.write_partitioned(stats.encode_daily(clean), root, stats.DAILY_KEYS)
+        # Recorded even when empty (holidays, or a contract not yet publishing stats)
+        # so we never pay to re-ask - but never past the last COMPLETE available day.
+        if covered_end > range_start:
+            coverage_store.record_covered(coverage_file, ticker, [(range_start, covered_end)])
+        rows += len(clean)
+        log.info("%s %s->%s: %d daily rows saved", ticker, range_start.date(), range_end.date(), len(clean))
+    return rows
 
 
 def fetch_and_store_daily(
@@ -64,21 +131,35 @@ def fetch_and_store_daily(
     coverage_file: Path = DAILY_FUTURES_COVERAGE_FILE,
     max_cost_usd: float = MAX_COST_USD,
     client=None,
+    prune: bool = False,
 ) -> int:
-    """Query the API for ``ranges``, save to parquet, record coverage. Returns rows saved."""
-    rows = 0
-    for range_start, range_end in ranges:
-        raw = api.fetch_statistics(
-            dataset, ticker, range_start, range_end, max_cost_usd=max_cost_usd, client=client
-        )
-        clean = stats.clean_daily_statistics(raw, ticker, dataset)
-        parquet_store.write_partitioned(stats.encode_daily(clean), root, stats.DAILY_KEYS)
-        # Recorded even when empty (holidays, or a contract not yet publishing stats)
-        # so we never pay to re-ask.
-        coverage_store.record_covered(coverage_file, ticker, [(range_start, range_end)])
-        rows += len(clean)
-        log.info("%s %s->%s: %d daily rows saved", ticker, range_start.date(), range_end.date(), len(clean))
-    return rows
+    """Query the API for ``ranges``, save to parquet, record coverage. Returns rows saved.
+    = ``store_daily_raw(fetch_daily_raw(...))`` - the two halves are separate so a caller
+    can parallelise the network part while keeping the file writes sequential."""
+    fetched = fetch_daily_raw(ticker, ranges, dataset=dataset, max_cost_usd=max_cost_usd, client=client)
+    return store_daily_raw(ticker, fetched, dataset=dataset, root=root, coverage_file=coverage_file, prune=prune)
+
+
+_RECENT = pd.Timedelta(days=7)
+
+
+def bounded_by_availability(
+    dataset: str, range_end: pd.Timestamp, client=None, *, now: pd.Timestamp | None = None,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """``(query_end, covered_end)`` for a range ending at ``range_end``. Databento rejects
+    any request ending after the dataset's advertised available end (e.g. "today,
+    inclusive", as the daily cycle asks - GLBX runs ~8h behind now), so the query is
+    CLAMPED to it; coverage is recorded only up to the start of that day, so a partial or
+    not-yet-published day is never claimed as covered and a later normal run fills it in
+    (see api.available_end for the verified behavior). Ranges ending well in the past
+    skip the (free) metadata lookup entirely."""
+    now = pd.Timestamp.now(tz="UTC").tz_localize(None) if now is None else pd.Timestamp(now)
+    if range_end < now - _RECENT:
+        return range_end, range_end
+    available = api.available_end(dataset, api.SCHEMA_STATISTICS, client)
+    if range_end <= available:
+        return range_end, range_end
+    return available, available.normalize()
 
 
 def load_daily(
@@ -92,21 +173,26 @@ def load_daily(
     coverage_file: Path = DAILY_FUTURES_COVERAGE_FILE,
     max_cost_usd: float = MAX_COST_USD,
     client=None,
+    force_refetch: bool = False,
+    prune: bool = False,
 ) -> pd.DataFrame:
     """Parent: ensure ``[start, end)`` is on disk (API only for gaps), then read it.
 
     ``tickers`` are absolute contracts; ``dataset`` is required only when fetching -
-    matches infra.pipeline.futures.load_futures's convention exactly.
+    matches infra.pipeline.futures.load_futures's convention exactly. ``force_refetch``
+    and ``prune`` both default to False; see plan_daily_update / fetch_and_store_daily.
     """
     if fetch_missing and dataset is None:
         raise ValueError("dataset is required when fetch_missing=True")
     start, end = to_utc_day(start), to_utc_day(end)
     if fetch_missing:
         for ticker in tickers:
-            gaps = plan_daily_update(ticker, start, end, coverage_file=coverage_file)
+            gaps = plan_daily_update(
+                ticker, start, end, coverage_file=coverage_file, force_refetch=force_refetch,
+            )
             if gaps:
                 fetch_and_store_daily(
                     ticker, gaps, dataset=dataset, root=root, coverage_file=coverage_file,
-                    max_cost_usd=max_cost_usd, client=client,
+                    max_cost_usd=max_cost_usd, client=client, prune=prune,
                 )
     return read_daily_from_disk(tickers, start, end, root=root)
