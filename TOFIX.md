@@ -221,7 +221,10 @@ against Bloomberg values for a few dates, once the user provides them.
 
 **Conventions (on hold, user 2026-09-30):** each curve is stored exactly as its source
 publishes it - US par on a semi-annual bond-equivalent basis; UK par with semi-annual
-coupons; DE par with annual coupons (Bunds pay annually). Not harmonised.
+coupons; DE par with annual coupons (Bunds pay annually). Not harmonised. Only the US is
+fixed by its source (par, semi-annual): UK and DE are built from a zero curve, so their
+coupon frequency is our choice - a `PAR_METHODS` swap (e.g. DE `semiannual_from_annual_spot`,
+~3bp below annual at 2026 levels).
 
 **Minor, noted:** the bad-print rule can't judge a tenor whose typical daily move is
 exactly 0 - Treasury quotes 2 decimals, so the US 2y during zero rates (65 days,

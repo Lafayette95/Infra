@@ -278,14 +278,16 @@ BOND_CURVES: dict[str, BondCurve] = {
         BondCurve("UK", "boe", "UK gilt par curve (derived from BoE spot)", "GBP",
                   convention="par, semi-annual coupons, derived from BoE nominal spot curve",
                   history_start="2016-01-01", par_method="semiannual_from_spot"),
-        # Bundesbank par curve of its fitted Svensson model for German Federal securities
-        # (BBSIS item ZAR), ANNUAL coupons, 2 decimals, published the same day. Verified
-        # 2026-09-30 to be exactly the model's par curve (rebuilt from its zero curve
-        # within rounding) - see infra/api/bundesbank_client.py. Its API bot-challenges
-        # VPN addresses.
-        BondCurve("DE", "bundesbank", "German Federal securities par curve (Bundesbank)", "EUR",
-                  convention="par, annual coupons (Bundesbank, Svensson term structure)",
-                  history_start="1997-08-01"),
+        # Bundesbank's daily SVENSSON PARAMETERS for German Federal securities (BBSIS
+        # ZST B0..T2, 5 decimals, same day), evaluated here into the model's zero curve
+        # (annually compounded, the Bundesbank's convention) and par derived from it -
+        # annual coupons (Bunds pay annually) by default, reproducing the Bundesbank's
+        # own published par curve within +-0.45bp; ``semiannual_from_annual_spot`` gives
+        # the same curve on a semi-annual basis. Verified 2026-09-30, see
+        # infra/api/bundesbank_client.py. Its API bot-challenges VPN addresses.
+        BondCurve("DE", "bundesbank", "German Federal securities par curve (Bundesbank Svensson)", "EUR",
+                  convention="par, annual coupons, from the Bundesbank's Svensson parameters",
+                  history_start="1997-08-01", par_method="annual_from_annual_spot"),
     )
 }
 

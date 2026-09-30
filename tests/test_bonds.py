@@ -35,17 +35,29 @@ def test_treasury_csv_reads_tenors_by_name_and_covers_only_published_days():
     assert covered == [(pd.Timestamp("2026-09-01"), pd.Timestamp("2026-09-30"))]
 
 
-def test_bundesbank_csv_keeps_whole_year_maturities_and_covers_only_published_days():
-    text = ("DATAFLOW;BBK_SEIS_ITEM;BBK_SEIS_MATURITY;TIME_PERIOD;OBS_VALUE\n"
-            "BBK:BBSIS(1.0);ZAR;R10XX;2026-09-29;3.61\n"
-            "BBK:BBSIS(1.0);ZAR;R10XX;2026-09-30;3.60\n"
-            "BBK:BBSIS(1.0);ZAR;R02XX;2026-09-30;3.24\n"
-            "BBK:BBSIS(1.0);ZAR;R02XX;2026-09-29;.\n")
-    df, covered = bundesbank_client.fetch_par_curve(pd.Timestamp("2026-09-28"), pd.Timestamp("2026-10-02"),
-                                                    fetch=lambda s, e: text)
-    assert sorted(zip(df["timestamp"].dt.strftime("%m-%d"), df["maturity"], df["value"])) == [
-        ("09-29", 10.0, 3.61), ("09-30", 2.0, 3.24), ("09-30", 10.0, 3.60)]  # "." (missing) dropped
-    assert covered == [(pd.Timestamp("2026-09-28"), pd.Timestamp("2026-10-01"))]
+def test_bundesbank_params_one_row_per_complete_day_covering_only_published_days():
+    head = "DATAFLOW;BBK_SEIS_ITEM;BBK_SEIS_VALUATION;TIME_PERIOD;OBS_VALUE\n"
+    rows = [f"BBK:BBSIS(1.0);ZST;{p};{d};{v}" for d, v in [("2026-09-29", "1.5"), ("2026-09-30", "2.5")]
+            for p in bundesbank_client.PARAMS]
+    rows += [f"BBK:BBSIS(1.0);ZST;{p};2026-09-27;." for p in bundesbank_client.PARAMS]  # a weekend, blank
+    df, covered = bundesbank_client.fetch_svensson_params(pd.Timestamp("2026-09-27"), pd.Timestamp("2026-10-03"),
+                                                          fetch=lambda s, e: head + "\n".join(rows))
+    assert list(df["timestamp"].dt.strftime("%m-%d")) == ["09-29", "09-30"] and df["B0"].tolist() == [1.5, 2.5]
+    assert covered == [(pd.Timestamp("2026-09-27"), pd.Timestamp("2026-10-01"))]
+
+
+def test_svensson_reproduces_the_bundesbanks_own_curves():
+    """Real Bundesbank parameters for 2026-09-30 and its own published values that day:
+    zero curve (ZST) and annual-coupon par curve (ZAR), both 2 decimals."""
+    params = pd.DataFrame([{"timestamp": pd.Timestamp("2026-09-30"), "B0": 4.18173, "B1": -1.90569,
+                            "B2": 18.84971, "B3": -19.00801, "T1": 1.36147, "T2": 1.50953}])
+    curve = bc.svensson_curve(params)
+    par = bc.PAR_METHODS["annual_from_annual_spot"](curve, TENORS).set_index("tenor")["par_yield"]
+    published_par = {2: 3.24, 3: 3.29, 5: 3.36, 7: 3.46, 10: 3.60, 20: 3.83, 30: 3.90}
+    for t, v in published_par.items():
+        assert abs(par[t] - v) <= 0.005 + 1e-9, (t, par[t], v)  # within the publication's rounding
+    semi = bc.PAR_METHODS["semiannual_from_annual_spot"](curve, TENORS).set_index("tenor")["par_yield"]
+    assert ((par - semi) * 100).between(2.5, 4.0).all()  # annual vs semi-annual basis: ~3bp here
 
 
 def _spot_workbook(days: list[str], maturities=(0.5, 1.0, 1.5, 2.0), value=4.0, holiday=None) -> bytes:

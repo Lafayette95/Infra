@@ -28,11 +28,18 @@ log = logging.getLogger(__name__)
 
 STORE = "Daily/Bonds"  # this store's name in the adjustments log
 
+def bundesbank_svensson_curve(start: pd.Timestamp, end: pd.Timestamp):
+    """The Bundesbank's daily Svensson parameters, evaluated into the model's zero curve
+    (``infra.processing.bond_curves.svensson_curve``)."""
+    params, covered = bundesbank_client.fetch_svensson_params(start, end)
+    return bc.svensson_curve(params), covered
+
+
 # source name -> fn(start, end) -> (long frame timestamp/maturity/value, covered intervals)
 SOURCES: dict[str, Callable[[pd.Timestamp, pd.Timestamp], tuple[pd.DataFrame, list[Interval]]]] = {
     "treasury": treasury_client.fetch_par_curve,
     "boe": boe_client.fetch_spot_curve,
-    "bundesbank": bundesbank_client.fetch_par_curve,
+    "bundesbank": bundesbank_svensson_curve,
 }
 
 

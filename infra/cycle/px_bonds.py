@@ -44,12 +44,13 @@ STALE_BUSINESS_DAYS = 2
 # window that has already moved past them.
 GAP_LOOKBACK_DAYS = 30
 # Bonds only: a bad print must ALSO be out of line with its peers' median move by this
-# much in raw units (percent: 0.05 = 5bp). The sources quote 2 decimals, so a quiet
-# tenor's own typical move rounds to ~1bp and its z-score is inflated vs its neighbours'
-# - calibrated 2026-09-30 on 2016-2026: without this the DE 2y was "flagged" on
-# 2022-03-07 (-9bp vs -9/-6/-6 on 3y/5y/7y) and 2026-03-09/10 (+10/-12bp vs +9/-11 on
-# the 3y), all genuine curve moves, 2.5-3.5bp off the peer median; with it, nothing in
-# ten years of US/UK/DE is flagged, while a lone 40bp spike on one tenor still is.
+# much in raw units (percent: 0.05 = 5bp). A source quoting 2 decimals (the US Treasury)
+# rounds a quiet tenor's own typical move to ~1bp, inflating its z-score vs its
+# neighbours'. Found 2026-09-30 on the Bundesbank's 2-decimal par series (since replaced
+# by its full-precision Svensson parameters): the DE 2y was "flagged" on 2022-03-07
+# (-9bp vs -9/-6/-6 on 3y/5y/7y) and 2026-03-09/10 (+10/-12bp vs +9/-11 on the 3y), all
+# genuine curve moves 2.5-3.5bp off the peer median. With it, nothing in ten years of
+# US/UK/DE is flagged, while a lone 40bp spike on one tenor still is.
 BOND_MIN_ABS_DEV = 0.05
 # Plausible range for a sovereign par yield, percent - a value outside is a parsing /
 # scaling error, not a market move.

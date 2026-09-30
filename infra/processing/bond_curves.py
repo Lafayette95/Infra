@@ -7,7 +7,8 @@ resolution, far finer than any source publishes).
 
 How par yields are obtained is a named, swappable method (``PAR_METHODS``, chosen per
 curve by ``BondCurve.par_method``): ``None`` means the source already publishes par at
-each tenor (US Treasury CMT); a source publishing only a spot curve (the BoE) derives par
+each tenor (US Treasury CMT); a source publishing a spot curve (the BoE) or a model's
+parameters (the Bundesbank's Svensson fit, evaluated by ``svensson_curve``) derives par
 from it - kept modular so the derivation can change without touching fetching/storage.
 """
 from __future__ import annotations
@@ -40,8 +41,39 @@ def published_par(curve: pd.DataFrame, tenors: tuple[int, ...]) -> pd.DataFrame:
                          "par_yield": out["value"].astype("float64").to_numpy()})
 
 
+# Maturity grid a model curve (Svensson) is evaluated on before par is derived - every
+# semi-annual date, so annual- AND semi-annual-coupon par can both be read off it.
+MODEL_GRID = tuple(np.round(np.arange(0.5, 40.0001, 0.5), 10))
+
+
+def svensson_zero(maturity: np.ndarray, b0, b1, b2, b3, t1, t2) -> np.ndarray:
+    """Svensson (1994) zero rate at ``maturity`` years, in the parameters' own units
+    (percent for the Bundesbank). Each argument may be an array (one per day)."""
+    x1, x2 = maturity / t1, maturity / t2
+    f1, f2 = (1 - np.exp(-x1)) / x1, (1 - np.exp(-x2)) / x2
+    return b0 + b1 * f1 + b2 * (f1 - np.exp(-x1)) + b3 * (f2 - np.exp(-x2))
+
+
+def svensson_curve(params: pd.DataFrame, grid=MODEL_GRID) -> pd.DataFrame:
+    """Daily Svensson parameters (``timestamp, B0, B1, B2, B3, T1, T2``) -> the model's
+    zero curve on ``grid``, long ``timestamp, maturity, value`` - the same shape a
+    spot-publishing source returns, so the same ``PAR_METHODS`` apply."""
+    if params.empty:
+        return pd.DataFrame(columns=["timestamp", "maturity", "value"])
+    m = np.asarray(grid, dtype=float)[None, :]
+    p = {k: params[k].to_numpy(dtype=float)[:, None] for k in ["B0", "B1", "B2", "B3", "T1", "T2"]}
+    z = svensson_zero(m, p["B0"], p["B1"], p["B2"], p["B3"], p["T1"], p["T2"])
+    return pd.DataFrame({
+        "timestamp": np.repeat(params["timestamp"].to_numpy(), m.shape[1]),
+        "maturity": np.tile(m[0], len(params)),
+        "value": z.ravel(),
+    })
+
+
 def discount_factors(spot_pct: np.ndarray, maturity: np.ndarray, compounding: str) -> np.ndarray:
     z = spot_pct / 100.0
+    if compounding == "annual":
+        return (1.0 + z) ** (-maturity)
     if compounding == "semiannual":
         return (1.0 + z / 2.0) ** (-2.0 * maturity)
     if compounding == "continuous":
@@ -89,6 +121,12 @@ PAR_METHODS: dict[str, Callable[[pd.DataFrame, tuple[int, ...]], pd.DataFrame]] 
     # 5/10/20y par series (still off by up to a few bp - TOFIX.md).
     "semiannual_from_spot": partial(par_from_spot, compounding="semiannual"),
     "semiannual_from_continuous_spot": partial(par_from_spot, compounding="continuous"),
+    # Annual coupons (Bunds pay annually) off an ANNUALLY compounded zero curve - the
+    # Bundesbank's Svensson convention: reproduces its own published par curve within
+    # +-0.45bp (infra/api/bundesbank_client.py). Same curve, semi-annual coupons:
+    # ``semiannual_from_annual_spot`` (2.7-3.8bp lower, 2026-09-30).
+    "annual_from_annual_spot": partial(par_from_spot, compounding="annual", coupons_per_year=1),
+    "semiannual_from_annual_spot": partial(par_from_spot, compounding="annual", coupons_per_year=2),
 }
 
 
