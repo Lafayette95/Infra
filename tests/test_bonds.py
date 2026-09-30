@@ -298,3 +298,11 @@ def test_a_quiet_2dp_short_end_moving_with_its_neighbours_is_not_a_bad_print(tmp
 
     out = backfill_daily_bond_px("2026-03-02", "2026-09-29", paths=paths, curves={"US": US}, sources={"fake": quantised})
     assert out["bad_prints"].empty
+
+
+def test_every_curve_is_par_with_semiannual_coupons():
+    """One basis for all curves (user decision 2026-09-30): the US is published so; the
+    rest must be derived so."""
+    for spec in BOND_CURVES.values():
+        assert spec.par_method in (None, "semiannual_from_spot", "semiannual_from_annual_spot"), spec.country
+        assert "semi-annual" in spec.convention, spec.country

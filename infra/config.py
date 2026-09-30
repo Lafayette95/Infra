@@ -236,8 +236,9 @@ DAILY_BACKFILL: dict[str, DailyBackfillSpec] = {
 # ------------------------------------------------------------------ cash-bond curves
 # Daily constant-maturity PAR yields per sovereign, stored as absolute tickers
 # ``<country>_BOND_<tenor>y`` (e.g. "US_BOND_10y"), in percent. Each curve has its own
-# free official source (infra/api/<source>_client.py) - no Databento, no cost. Stored
-# exactly in the source's own convention (not converted between them).
+# free official source (infra/api/<source>_client.py) - no Databento, no cost. EVERY
+# curve is on one basis - par with SEMI-ANNUAL coupons (user decision 2026-09-30): the
+# US as published (the Treasury's own basis), UK and DE derived so from their zero curves.
 @dataclass(frozen=True)
 class BondCurve:
     country: str  # ticker prefix, e.g. "US"
@@ -280,14 +281,15 @@ BOND_CURVES: dict[str, BondCurve] = {
                   history_start="2016-01-01", par_method="semiannual_from_spot"),
         # Bundesbank's daily SVENSSON PARAMETERS for German Federal securities (BBSIS
         # ZST B0..T2, 5 decimals, same day), evaluated here into the model's zero curve
-        # (annually compounded, the Bundesbank's convention) and par derived from it -
-        # annual coupons (Bunds pay annually) by default, reproducing the Bundesbank's
-        # own published par curve within +-0.45bp; ``semiannual_from_annual_spot`` gives
-        # the same curve on a semi-annual basis. Verified 2026-09-30, see
+        # (annually compounded, the Bundesbank's convention) and par derived from it with
+        # SEMI-ANNUAL coupons, like every curve here (user decision 2026-09-30) - ~3bp
+        # below the Bunds' native annual-coupon par at 2026 levels. With
+        # ``annual_from_annual_spot`` it reproduces the Bundesbank's own published
+        # (annual-coupon) par curve within +-0.5bp. Verified 2026-09-30, see
         # infra/api/bundesbank_client.py. Its API bot-challenges VPN addresses.
         BondCurve("DE", "bundesbank", "German Federal securities par curve (Bundesbank Svensson)", "EUR",
-                  convention="par, annual coupons, from the Bundesbank's Svensson parameters",
-                  history_start="1997-08-01", par_method="annual_from_annual_spot"),
+                  convention="par, semi-annual coupons, from the Bundesbank's Svensson parameters",
+                  history_start="1997-08-01", par_method="semiannual_from_annual_spot"),
     )
 }
 
