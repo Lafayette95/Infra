@@ -14,6 +14,7 @@ import json
 import shutil
 import subprocess
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import pandas as pd
@@ -26,10 +27,11 @@ GRACE = pd.Timedelta(hours=2)  # a run normally takes minutes; API stalls can ad
 DEPLOYMENT = "daily-cycle-scheduled"
 
 
-def last_due_slot(now: pd.Timestamp, cron: str, grace: pd.Timedelta = GRACE) -> pd.Timestamp:
-    """The latest scheduled slot (UTC) whose run should have FINISHED by ``now``: the last
-    cron fire time at or before ``now - grace``."""
-    cutoff = (pd.Timestamp(now) - grace).to_pydatetime().replace(tzinfo=timezone.utc)
+def last_due_slot(now: pd.Timestamp, cron: str, grace: pd.Timedelta = GRACE, tz: str = "UTC") -> pd.Timestamp:
+    """The latest scheduled slot (returned as naive UTC) whose run should have FINISHED by
+    ``now`` (naive UTC): the last fire time at or before ``now - grace`` of ``cron`` read
+    in timezone ``tz`` - DST-aware, like the scheduler itself."""
+    cutoff = (pd.Timestamp(now) - grace).to_pydatetime().replace(tzinfo=timezone.utc).astimezone(ZoneInfo(tz))
     start = cutoff - pd.Timedelta(days=8).to_pytimedelta()
     last = None
     for fire in CronSim(cron, start):
@@ -41,10 +43,10 @@ def last_due_slot(now: pd.Timestamp, cron: str, grace: pd.Timedelta = GRACE) -> 
     return pd.Timestamp(last).tz_convert("UTC").tz_localize(None)
 
 
-def check(now: pd.Timestamp, cron: str, paths: CyclePaths) -> tuple[bool, pd.Timestamp]:
+def check(now: pd.Timestamp, cron: str, paths: CyclePaths, tz: str = "UTC") -> tuple[bool, pd.Timestamp]:
     """``(ok, slot)``: ok when a vintage exists for the last due slot's day (or later -
     a manual catch-up run later that day counts)."""
-    slot = last_due_slot(now, cron)
+    slot = last_due_slot(now, cron, tz=tz)
     ok = any(day >= slot.normalize() for day in vintage.list_vintages(paths))
     return ok, slot
 
@@ -72,10 +74,10 @@ def notify(title: str, message: str) -> None:
         subprocess.run([exe, "-e", f'display notification "{text}" with title "{title}"'], check=False)
 
 
-def run(now: pd.Timestamp, cron: str, paths: CyclePaths, state_file: Path) -> str | None:
+def run(now: pd.Timestamp, cron: str, paths: CyclePaths, state_file: Path, tz: str = "UTC") -> str | None:
     """One watchdog tick. Returns the alert text if it alerted, else None. Alerts ONCE per
     missed slot (remembered in ``state_file``), not every hour until it's fixed."""
-    ok, slot = check(now, cron, paths)
+    ok, slot = check(now, cron, paths, tz=tz)
     if ok:
         return None
     state = json.loads(state_file.read_text()) if state_file.exists() else {}

@@ -26,3 +26,10 @@ def _no_bond_network(monkeypatch):
         return pd.DataFrame(columns=["timestamp", "maturity", "value"]), []
 
     monkeypatch.setattr("infra.pipeline.bonds.SOURCES", {"treasury": nothing, "boe": nothing, "bundesbank": nothing})
+
+
+@pytest.fixture(autouse=True)
+def _network_always_ready(monkeypatch):
+    """The Prefect flows wait for real DNS before running (infra.cycle.network); tests
+    must never depend on - or hang for 10 minutes without - a network."""
+    monkeypatch.setattr("infra.cycle.flows.wait_for_network", lambda *a, **k: 0.0)

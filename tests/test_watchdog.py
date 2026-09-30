@@ -42,3 +42,13 @@ def test_no_alert_when_the_day_succeeded(tmp_path, monkeypatch):
     paths = CyclePaths.under(tmp_path / "db")
     vintage.snapshot(D("2026-09-29"), paths)
     assert watchdog.run(D("2026-09-29 13:00"), CRON, paths, tmp_path / "s.json") is None
+
+
+def test_a_local_time_schedule_is_due_at_the_right_utc_instant_either_side_of_dst():
+    from infra.cycle.watchdog import last_due_slot
+    cron, tz = "0 6 * * 2-6", "America/New_York"
+    # EDT (UTC-4): Wednesday 2026-09-30 06:00 local = 10:00 UTC
+    assert last_due_slot(pd.Timestamp("2026-09-30 13:00"), cron, tz=tz) == pd.Timestamp("2026-09-30 10:00")
+    # EST (UTC-5), after 2026-11-01: Wednesday 2026-11-04 06:00 local = 11:00 UTC
+    assert last_due_slot(pd.Timestamp("2026-11-04 12:30"), cron, tz=tz) == pd.Timestamp("2026-11-03 11:00")
+    assert last_due_slot(pd.Timestamp("2026-11-04 13:00"), cron, tz=tz) == pd.Timestamp("2026-11-04 11:00")

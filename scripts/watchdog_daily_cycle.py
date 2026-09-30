@@ -14,7 +14,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from infra.cycle.flows import SCHEDULE_CRON  # noqa: E402
+from infra.cycle.flows import SCHEDULE_CRON, SCHEDULE_TZ  # noqa: E402
 from infra.cycle.paths import CyclePaths  # noqa: E402
 from infra.cycle.watchdog import check, run  # noqa: E402
 
@@ -22,7 +22,7 @@ STATE = Path.home() / "Library" / "Logs" / "infra" / "watchdog_state.json"
 
 if __name__ == "__main__":
     now = pd.Timestamp.now(tz="UTC").tz_localize(None)
-    alert = run(now, SCHEDULE_CRON, CyclePaths.default(), STATE)
-    ok, slot = check(now, SCHEDULE_CRON, CyclePaths.default())
+    alert = run(now, SCHEDULE_CRON, CyclePaths.default(), STATE, tz=SCHEDULE_TZ)
+    ok, slot = check(now, SCHEDULE_CRON, CyclePaths.default(), tz=SCHEDULE_TZ)
     print(f"{now:%Y-%m-%d %H:%M} UTC - last due slot {slot:%a %Y-%m-%d %H:%M} UTC: "
           f"{'OK' if ok else 'MISSING'}" + (f" - ALERTED: {alert}" if alert else ""))

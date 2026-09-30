@@ -9,7 +9,7 @@ from prefect import flow
 from prefect.testing.utilities import prefect_test_harness
 
 from infra.cycle.core import Check, Step
-from infra.cycle.flows import SCHEDULE_CRON, prefect_execute
+from infra.cycle.flows import SCHEDULE_CRON, SCHEDULE_TZ, prefect_execute
 from infra.cycle.paths import CyclePaths
 from infra.cycle.runner import _with_backup_last, run_daily_cycle
 
@@ -61,4 +61,5 @@ def test_a_step_that_raises_inside_a_task_becomes_an_error_outcome(tmp_path):
 
 
 def test_schedule_runs_tuesday_to_saturday_mornings_for_the_prior_trading_day():
-    assert SCHEDULE_CRON == "0 10 * * 2-6"
+    # 06:00 New York, local like the Mac's scheduled wake - so they never drift apart at DST
+    assert (SCHEDULE_CRON, SCHEDULE_TZ) == ("0 6 * * 2-6", "America/New_York")

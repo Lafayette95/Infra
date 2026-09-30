@@ -16,16 +16,20 @@ from prefect import flow, get_run_logger, task
 from prefect.cache_policies import NO_CACHE
 
 from infra.cycle.core import StepContext, StepOutcome
+from infra.cycle.network import wait_for_network
 from infra.cycle.runner import execute_step, run_daily_cycle, run_scheduled_daily
 
-# Tue-Sat 10:00 UTC, processing through the previous trading day. Databento's queryable
-# end runs BEHIND now (verified 2026-09-28: GLBX exactly 8h, Eurex about a day - see
-# api.available_end), so a same-evening run could never see that day's settlement; by
-# 10:00 UTC, GLBX has fully published T-1. Eurex's longer lag means it's judged a day
-# older - the presence check handles that per dataset, and the T-3 re-fetch window
-# picks each day up once it's published.
-SCHEDULE_CRON = "0 10 * * 2-6"
-SCHEDULE_TZ = "UTC"
+# Tue-Sat 06:00 New York time (10:00 UTC in EDT, 11:00 UTC in EST), processing through
+# the previous trading day. Databento's queryable end runs BEHIND now (verified
+# 2026-09-28: GLBX exactly 8h, Eurex about a day - see api.available_end), so a
+# same-evening run could never see that day's settlement; by 10:00 UTC, GLBX has fully
+# published T-1. Eurex's longer lag means it's judged a day older - the presence check
+# handles that per dataset, and the T-3 re-fetch window picks each day up once it's
+# published. LOCAL time on purpose (changed from 10:00 UTC 2026-09-30): the Mac's
+# scheduled wake (`pmset repeat`, 05:55) is local time, so a UTC schedule would drift an
+# hour against it at every DST change - from November the run would come BEFORE the wake.
+SCHEDULE_CRON = "0 6 * * 2-6"
+SCHEDULE_TZ = "America/New_York"
 
 
 class StepNotOk(Exception):
@@ -74,6 +78,7 @@ def _stay_awake():
 def daily_cycle_flow(today: str | None = None) -> str:
     """What the schedule runs: every step over T-N..T (per-step N), force_refetch on."""
     with _stay_awake():
+        wait_for_network()  # a dark-woken Mac has no network - wait / fail clearly (infra.cycle.network)
         report = run_scheduled_daily(today, execute=prefect_execute)
     get_run_logger().info(report.summary())
     report.raise_for_status()  # a failed cycle is a failed flow run
@@ -84,6 +89,7 @@ def daily_cycle_flow(today: str | None = None) -> str:
 def backfill_flow(start: str, end: str, steps: list[str] | None = None, force_refetch: bool = False) -> str:
     """History backfill through Prefect (for run tracking in the UI)."""
     with _stay_awake():
+        wait_for_network()
         report = run_daily_cycle(start, end, steps=steps, force_refetch=force_refetch, execute=prefect_execute)
     get_run_logger().info(report.summary())
     report.raise_for_status()

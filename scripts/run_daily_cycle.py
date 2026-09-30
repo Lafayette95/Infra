@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from infra.api import databento_client as api  # noqa: E402
 from infra.config import BOND_CURVES, DAILY_BACKFILL, FUTURES_ROOTS  # noqa: E402
 from infra.cycle.paths import CyclePaths  # noqa: E402
+from infra.cycle.network import wait_for_network  # noqa: E402
 from infra.cycle.px import plan_daily_px_data  # noqa: E402
 from infra.cycle.px_bonds import plan_daily_bond_px  # noqa: E402
 from infra.cycle.runner import run_daily_cycle, run_scheduled_daily, scheduled_windows  # noqa: E402
@@ -85,6 +86,7 @@ def main() -> int:
             from infra.cycle.flows import daily_cycle_flow
             daily_cycle_flow(str(today.date()))
             return 0
+        wait_for_network()
         report = run_scheduled_daily(today)
     else:
         if not args.start:
@@ -97,6 +99,7 @@ def main() -> int:
             from infra.cycle.flows import backfill_flow
             backfill_flow(str(start.date()), str(end.date()), args.steps, args.force_refetch)
             return 0
+        wait_for_network()
         report = run_daily_cycle(start, end, steps=args.steps, force_refetch=args.force_refetch)
     print(report.summary())
     return 0 if report.ok else 1
