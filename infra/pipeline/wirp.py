@@ -474,3 +474,34 @@ def intraday_schedules(
         df[col] = pd.to_datetime(df[col]).astype("datetime64[ms]")
     df["outcome_step"] = df["outcome_step"].astype("int32")
     return df
+
+
+WIRP_1S_KEYS = ["timestamp", "meeting_date", "outcome_step", "source"]
+
+
+def store_wirp_1s(start, end, *, source: str = "bbo-1s", root: Path | None = None, **kw) -> pd.DataFrame:
+    """Ad hoc: compute WIRP every second in ``[start, end)`` (UTC) from ``source``
+    (``bbo-1s`` quote mids by default, or ``ohlcv-1s``) and SAVE it to
+    ``Derived/WIRP_1s``, replacing that window's rows for that source (a re-run never
+    leaves stale seconds). Reads only what is already on disk - load the 1-second data
+    first (``infra.pipeline.bbo.load_bbo_1s`` / ``infra.pipeline.ohlcv_1s.load_ohlcv_1s``).
+    ``kw`` go to ``intraday_schedules`` (store roots). Returns the rows saved."""
+    from infra.config import WIRP_1S_DIR
+    root = WIRP_1S_DIR if root is None else root
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    df = intraday_schedules(start, end, grid="1s", source=source, **kw)
+    parquet_store.delete_where(root, lambda part: (part["source"] == source)
+                               & pd.to_datetime(part["timestamp"]).between(start, end, inclusive="left"))
+    if not df.empty:
+        parquet_store.write_partitioned(df, root, WIRP_1S_KEYS)
+    return df
+
+
+def read_wirp_1s(start, end, *, source: str | None = None, root: Path | None = None) -> pd.DataFrame:
+    """Saved 1-second WIRP rows in ``[start, end)`` (optionally one ``source``). No compute."""
+    from infra.config import WIRP_1S_DIR
+    root = WIRP_1S_DIR if root is None else root
+    df = parquet_store.read_partitioned(root, start=pd.Timestamp(start), end=pd.Timestamp(end),
+                                        equals_in={"source": [source]} if source else None)
+    return pd.DataFrame() if df is None else df.sort_values(WIRP_1S_KEYS).reset_index(drop=True)
+

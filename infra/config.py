@@ -66,6 +66,9 @@ WIRP_DIR = DERIVED_ROOT / "WIRP"
 # (infra.pipeline.wirp.intraday_schedules). One row set per grid time.
 WIRP_INTRADAY_DIR = DERIVED_ROOT / "WIRP_intraday"
 WIRP_INTRADAY_GRID = "15min"
+# Ad-hoc 1-SECOND WIRP for small event windows (infra.pipeline.wirp.store_wirp_1s) - its
+# own store, never the 15-minute one (whose backfill replaces whole days).
+WIRP_1S_DIR = DERIVED_ROOT / "WIRP_1s"
 BMK_ROOT = DATABASE_ROOT / "Bmk"
 # Full dated snapshots of the database, one per cycle run day (``_vintages/YYYY-MM-DD``) -
 # the baseline each run's "no revisions" check compares against.

@@ -139,3 +139,13 @@ def test_intraday_wirp_records_the_stalest_price_it_used(tmp_path):
     out = intraday_schedules("2026-09-23 14:15", "2026-09-23 14:30", grid="15min", **_fixture(tmp_path))
     row = out.iloc[0]
     assert row["price_as_of"] == D("2026-09-23 14:15") and row["oldest_price_as_of"] == D("2026-09-23 14:15")
+
+
+def test_1s_wirp_is_saved_and_a_rerun_replaces_its_window(tmp_path):
+    from infra.pipeline.wirp import read_wirp_1s, store_wirp_1s
+    kw, root = _fixture(tmp_path), tmp_path / "WIRP_1s"
+    saved = store_wirp_1s("2026-09-23 14:10", "2026-09-23 14:12", source="bbo-1m", root=root, **kw)
+    store_wirp_1s("2026-09-23 14:10", "2026-09-23 14:12", source="bbo-1m", root=root, **kw)  # re-run
+    back = read_wirp_1s("2026-09-23 14:00", "2026-09-23 15:00", root=root)
+    assert len(back) == len(saved) > 0 and set(back["source"]) == {"bbo-1m"}
+
