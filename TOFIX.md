@@ -223,3 +223,26 @@ The bad-print rule can't judge a tenor whose typical daily move is
 exactly 0 - Treasury quotes 2 decimals, so the US 2y during zero rates (65 days,
 2020-21) was skipped. (The related 2-decimal effect - a quiet tenor's z-score inflated
 vs its neighbours' - IS handled: `infra.cycle.px_bonds.BOND_MIN_ABS_DEV`.)
+
+---
+
+## Intraday WIRP: on an FOMC decision day, that meeting is already treated as past
+
+**Found:** 2026-09-30, building intraday WIRP (CLAUDE.md 14).
+**Where:** `infra.pipeline.wirp.build_schedule` (meeting inclusion: `end_date > today`,
+day-granular) as called by `intraday_schedules` at each grid time.
+**Status:** open.
+
+**The issue:** a meeting counts as "upcoming" only while its decision date is after the
+as-of DAY, so on the decision day itself it's already treated as past for the whole
+day - including the hours before the 14:00 ET statement, which is exactly the window an
+intraday event study wants. That meeting's month is then priced from settlements (the
+past-chain rule), and it drops out of the displayed schedule.
+
+**Why not fixed now:** doing it right needs the decision INSTANT (14:00 America/New_York,
+18:00 or 19:00 UTC by DST) compared with the intraday time - a timezone conversion
+outside `infra/dashboard`/`infra.trading_calendar`, which CLAUDE.md 7 forbids unless it
+lives in the trading-calendar layer. **Options:** (1) add an FOMC-decision-instant helper
+to `infra.trading_calendar` (the sanctioned home for exchange/calendar time logic) and
+make meeting inclusion instant-based when `build_schedule` gets an intraday `today`;
+(2) store decision instants in UTC in `FOMC_MEETINGS` (verified per meeting).

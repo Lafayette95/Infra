@@ -22,6 +22,7 @@ from infra.config import (
     API_KEY_ENV,
     MAX_COST_USD,
     PROJECT_ROOT,
+    SCHEMA_BBO_1M,
     SCHEMA_DEFINITION,
     SCHEMA_OHLCV,
     SCHEMA_STATISTICS,
@@ -190,10 +191,30 @@ def fetch_futures_ohlcv(
     *,
     max_cost_usd: float = MAX_COST_USD,
     client: db.Historical | None = None,
+    schema: str = SCHEMA_OHLCV,
 ) -> pd.DataFrame:
-    """Raw ``ohlcv-1m`` bars for ONE absolute contract (raw symbol) over ``[start, end)``."""
+    """Raw OHLCV bars (``ohlcv-1m`` by default, or e.g. ``ohlcv-1s``) for ONE absolute
+    contract (raw symbol) over ``[start, end)``."""
     validate_absolute_symbol(symbol)
-    return _get_range(dataset, SCHEMA_OHLCV, [symbol], start, end, "raw_symbol", max_cost_usd, client)
+    return _get_range(dataset, schema, [symbol], start, end, "raw_symbol", max_cost_usd, client)
+
+
+def fetch_futures_bbo(
+    dataset: str,
+    symbol: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    *,
+    max_cost_usd: float = MAX_COST_USD,
+    client: db.Historical | None = None,
+    schema: str = SCHEMA_BBO_1M,
+) -> pd.DataFrame:
+    """Raw ``bbo-1m`` records for ONE absolute contract over ``[start, end)``: the top of
+    book (``bid_px_00``/``ask_px_00``/sizes) SAMPLED every minute, indexed by ``ts_recv``
+    on the exact minute - verified 2026-09-30 (``ts_event``/``price`` there are the last
+    trade, which can be much older)."""
+    validate_absolute_symbol(symbol)
+    return _get_range(dataset, schema, [symbol], start, end, "raw_symbol", max_cost_usd, client)
 
 
 def fetch_definitions(

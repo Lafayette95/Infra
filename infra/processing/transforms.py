@@ -17,6 +17,10 @@ FUTURES_COLUMNS = [
 FUTURES_PRICE_COLUMNS = ["open", "high", "low", "close"]
 FUTURES_KEYS = ["timestamp", "ticker"]
 
+BBO_COLUMNS = ["timestamp", "ticker", "bid", "ask", "bid_size", "ask_size"]
+BBO_PRICE_COLUMNS = ["bid", "ask"]
+BBO_KEYS = ["timestamp", "ticker"]
+
 OPTIONS_COLUMNS = [
     "timestamp", "underlying", "option_type", "strike", "expiry",
     "open", "high", "low", "close", "volume", "open_interest",
@@ -111,6 +115,62 @@ def encode_futures(df: pd.DataFrame) -> pd.DataFrame:
 def decode_futures(df: pd.DataFrame) -> pd.DataFrame:
     """Disk representation -> float prices and a ``category`` ticker."""
     out = unscale_prices(df, FUTURES_PRICE_COLUMNS)
+    out["ticker"] = out["ticker"].astype("category")
+    return out
+
+
+# ------------------------------------------------------------------ futures bbo
+def clean_futures_bbo(raw: pd.DataFrame) -> pd.DataFrame:
+    """Raw ``bbo-1m`` frame (index ``ts_recv``, the sample instant on the exact minute) ->
+    flat ``timestamp, ticker, bid, ask, bid_size, ask_size``; prices stay float here.
+    One side of a thin book can be empty, so a missing bid/ask is kept as NA rather than
+    dropping the row (the other side is still information); a row with neither side,
+    or a crossed/locked-inverted book (bid > ask), is dropped."""
+    if raw.empty:
+        return _empty_bbo()
+    df = raw.reset_index()
+    df = df.rename(columns={"ts_recv": "timestamp", "symbol": "ticker", "bid_px_00": "bid", "ask_px_00": "ask",
+                            "bid_sz_00": "bid_size", "ask_sz_00": "ask_size"})
+    df["timestamp"] = to_naive_utc_ms(df["timestamp"])
+    df["ticker"] = df["ticker"].astype(str)
+    for col in BBO_PRICE_COLUMNS:
+        df[col] = df[col].astype("float64").where(df[col] > 0)
+    df = df.dropna(subset=BBO_PRICE_COLUMNS, how="all")
+    df = df[~(df["bid"] > df["ask"])]
+    for col in ("bid_size", "ask_size"):
+        df[col] = df[col].astype("Int32")
+    df = df.drop_duplicates(subset=BBO_KEYS, keep="last").sort_values(BBO_KEYS)
+    return df[BBO_COLUMNS].reset_index(drop=True)
+
+
+def _empty_bbo() -> pd.DataFrame:
+    return pd.DataFrame({
+        "timestamp": pd.Series(dtype="datetime64[ms]"),
+        "ticker": pd.Series(dtype="str"),
+        "bid": pd.Series(dtype="float64"), "ask": pd.Series(dtype="float64"),
+        "bid_size": pd.Series(dtype="Int32"), "ask_size": pd.Series(dtype="Int32"),
+    })[BBO_COLUMNS]
+
+
+def encode_futures_bbo(df: pd.DataFrame) -> pd.DataFrame:
+    """Float frame -> disk: bid/ask x10000 as NULLABLE ``Int32`` (6b; nullable because
+    one side of a thin book can be empty - ``scale_prices`` assumes no NaN)."""
+    out = df[BBO_COLUMNS].copy()
+    out["timestamp"] = pd.to_datetime(out["timestamp"]).astype("datetime64[ms]")
+    for col in BBO_PRICE_COLUMNS:
+        out[col] = (out[col].astype("float64") * PRICE_SCALE).round().astype("Int32")
+    for col in ("bid_size", "ask_size"):
+        out[col] = out[col].astype("Int32")
+    return out
+
+
+def decode_futures_bbo(df: pd.DataFrame) -> pd.DataFrame:
+    """Disk -> float bid/ask, a ``mid`` (NaN unless BOTH sides are quoted) and a
+    ``category`` ticker."""
+    out = df.copy()
+    for col in BBO_PRICE_COLUMNS:
+        out[col] = out[col].astype("float64") / float(PRICE_SCALE)
+    out["mid"] = (out["bid"] + out["ask"]) / 2.0
     out["ticker"] = out["ticker"].astype("category")
     return out
 

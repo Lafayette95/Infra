@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from infra.analytics import wirp
@@ -161,10 +162,16 @@ def build_schedule(
     close_root: Path = DAILY_FUTURES_DIR,
     live_root: Path = FUTURES_DIR,
     adjustments_dir: Path | None = None,
+    settlement_rates_fn=None,
+    toggle_rates_fn=None,
 ) -> tuple[pd.DataFrame, dict]:
     """Main entry point: (long-format schedule, meta dict) for ``mode`` ("close" or
     "live"). Empty schedule + a human ``meta["status"]`` message when data isn't cached
-    yet, rather than raising - this page must degrade gracefully (CLAUDE.md section 10)."""
+    yet, rather than raising - this page must degrade gracefully (CLAUDE.md section 10).
+
+    ``settlement_rates_fn`` / ``toggle_rates_fn`` (``{month: ticker} -> (rates, as_of)``)
+    replace the default disk reads - how ``intraday_schedules`` prices each grid time
+    from prices preloaded ONCE (``PanelRates``), still through this one function."""
     if mode not in ("close", "live"):
         raise ValueError(f"mode must be 'close' or 'live', got {mode!r}")
     today = pd.Timestamp(today) if today is not None else pd.Timestamp.now(tz="UTC").tz_localize(None)
@@ -190,8 +197,10 @@ def build_schedule(
     # at ``today`` (CLAUDE.md section 3's "point-in-time cutoff" convention) - without
     # it, calling this with a PAST ``today`` (a backfill) would silently read whatever
     # the latest cached row happens to be now, not what was known as of that day.
-    settlement_fn = lambda mt: close_rates(mt, root=close_root, as_of=today, adjustments_dir=adjustments_dir)  # noqa: E731
-    toggle_fn = settlement_fn if mode == "close" else (lambda mt: live_rates(mt, root=live_root, as_of=today))
+    settlement_fn = settlement_rates_fn or (
+        lambda mt: close_rates(mt, root=close_root, as_of=today, adjustments_dir=adjustments_dir))
+    toggle_fn = toggle_rates_fn or (
+        settlement_fn if mode == "close" else (lambda mt: live_rates(mt, root=live_root, as_of=today)))
 
     anchor = find_anchor(earliest_upcoming_month, contracts, settlement_fn, all_meeting_months)
     if anchor is None:
@@ -331,3 +340,137 @@ def backfill_schedule(
         schedule["anchor_rate"] = meta["anchor_rate"]
         rows.append(schedule)
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+
+# ------------------------------------------------------------------------- intraday
+class PanelRates:
+    """Prices preloaded ONCE for many point-in-time lookups (intraday grids, 1-second
+    event windows) - the in-memory equivalent of ``_latest_rates``: for each ticker, the
+    latest price KNOWN at or before ``as_of``, as its implied rate.
+
+    ``frame``: ``timestamp, ticker, <price_column>``; ``known_after``: how long after
+    its timestamp a row is known - 0 for a quote sample (the book AT that instant), one
+    bar-length for an OHLCV bar (stamped at its START, complete one bar later)."""
+
+    def __init__(self, frame: pd.DataFrame, price_column: str, known_after: pd.Timedelta = pd.Timedelta(0)):
+        df = frame.dropna(subset=[price_column])
+        self._by_ticker = {}
+        for ticker, g in df.groupby(df["ticker"].astype(str), observed=True):
+            g = g.sort_values("timestamp")
+            known = (pd.to_datetime(g["timestamp"]) + known_after).to_numpy(dtype="datetime64[ns]")
+            self._by_ticker[ticker] = (known, g[price_column].to_numpy(dtype=float))
+        self.last_used: dict[str, pd.Timestamp] = {}  # ticker -> known-time of the price used
+
+    def known_times(self) -> np.ndarray:
+        arrays = [k for k, _ in self._by_ticker.values()]
+        return np.sort(np.concatenate(arrays)) if arrays else np.array([], dtype="datetime64[ns]")
+
+    def rates(self, month_tickers: dict[pd.Period, str], as_of: pd.Timestamp) -> tuple[pd.Series, pd.Timestamp | None]:
+        cutoff = np.datetime64(pd.Timestamp(as_of), "ns")
+        out, self.last_used = {}, {}
+        for month, ticker in month_tickers.items():
+            if ticker not in self._by_ticker:
+                continue
+            known, price = self._by_ticker[ticker]
+            i = np.searchsorted(known, cutoff, side="right") - 1
+            if i < 0:
+                continue
+            out[month] = wirp.implied_rate(price[i])
+            self.last_used[ticker] = pd.Timestamp(known[i])
+        latest = max(self.last_used.values()) if self.last_used else None
+        return pd.Series(out, dtype="float64").sort_index(), latest
+
+
+# Intraday price sources for WIRP's upcoming months: store root, reader, price column,
+# and how long after its timestamp a row is known (see PanelRates).
+def _intraday_source(source: str):
+    from infra.config import BBO_1S_FUTURES_DIR, BBO_FUTURES_DIR, OHLCV_1S_FUTURES_DIR
+    from infra.pipeline import bbo
+    from infra.pipeline.futures import read_futures_from_disk
+    sources = {
+        "bbo-1m": (BBO_FUTURES_DIR, bbo.read_bbo_from_disk, "mid", pd.Timedelta(0)),
+        "bbo-1s": (BBO_1S_FUTURES_DIR, bbo.read_bbo_from_disk, "mid", pd.Timedelta(0)),
+        "ohlcv-1m": (FUTURES_DIR, read_futures_from_disk, "close", pd.Timedelta(minutes=1)),
+        "ohlcv-1s": (OHLCV_1S_FUTURES_DIR, read_futures_from_disk, "close", pd.Timedelta(seconds=1)),
+    }
+    if source not in sources:
+        raise ValueError(f"unknown intraday source {source!r}; one of {sorted(sources)}")
+    return sources[source]
+
+
+INTRADAY_SOURCES = ("bbo-1m", "bbo-1s", "ohlcv-1m", "ohlcv-1s")
+_SETTLEMENT_LOOKBACK = pd.Timedelta(days=200)  # anchor months sit up to ~6 months back
+
+
+def settlement_cutoff(at: pd.Timestamp) -> pd.Timestamp:
+    """The last trading day whose settlement is KNOWN at instant ``at`` (UTC): the one
+    before ``at``'s own CME trading day (infra.trading_calendar) - that session's own
+    settlement is only published after it closes."""
+    from infra.trading_calendar import trading_day
+    return trading_day(pd.DatetimeIndex([pd.Timestamp(at)]), "GLBX.MDP3")[0] - pd.Timedelta(days=1)
+
+
+def intraday_schedules(
+    start,
+    end,
+    *,
+    grid: str | None = None,
+    source: str = "bbo-1m",
+    contracts_file: Path = FUTURES_CONTRACTS_FILE,
+    close_root: Path = DAILY_FUTURES_DIR,
+    intraday_root: Path | None = None,
+    adjustments_dir: Path | None = None,
+) -> pd.DataFrame:
+    """WIRP at every ``grid`` time in ``[start, end)`` (UTC) - ``build_schedule``, point
+    in time at each instant: upcoming months from ``source`` prices KNOWN by then
+    (``bbo-1m`` quote mids by default; ``bbo-1s``/``ohlcv-1s`` for small event windows
+    - pass e.g. ``grid="1s"``), settled months from settlements published before then
+    (``settlement_cutoff``). Grid times with no ``source`` update in the preceding grid
+    interval (weekends, the daily halt) are skipped. One row per (grid time, meeting,
+    outcome) - the daily WIRP's columns plus ``price_as_of`` / ``oldest_price_as_of``
+    (the newest and STALEST upcoming-month price used: a thin contract's quote can lag).
+
+    Meeting inclusion stays day-granular, as in ``build_schedule``: a meeting counts as
+    upcoming until its decision DAY begins (UTC), so on an FOMC day itself that
+    meeting is already treated as past (TOFIX.md)."""
+    from infra.config import WIRP_INTRADAY_GRID
+    from infra.pipeline.daily import read_daily_from_disk
+    grid = grid or WIRP_INTRADAY_GRID
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    root, read, price_column, known_after = _intraday_source(source)
+    root = intraday_root or root
+    tickers = zq_contracts(contracts_file)["ticker"].astype(str).tolist()
+    if not tickers:
+        return pd.DataFrame()
+
+    live = PanelRates(read(tickers, start - pd.Timedelta(days=7), end, root=root), price_column, known_after)
+    settled = read_daily_from_disk(tickers, start - _SETTLEMENT_LOOKBACK, end, root=close_root,
+                                   adjustments_dir=adjustments_dir)
+    close = PanelRates(settled, "settlement_price")
+
+    step = pd.Timedelta(grid)
+    known = live.known_times()
+    frames = []
+    for at in pd.date_range(start, end, freq=grid, inclusive="left"):
+        lo, hi = np.datetime64(at - step, "ns"), np.datetime64(at, "ns")
+        if np.searchsorted(known, hi, side="right") == np.searchsorted(known, lo, side="right"):
+            continue  # nothing new in the interval: market closed
+        cutoff = settlement_cutoff(at)
+        schedule, meta = build_schedule(
+            "live", today=at, contracts_file=contracts_file,
+            settlement_rates_fn=lambda mt, c=cutoff: close.rates(mt, c),
+            toggle_rates_fn=lambda mt, a=at: live.rates(mt, a),
+        )
+        if schedule.empty:
+            continue
+        used = live.last_used
+        frames.append(schedule.assign(
+            timestamp=at, anchor_month=meta["anchor_month"], anchor_rate=meta["anchor_rate"],
+            price_as_of=meta["as_of"], oldest_price_as_of=min(used.values()) if used else None, source=source))
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
+    for col in ("timestamp", "meeting_date", "price_as_of", "oldest_price_as_of"):
+        df[col] = pd.to_datetime(df[col]).astype("datetime64[ms]")
+    df["outcome_step"] = df["outcome_step"].astype("int32")
+    return df

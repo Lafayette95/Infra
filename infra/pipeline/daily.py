@@ -162,6 +162,7 @@ _RECENT = pd.Timedelta(days=7)
 
 def bounded_by_availability(
     dataset: str, range_end: pd.Timestamp, client=None, *, now: pd.Timestamp | None = None,
+    schema: str = api.SCHEMA_STATISTICS,
 ) -> tuple[pd.Timestamp, pd.Timestamp]:
     """``(query_end, covered_end)`` for a range ending at ``range_end``. Databento rejects
     any request ending after the dataset's advertised available end (e.g. "today,
@@ -169,11 +170,12 @@ def bounded_by_availability(
     CLAMPED to it; coverage is recorded only up to the start of that day, so a partial or
     not-yet-published day is never claimed as covered and a later normal run fills it in
     (see api.available_end for the verified behavior). Ranges ending well in the past
-    skip the (free) metadata lookup entirely."""
+    skip the (free) metadata lookup entirely. ``schema``: whose availability to read
+    (each schema has its own - shared by the 1-minute/1-second bar and quote pipelines)."""
     now = pd.Timestamp.now(tz="UTC").tz_localize(None) if now is None else pd.Timestamp(now)
     if range_end < now - _RECENT:
         return range_end, range_end
-    available = api.available_end(dataset, api.SCHEMA_STATISTICS, client)
+    available = api.available_end(dataset, schema, client)
     if range_end <= available:
         return range_end, range_end
     return available, available.normalize()

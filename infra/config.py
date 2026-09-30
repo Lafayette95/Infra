@@ -22,6 +22,23 @@ FUTURES_COVERAGE_FILE = COVERAGE_DIR / "futures.parquet"
 FUTURES_DEFS_COVERAGE_FILE = COVERAGE_DIR / "futures_definitions.parquet"
 OPTIONS_COVERAGE_FILE = COVERAGE_DIR / "options.parquet"
 
+# Top-of-book QUOTES sampled every minute (Databento ``bbo-1m``) - a sibling of ohlcv-1m,
+# not nested in it: a different schema (bid/ask, not trade bars) with its own coverage.
+# Unlike trade bars, a quote exists every minute whether or not the contract traded, so
+# thin contracts still have a current price (intraday WIRP, infra.pipeline.wirp).
+BBO_1M_ROOT = DATABASE_ROOT / "bbo-1m"
+BBO_FUTURES_DIR = BBO_1M_ROOT / "Futures"
+BBO_FUTURES_COVERAGE_FILE = BBO_1M_ROOT / "_coverage" / "futures.parquet"
+# 1-SECOND trade bars and quotes, fetched ON DEMAND only for small event windows
+# (infra.pipeline.ohlcv_1s / infra.pipeline.bbo) - never by a cycle. Cached like
+# everything else (Rule 2.1): a window is only ever paid for once.
+OHLCV_1S_ROOT = DATABASE_ROOT / "ohlcv-1s"
+OHLCV_1S_FUTURES_DIR = OHLCV_1S_ROOT / "Futures"
+OHLCV_1S_FUTURES_COVERAGE_FILE = OHLCV_1S_ROOT / "_coverage" / "futures.parquet"
+BBO_1S_ROOT = DATABASE_ROOT / "bbo-1s"
+BBO_1S_FUTURES_DIR = BBO_1S_ROOT / "Futures"
+BBO_1S_FUTURES_COVERAGE_FILE = BBO_1S_ROOT / "_coverage" / "futures.parquet"
+
 # Master table of absolute futures contracts (root, ticker, expiry, ...).
 FUTURES_CONTRACTS_FILE = DEFINITIONS_DIR / "Futures" / "contracts.parquet"
 
@@ -45,6 +62,10 @@ DAILY_BONDS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "bonds.parquet"
 # need yesterday's values on disk to compare against.
 DERIVED_ROOT = DATABASE_ROOT / "Derived"
 WIRP_DIR = DERIVED_ROOT / "WIRP"
+# Intraday WIRP: the same schedule, recomputed on a fixed UTC grid from bbo-1m quote mids
+# (infra.pipeline.wirp.intraday_schedules). One row set per grid time.
+WIRP_INTRADAY_DIR = DERIVED_ROOT / "WIRP_intraday"
+WIRP_INTRADAY_GRID = "15min"
 BMK_ROOT = DATABASE_ROOT / "Bmk"
 # Full dated snapshots of the database, one per cycle run day (``_vintages/YYYY-MM-DD``) -
 # the baseline each run's "no revisions" check compares against.
@@ -56,6 +77,9 @@ ADJUSTMENTS_DIR = DATABASE_ROOT / "_adjustments"
 
 # ------------------------------------------------------------------ API settings
 SCHEMA_OHLCV = "ohlcv-1m"
+SCHEMA_OHLCV_1S = "ohlcv-1s"
+SCHEMA_BBO_1M = "bbo-1m"
+SCHEMA_BBO_1S = "bbo-1s"
 SCHEMA_DEFINITION = "definition"
 SCHEMA_STATISTICS = "statistics"
 API_KEY_ENV = "DATABENTO_API_KEY"
