@@ -40,7 +40,7 @@ def last_weekday(day: pd.Timestamp) -> pd.Timestamp:
 
 def peer_outliers_frame(
     values: pd.DataFrame, meta: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp,
-    *, group_label: str = "group",
+    *, group_label: str = "group", min_abs_dev: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The instrument-agnostic bad-print rule (see the OUTLIER_* constants). ``values``:
     ``ticker, timestamp, value`` (with history before ``start``, for each instrument's own
@@ -48,7 +48,10 @@ def peer_outliers_frame(
     curve - expiry for futures, tenor for bonds) and ``group`` (the fallback peer pool).
     Peers: the OUTLIER_PEERS nearest same-root instruments by ``order``; a root with too
     few instruments that day falls back to its whole ``group``; fewer than 2 peers -> not
-    judged. Returns ``(flagged, pending)`` for days in ``[start, end]``."""
+    judged. ``min_abs_dev`` (optional, in ``value`` units) additionally requires the move
+    to be out of line with the same peers' median move IN RAW UNITS - for sources quoted so
+    coarsely that each instrument's own scale is quantised (see the cash-bond caller).
+    Returns ``(flagged, pending)`` for days in ``[start, end]``."""
     df = values[values["ticker"].isin(meta.index)].sort_values(["ticker", "timestamp"]).copy()
     df["move"] = df.groupby("ticker")["value"].diff()
     df["scale"] = df.groupby("ticker")["move"].transform(
@@ -62,7 +65,7 @@ def peer_outliers_frame(
     df["expiry"] = df["ticker"].map(meta["order"])
     df["group"] = df["ticker"].map(meta["group"])
 
-    devs, pools = [], []
+    devs, pools, raw_devs = [], [], []
     for _, day in df.groupby("timestamp"):
         for idx, r in day.iterrows():
             peers = day[(day["root"] == r["root"]) & (day.index != idx)]
@@ -73,12 +76,16 @@ def peer_outliers_frame(
                 peers = day[(day["group"] == r["group"]) & (day.index != idx)]
                 pool = group_label
             devs.append((idx, r["z"] - peers["z"].median() if len(peers) >= 2 else np.nan))
+            raw_devs.append((idx, r["move"] - peers["move"].median() if len(peers) >= 2 else np.nan))
             pools.append((idx, pool))
     df["dev"] = pd.Series(dict(devs))
     df["peers"] = pd.Series(dict(pools))
+    df["raw_dev"] = pd.Series(dict(raw_devs))
     df = df.dropna(subset=["dev"])
     df["next_dev"] = df.groupby("ticker")["dev"].shift(-1)
     candidate = (df["z"].abs() >= OUTLIER_Z_MIN) & (df["dev"].abs() >= OUTLIER_DEV_MIN) & (df["timestamp"] <= end)
+    if min_abs_dev is not None:
+        candidate &= df["raw_dev"].abs() >= min_abs_dev
     reverted = (np.sign(df["next_dev"]) == -np.sign(df["dev"])) & (df["next_dev"].abs() >= OUTLIER_REVERSAL * df["dev"].abs())
     return (df[candidate & reverted][cols + ["next_dev"]].reset_index(drop=True),
             df[candidate & df["next_dev"].isna()][cols].reset_index(drop=True))

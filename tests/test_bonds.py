@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from infra.api import boe_client, treasury_client
+from infra.api import boe_client, bundesbank_client, treasury_client
 from infra.config import BOND_CURVES, BondCurve
 from infra.cycle.core import StepContext
 from infra.cycle.paths import CyclePaths
@@ -33,6 +33,19 @@ def test_treasury_csv_reads_tenors_by_name_and_covers_only_published_days():
     assert len(df[df["timestamp"] == "2026-09-25"]) == 6  # the blank 20y is dropped, not zero
     # 09-30 isn't published yet: covered only up to the last published day
     assert covered == [(pd.Timestamp("2026-09-01"), pd.Timestamp("2026-09-30"))]
+
+
+def test_bundesbank_csv_keeps_whole_year_maturities_and_covers_only_published_days():
+    text = ("DATAFLOW;BBK_SEIS_ITEM;BBK_SEIS_MATURITY;TIME_PERIOD;OBS_VALUE\n"
+            "BBK:BBSIS(1.0);ZAR;R10XX;2026-09-29;3.61\n"
+            "BBK:BBSIS(1.0);ZAR;R10XX;2026-09-30;3.60\n"
+            "BBK:BBSIS(1.0);ZAR;R02XX;2026-09-30;3.24\n"
+            "BBK:BBSIS(1.0);ZAR;R02XX;2026-09-29;.\n")
+    df, covered = bundesbank_client.fetch_par_curve(pd.Timestamp("2026-09-28"), pd.Timestamp("2026-10-02"),
+                                                    fetch=lambda s, e: text)
+    assert sorted(zip(df["timestamp"].dt.strftime("%m-%d"), df["maturity"], df["value"])) == [
+        ("09-29", 10.0, 3.61), ("09-30", 2.0, 3.24), ("09-30", 10.0, 3.60)]  # "." (missing) dropped
+    assert covered == [(pd.Timestamp("2026-09-28"), pd.Timestamp("2026-10-01"))]
 
 
 def _spot_workbook(days: list[str], maturities=(0.5, 1.0, 1.5, 2.0), value=4.0, holiday=None) -> bytes:
@@ -218,7 +231,7 @@ def test_a_source_failure_is_collected_not_raised(tmp_path):
     assert out["fetch_errors"] == {"US": "ConnectionError: site down"}
 
 
-@pytest.mark.parametrize("country", ["US", "UK"])
+@pytest.mark.parametrize("country", ["US", "UK", "DE"])
 def test_configured_curves_cover_the_agreed_universe(country):
     spec = BOND_CURVES[country]
     assert spec.tenors == TENORS and spec.source in pb.SOURCES
@@ -245,3 +258,31 @@ def test_a_day_published_late_is_picked_up_by_a_later_scheduled_window(tmp_path)
     backfill_daily_bond_px("2026-08-24", "2026-08-28", sources={"fake": _fake_source(calls=calls)}, **kw)
     # the window, plus the 08-20/08-21 it has moved past (published late), in one request
     assert calls == [(pd.Timestamp("2026-08-20"), pd.Timestamp("2026-08-29"))]
+
+
+def test_a_quiet_2dp_short_end_moving_with_its_neighbours_is_not_a_bad_print(tmp_path):
+    """The DE 2y on 2026-03-09/10: +10/-12bp with the 3y/5y +9/-11 and -10, published to 2
+    decimals - its own typical move rounds to ~1bp, so its z-score is inflated vs its
+    neighbours'. Only a move out of line in bp too (BOND_MIN_ABS_DEV) may be flagged."""
+    paths = CyclePaths.under(tmp_path)
+    shock = {"2026-09-14": (0.10, 0.09, 0.09, 0.06, 0.04), "2026-09-15": (-0.12, -0.11, -0.10, -0.07, -0.04)}
+
+    def quantised(start, end):
+        days = pd.bdate_range(start, min(end, pd.Timestamp("2026-09-30")) - pd.Timedelta(days=1))
+        rng = np.random.default_rng(1)
+        typical = {2: 0.006, 3: 0.02, 5: 0.025, 7: 0.025, 10: 0.03, 20: 0.03, 30: 0.03}  # a quiet 2y
+        rows = []
+        for t in TENORS:
+            walk = 2.0 + t / 100 + np.cumsum(rng.normal(0, typical[t], len(days)))
+            for d, v in zip(days, walk):
+                rows.append((d, float(t), v))
+        df = pd.DataFrame(rows, columns=["timestamp", "maturity", "value"])
+        for day, moves in shock.items():
+            after = df["timestamp"] >= day
+            for t, mv in zip((2, 3, 5, 7, 10), moves):
+                df.loc[after & (df["maturity"] == t), "value"] += mv
+        df["value"] = df["value"].round(2)
+        return df, ([(start, days[-1] + pd.Timedelta(days=1))] if len(days) else [])
+
+    out = backfill_daily_bond_px("2026-03-02", "2026-09-29", paths=paths, curves={"US": US}, sources={"fake": quantised})
+    assert out["bad_prints"].empty

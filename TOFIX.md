@@ -214,24 +214,16 @@ against Bloomberg values for a few dates, once the user provides them.
 
 ---
 
-## Cash-bond curves: Germany has no source yet; conventions differ per source
+## Cash-bond curves: conventions differ per source
 
 **Found:** 2026-09-30 (CLAUDE.md 13).
-**Status:** open, both pending user decisions.
-
-**Germany:** the ECB Data Portal publishes par yields (`YC` dataflow, `PY_*`) only for
-euro-area aggregates - AAA issuers (`G_N_A`) or all issuers (`G_N_C`) - no German-only
-curve. The Bundesbank's open SDMX API (German term structure, e.g.
-`BBSIS/D.I.ZST.ZI.EUR.S1311.B.A604.R10XX.R.A.A._Z._Z.A`, zero-coupon) answered
-2026-09-30 with a JavaScript proof-of-work bot challenge on every path (303 ->
-`/.enodia/challenge`), and "rate exceeded" from a browser - possibly triggered by our
-own probing burst. Not worked around. Options: re-test with single, spaced requests; the
-ECB AAA curve labelled honestly (e.g. `EA_AAA_BOND_10y`, never `DE_`); a manual download.
+**Status:** open, on hold pending a user decision.
 
 **Conventions (on hold, user 2026-09-30):** each curve is stored exactly as its source
 publishes it - US par on a semi-annual bond-equivalent basis; UK par with semi-annual
-coupons; the ECB's par with annual coupons, if added. Not harmonised.
+coupons; DE par with annual coupons (Bunds pay annually). Not harmonised.
 
 **Minor, noted:** the bad-print rule can't judge a tenor whose typical daily move is
 exactly 0 - Treasury quotes 2 decimals, so the US 2y during zero rates (65 days,
-2020-21) was skipped.
+2020-21) was skipped. (The related 2-decimal effect - a quiet tenor's z-score inflated
+vs its neighbours' - IS handled: `infra.cycle.px_bonds.BOND_MIN_ABS_DEV`.)

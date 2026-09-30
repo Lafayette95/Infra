@@ -18,7 +18,7 @@ from typing import Callable
 
 import pandas as pd
 
-from infra.api import boe_client, treasury_client
+from infra.api import boe_client, bundesbank_client, treasury_client
 from infra.config import ADJUSTMENTS_DIR, BOND_CURVES, DAILY_BONDS_COVERAGE_FILE, DAILY_BONDS_DIR, BondCurve, bond_ticker
 from infra.coverage.intervals import Interval, find_missing_ranges, to_utc_day
 from infra.processing import bond_curves as bc
@@ -32,6 +32,7 @@ STORE = "Daily/Bonds"  # this store's name in the adjustments log
 SOURCES: dict[str, Callable[[pd.Timestamp, pd.Timestamp], tuple[pd.DataFrame, list[Interval]]]] = {
     "treasury": treasury_client.fetch_par_curve,
     "boe": boe_client.fetch_spot_curve,
+    "bundesbank": bundesbank_client.fetch_par_curve,
 }
 
 

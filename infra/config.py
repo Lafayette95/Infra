@@ -241,7 +241,7 @@ DAILY_BACKFILL: dict[str, DailyBackfillSpec] = {
 @dataclass(frozen=True)
 class BondCurve:
     country: str  # ticker prefix, e.g. "US"
-    source: str  # fetcher in infra.pipeline.bonds.SOURCES: "treasury" | "boe"
+    source: str  # fetcher in infra.pipeline.bonds.SOURCES: "treasury" | "boe" | "bundesbank"
     name: str  # human label
     currency: str
     convention: str  # the yields' compounding/coupon convention, as the source publishes them
@@ -278,9 +278,14 @@ BOND_CURVES: dict[str, BondCurve] = {
         BondCurve("UK", "boe", "UK gilt par curve (derived from BoE spot)", "GBP",
                   convention="par, semi-annual coupons, derived from BoE nominal spot curve",
                   history_start="2016-01-01", par_method="semiannual_from_spot"),
-        # Germany: pending a source decision - the ECB publishes no German-only curve
-        # (euro-area AAA / all-issuer only), and the Bundesbank API is behind a bot
-        # challenge / rate limit as of 2026-09-30.
+        # Bundesbank par curve of its fitted Svensson model for German Federal securities
+        # (BBSIS item ZAR), ANNUAL coupons, 2 decimals, published the same day. Verified
+        # 2026-09-30 to be exactly the model's par curve (rebuilt from its zero curve
+        # within rounding) - see infra/api/bundesbank_client.py. Its API bot-challenges
+        # VPN addresses.
+        BondCurve("DE", "bundesbank", "German Federal securities par curve (Bundesbank)", "EUR",
+                  convention="par, annual coupons (Bundesbank, Svensson term structure)",
+                  history_start="1997-08-01"),
     )
 }
 
