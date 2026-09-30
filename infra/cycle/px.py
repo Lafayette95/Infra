@@ -78,6 +78,20 @@ def plan_daily_px_data(
     paths = paths or CyclePaths.default()
     start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
     members, errors = daily_universe(start, end, paths=paths, specs=specs, refresh_contracts=False)
+    return plan_gaps(members, start, end, paths=paths, force_refetch=force_refetch), errors
+
+
+def plan_gaps(
+    members: dict[str, UniverseMember],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    *,
+    paths: CyclePaths,
+    force_refetch: bool = False,
+) -> dict[str, tuple[UniverseMember, list]]:
+    """``{ticker: (member, gaps)}`` for every member with days not yet covered on disk
+    (Rule 2.1) - the ONE planning rule, shared by the real run and the free dry run so
+    the dry run always prices exactly what the real run would fetch."""
     plan = {}
     for m in members.values():
         w0, w1 = fetch_window(m, start, end)
@@ -85,7 +99,37 @@ def plan_daily_px_data(
                                     force_refetch=force_refetch)
         if gaps:
             plan[m.ticker] = (m, gaps)
-    return plan, errors
+    return plan
+
+
+def fetch_and_store_px(
+    work: dict[str, tuple[UniverseMember, list]],
+    *,
+    paths: CyclePaths,
+    max_cost_usd: float = MAX_COST_USD,
+    client=None,
+    workers: int = PX_FETCH_WORKERS,
+) -> tuple[int, dict[str, str]]:
+    """Fetch every planned ticker's gaps concurrently and store each as it lands.
+    Returns ``(rows stored, {ticker: error})`` - per-ticker failures are collected, not
+    raised, so one bad contract never hides the others."""
+    rows, errors = 0, {}
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="px-fetch") as pool:
+        futures = {
+            pool.submit(dl.fetch_daily_raw, t, gaps, dataset=m.dataset,
+                        max_cost_usd=max_cost_usd, client=client): t
+            for t, (m, gaps) in work.items()
+        }
+        for fut in as_completed(futures):  # store each as it lands, one at a time
+            ticker = futures[fut]
+            try:
+                rows += dl.store_daily_raw(ticker, fut.result(), dataset=work[ticker][0].dataset,
+                                           root=paths.daily_futures_dir,
+                                           coverage_file=paths.daily_futures_coverage)
+            except Exception as exc:
+                errors[ticker] = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
+                log.warning("px fetch failed for %s: %s", ticker, errors[ticker])
+    return rows, errors
 
 
 def backfill_daily_px_data(
@@ -112,31 +156,11 @@ def backfill_daily_px_data(
         start, end, paths=paths, specs=specs, refresh_contracts=refresh_contracts,
         max_cost_usd=max_cost_usd, client=client,
     )
-    fetch_errors: dict[str, str] = {}
-    rows = 0
+    rows, fetch_errors = 0, {}
     if fetch_missing:
-        work = {}
-        for m in members.values():
-            w0, w1 = fetch_window(m, start, end)
-            gaps = dl.plan_daily_update(m.ticker, w0, w1, coverage_file=paths.daily_futures_coverage,
-                                        force_refetch=force_refetch)
-            if gaps:
-                work[m.ticker] = (m, gaps)
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="px-fetch") as pool:
-            futures = {
-                pool.submit(dl.fetch_daily_raw, t, gaps, dataset=m.dataset,
-                            max_cost_usd=max_cost_usd, client=client): t
-                for t, (m, gaps) in work.items()
-            }
-            for fut in as_completed(futures):  # store each as it lands, one at a time
-                ticker = futures[fut]
-                try:
-                    rows += dl.store_daily_raw(ticker, fut.result(), dataset=work[ticker][0].dataset,
-                                               root=paths.daily_futures_dir,
-                                               coverage_file=paths.daily_futures_coverage)
-                except Exception as exc:
-                    fetch_errors[ticker] = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
-                    log.warning("px fetch failed for %s: %s", ticker, fetch_errors[ticker])
+        work = plan_gaps(members, start, end, paths=paths, force_refetch=force_refetch)
+        rows, fetch_errors = fetch_and_store_px(work, paths=paths, max_cost_usd=max_cost_usd,
+                                                client=client, workers=workers)
     treated, pending = treat_bad_prints(start, end, members, specs, paths, run_day=run_day)
     return {"members": members, "universe_errors": universe_errors, "fetch_errors": fetch_errors,
             "rows": rows, "available_end": _availability(members, end, client) if fetch_missing else {},
