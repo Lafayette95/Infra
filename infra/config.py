@@ -34,6 +34,11 @@ DAILY_COVERAGE_DIR = DAILY_ROOT / "_coverage"
 DAILY_FUTURES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "futures.parquet"
 DAILY_OPTIONS_DIR = DAILY_ROOT / "Options"
 DAILY_OPTIONS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "options.parquet"
+# Daily cash-bond par yields (constant-maturity curves from official sources, not
+# Databento - see BOND_CURVES below and infra/pipeline/bonds.py). Coverage is keyed by
+# CURVE ("US", "UK"), since one request always returns the whole curve.
+DAILY_BONDS_DIR = DAILY_ROOT / "Bonds"
+DAILY_BONDS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "bonds.parquet"
 
 # Daily-cycle outputs (infra/cycle, CLAUDE.md section 12). Derived metrics ARE persisted
 # here (unlike the dashboard's on-demand analytics) because the cycle's revision checks
@@ -226,6 +231,57 @@ DAILY_BACKFILL: dict[str, DailyBackfillSpec] = {
     # ICE excluded for now: ~99% of the daily cycle's API cost (2026-09-28 cost check).
     "SO3": DailyBackfillSpec(0, enabled=False),
     "R": DailyBackfillSpec(0, enabled=False),
+}
+
+# ------------------------------------------------------------------ cash-bond curves
+# Daily constant-maturity PAR yields per sovereign, stored as absolute tickers
+# ``<country>_BOND_<tenor>y`` (e.g. "US_BOND_10y"), in percent. Each curve has its own
+# free official source (infra/api/<source>_client.py) - no Databento, no cost. Stored
+# exactly in the source's own convention (not converted between them).
+@dataclass(frozen=True)
+class BondCurve:
+    country: str  # ticker prefix, e.g. "US"
+    source: str  # fetcher in infra.pipeline.bonds.SOURCES: "treasury" | "boe"
+    name: str  # human label
+    currency: str
+    convention: str  # the yields' compounding/coupon convention, as the source publishes them
+    tenors: tuple[int, ...] = (2, 3, 5, 7, 10, 20, 30)  # years
+    history_start: str = "1990-01-02"  # never request before this (the source has nothing)
+    # How par yields are obtained from the source, for a source that only publishes
+    # another curve (the BoE: spot only) - a name in
+    # infra.processing.bond_curves.PAR_METHODS, swappable without touching the fetcher.
+    par_method: str | None = None
+    enabled: bool = True
+    # A confirmed bad print (the px step's peer-outlier rule, peers = neighbouring tenors)
+    # is "NA" (dropped) or "roll" (last good value carried forward), CLAUDE.md 12.
+    bad_print_policy: str = "NA"
+
+
+def bond_ticker(country: str, tenor: int) -> str:
+    return f"{country}_BOND_{tenor}y"
+
+
+BOND_CURVES: dict[str, BondCurve] = {
+    c.country: c
+    for c in (
+        # Daily Treasury Par Yield Curve Rates (the CMT curve): par yields on a
+        # semi-annual bond-equivalent basis, 2 decimals. Verified 2026-09-30:
+        # https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView?type=daily_treasury_yield_curve
+        BondCurve("US", "treasury", "US Treasury CMT par curve", "USD",
+                  convention="par, semi-annual bond-equivalent (Treasury CMT)", history_start="1990-01-02"),
+        # BoE nominal gilt curve (VRP spline): the BoE publishes SPOT (zero-coupon)
+        # yields on a 0.5y grid to 40y, and par only for 5/10/20y (IADB IUDSNPY/IUDMNPY/
+        # IUDLNPY) - so par is DERIVED here from the spot grid, one method for every
+        # tenor (user decision 2026-09-30). It does not yet reproduce the BoE's own par
+        # series exactly (TOFIX.md). Verified 2026-09-30:
+        # https://www.bankofengland.co.uk/statistics/yield-curves
+        BondCurve("UK", "boe", "UK gilt par curve (derived from BoE spot)", "GBP",
+                  convention="par, semi-annual coupons, derived from BoE nominal spot curve",
+                  history_start="2016-01-01", par_method="semiannual_from_spot"),
+        # Germany: pending a source decision - the ECB publishes no German-only curve
+        # (euro-area AAA / all-issuer only), and the Bundesbank API is behind a bot
+        # challenge / rate limit as of 2026-09-30.
+    )
 }
 
 # How many BUSINESS days back the scheduled run re-fetches (force_refetch=True) to catch

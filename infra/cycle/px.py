@@ -1,6 +1,13 @@
-"""Step 1a - ``backfill_daily_px_data``: daily settlement prices (and open interest) for
-the cycle's point-in-time contract universe, through the existing daily pipeline
-(infra.pipeline.daily) - no new fetch/storage code, only which contracts and which days.
+"""Step 1a - ``backfill_daily_px_data``: every daily px input, as two halves:
+
+* FUTURES (this module, ``backfill_daily_futures_px``): settlement prices (and open
+  interest) for the cycle's point-in-time contract universe, through the existing daily
+  pipeline (infra.pipeline.daily) - only which contracts and which days;
+* CASH BONDS (``infra.cycle.px_bonds.backfill_daily_bond_px``): par yields per sovereign
+  curve (``US_BOND_10y`` ...), through infra.pipeline.bonds.
+
+Both share one bad-print rule (infra.cycle.bad_prints), the adjustments log and the
+generic revision check; each half has its own checks.
 """
 from __future__ import annotations
 
@@ -11,10 +18,18 @@ import numpy as np
 import pandas as pd
 
 from infra.api import databento_client as api
-from infra.config import DAILY_BACKFILL, MAX_COST_USD, SCHEMA_STATISTICS, DailyBackfillSpec
+from infra.config import BOND_CURVES, DAILY_BACKFILL, MAX_COST_USD, SCHEMA_STATISTICS, BondCurve, DailyBackfillSpec
+from infra.cycle.bad_prints import (  # noqa: F401 - re-exported, the px step's public API
+    _NEXT_SESSION_LOOKAHEAD,
+    BAD_PRINT_SOURCE,
+    last_weekday,
+    peer_outliers_frame,
+    treatment_rows,
+)
 from infra.cycle.checks import revision_check
 from infra.cycle.core import Check, Severity, Step, StepContext
 from infra.cycle.paths import CyclePaths
+from infra.cycle.px_bonds import BOND_CHECKS, backfill_daily_bond_px
 from infra.cycle.universe import UniverseMember, daily_universe, rank_on
 from infra.pipeline import daily as dl
 from infra.storage import adjustment_store
@@ -22,26 +37,6 @@ from infra.storage import adjustment_store
 log = logging.getLogger(__name__)
 _ONE_DAY = pd.Timedelta(days=1)
 
-# Custom outlier check (test c): a BAD PRINT, not a big market day. Each move is first put
-# in units of its own contract's typical move (z = move / median |move| over the prior
-# OUTLIER_LOOKBACK moves), then compared with its peers' z the same day. A contract is
-# flagged when it (1) moved a lot by its own standard (|z| >= OUTLIER_Z_MIN), (2) was out
-# of line with its peers (|z - median peer z| >= OUTLIER_DEV_MIN), and (3) that deviation
-# REVERSED at its next session by at least OUTLIER_REVERSAL of its size. Calibrated
-# 2026-09-28 on a year of real settlements (2025-07 .. 2026-09, 19,324 contract-days): it
-# flags exactly three prints - ESRM7 and ESRU7 on 2026-09-11 (a ~40bp kink mid-strip,
-# gone next session) and ESRZ6 on 2025-10-31 (-6bp while every neighbour rose, +5.75bp
-# back) - and none of NFP 2025-08-01, the ECB-dated EUR days, 2026-04-08, or FOMC
-# 2026-06-17/07-29. Each condition is load-bearing: without (1) a nearly-expired contract
-# that barely moved on a shock day looks "out of line"; without (3) an FOMC meeting-month
-# contract repricing alone looks like a bad print. Cost of (3): a print can only be judged
-# once its next session exists - the latest day is reported as pending (warn), not judged.
-OUTLIER_Z_MIN = 5.0
-OUTLIER_DEV_MIN = 6.0
-OUTLIER_REVERSAL = 0.5
-OUTLIER_PEERS = 4  # nearest same-root contracts by expiry
-OUTLIER_LOOKBACK = 60
-OUTLIER_MIN_HISTORY = 20
 # A contract that rolls INTO the universe mid-window is also fetched this many calendar
 # days before its first universe day, so that day still has a prior settlement to diff
 # against (the bmk pnl step). Contracts in the universe from the window's start get
@@ -139,6 +134,33 @@ def backfill_daily_px_data(
     paths: CyclePaths | None = None,
     force_refetch: bool = False,
     fetch_missing: bool = True,
+    run_day: pd.Timestamp | None = None,
+    bonds: bool = True,
+    bond_curves: dict[str, BondCurve] = BOND_CURVES,
+    bond_sources=None,
+    **futures_options,
+) -> dict:
+    """Every daily px input over ``[start, end]`` (inclusive): futures settlements
+    (``backfill_daily_futures_px``, whose keys stay at the top level - downstream steps
+    read them there) and cash-bond par yields under ``"bonds"`` (``bonds=False`` skips
+    them). ``futures_options``: ``refresh_contracts``, ``specs``, ``max_cost_usd``,
+    ``client``, ``workers``."""
+    out = backfill_daily_futures_px(start, end, paths=paths, force_refetch=force_refetch,
+                                     fetch_missing=fetch_missing, run_day=run_day, **futures_options)
+    if bonds:
+        out["bonds"] = backfill_daily_bond_px(start, end, paths=paths, force_refetch=force_refetch,
+                                              fetch_missing=fetch_missing, curves=bond_curves,
+                                              sources=bond_sources, run_day=run_day)
+    return out
+
+
+def backfill_daily_futures_px(
+    start,
+    end,
+    *,
+    paths: CyclePaths | None = None,
+    force_refetch: bool = False,
+    fetch_missing: bool = True,
     refresh_contracts: bool = True,
     specs: dict[str, DailyBackfillSpec] = DAILY_BACKFILL,
     max_cost_usd: float = MAX_COST_USD,
@@ -182,13 +204,6 @@ def _availability(members: dict[str, UniverseMember], end: pd.Timestamp, client)
 
 
 # ------------------------------------------------------------------------ checks
-def last_weekday(day: pd.Timestamp) -> pd.Timestamp:
-    day = pd.Timestamp(day).normalize()
-    while day.weekday() >= 5:
-        day -= _ONE_DAY
-    return day
-
-
 def _members(ctx: StepContext) -> dict[str, UniverseMember]:
     return ctx.output.get("members", {})
 
@@ -279,57 +294,17 @@ def _check_sane(ctx: StepContext):
 def peer_outliers(
     settle: pd.DataFrame, members: dict[str, UniverseMember], start: pd.Timestamp, end: pd.Timestamp,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """``(flagged, pending)`` bad-print candidates for days in ``[start, end]`` - see the
-    OUTLIER_* constants for the rule and its calibration. ``settle`` needs history
-    before ``start`` (for each contract's own scale). Peers: the OUTLIER_PEERS nearest
-    same-root contracts by expiry; a root with too few contracts that day (bond futures
-    carry 2) falls back to every same-currency, same-category contract (e.g. the USD
-    Treasury complex) - a contract with fewer than 2 peers isn't judged."""
+    """Futures bad-print candidates (``peer_outliers_frame`` on settlements): peers are
+    the nearest same-root contracts by expiry; a root with too few contracts that day
+    (bond futures carry 2) falls back to every same-currency, same-category contract
+    (e.g. the USD Treasury complex)."""
     from infra.config import FUTURES_ROOTS
-    df = settle[settle["ticker"].isin(members)].sort_values(["ticker", "timestamp"]).copy()
-    df["move"] = df.groupby("ticker")["settlement_price"].diff()
-    df["scale"] = df.groupby("ticker")["move"].transform(
-        lambda m: m.abs().shift(1).rolling(OUTLIER_LOOKBACK, min_periods=OUTLIER_MIN_HISTORY).median())
-    df["z"] = df["move"] / df["scale"]
-    df = df[np.isfinite(df["z"]) & (df["timestamp"] >= start)]
-    cols = ["ticker", "timestamp", "move", "z", "dev", "peers"]
-    if df.empty:
-        return pd.DataFrame(columns=cols), pd.DataFrame(columns=cols)
-    df["root"] = df["ticker"].map(lambda t: members[t].root)
-    df["expiry"] = df["ticker"].map(lambda t: members[t].curve_order)
-    df["group"] = df["root"].map(lambda r: (FUTURES_ROOTS[r].currency, FUTURES_ROOTS[r].category))
-
-    devs, pools = [], []
-    for _, day in df.groupby("timestamp"):
-        for idx, r in day.iterrows():
-            peers = day[(day["root"] == r["root"]) & (day.index != idx)]
-            if len(peers) >= 2:
-                peers = peers.iloc[(peers["expiry"] - r["expiry"]).abs().argsort()[:OUTLIER_PEERS]]
-                pool = "root"
-            else:
-                peers = day[(day["group"] == r["group"]) & (day.index != idx)]
-                pool = "currency+category"
-            devs.append((idx, r["z"] - peers["z"].median() if len(peers) >= 2 else np.nan))
-            pools.append((idx, pool))
-    df["dev"] = pd.Series(dict(devs))
-    df["peers"] = pd.Series(dict(pools))
-    df = df.dropna(subset=["dev"])
-    df["next_dev"] = df.groupby("ticker")["dev"].shift(-1)
-    candidate = (df["z"].abs() >= OUTLIER_Z_MIN) & (df["dev"].abs() >= OUTLIER_DEV_MIN) & (df["timestamp"] <= end)
-    reverted = (np.sign(df["next_dev"]) == -np.sign(df["dev"])) & (df["next_dev"].abs() >= OUTLIER_REVERSAL * df["dev"].abs())
-    return (df[candidate & reverted][cols + ["next_dev"]].reset_index(drop=True),
-            df[candidate & df["next_dev"].isna()][cols].reset_index(drop=True))
-
-
-# The reversal test needs each judged day's NEXT session, which for the window's last day
-# lies after the window. Read it if it's already on disk - only days inside the window are
-# ever JUDGED, so this is a data-quality lookup, not look-ahead in any value computed.
-# Without it, non-overlapping history windows (e.g. monthly) never judged a boundary day:
-# ESRZ6's bad print on 2025-10-31 slipped through an Oct-2025 window this way.
-_NEXT_SESSION_LOOKAHEAD = pd.Timedelta(days=10)
-
-
-BAD_PRINT_SOURCE = "px_bad_print"  # this process's name in the adjustments log
+    meta = pd.DataFrame(
+        [(t, m.root, m.curve_order, (FUTURES_ROOTS[m.root].currency, FUTURES_ROOTS[m.root].category))
+         for t, m in members.items()],
+        columns=["ticker", "root", "order", "group"]).set_index("ticker")
+    return peer_outliers_frame(settle.rename(columns={"settlement_price": "value"}), meta, start, end,
+                               group_label="currency+category")
 
 
 def treat_bad_prints(
@@ -351,29 +326,12 @@ def treat_bad_prints(
     flagged, pending = peer_outliers(hist, members, start, end)
     adjustment_store.clear(paths.adjustments_dir, store=dl.STORE, source=BAD_PRINT_SOURCE,
                            keys=list(members), start=start, end=end)
-    rows, done = [], {}  # done: (ticker, day) -> adjusted value, for consecutive bad prints
-    for r in flagged.sort_values(["ticker", "timestamp"]).itertuples(index=False):
-        m = members[r.ticker]
+    def policy(r):
         rank = rank_on(r.ticker, r.timestamp, members)
-        policy = specs[m.root].bad_print_policy(rank)
-        series = hist.loc[hist["ticker"] == r.ticker].set_index("timestamp")["settlement_price"]
-        original, adjusted, note = float(series[r.timestamp]), np.nan, ""
-        if policy == "roll":
-            for day in reversed(series.index[series.index < r.timestamp]):
-                value = done.get((r.ticker, day), series[day])
-                if np.isfinite(value):
-                    adjusted = float(value)
-                    break
-            else:
-                policy, note = "NA", " (roll had no earlier good value - NA instead)"
-        done[(r.ticker, r.timestamp)] = adjusted
-        rows.append({
-            "store": dl.STORE, "timestamp": r.timestamp, "key": r.ticker, "column": "settlement_price",
-            "action": policy, "original": original, "adjusted": adjusted, "source": BAD_PRINT_SOURCE,
-            "detail": (f"rank {rank}: off-peer move (z {r.z:.1f}, peer deviation {r.dev:.1f}) "
-                       f"reversed next session ({r.next_dev:.1f}){note}"),
-            "run_day": run_day,
-        })
+        return specs[members[r.ticker].root].bad_print_policy(rank), f"rank {rank}: "
+
+    rows = treatment_rows(flagged, hist.rename(columns={"settlement_price": "value"}), policy=policy,
+                          store=dl.STORE, column="settlement_price", run_day=run_day)
     treated = pd.DataFrame(rows, columns=adjustment_store.COLUMNS)
     adjustment_store.record(paths.adjustments_dir, treated)
     return treated, pending
@@ -409,6 +367,7 @@ PX_CHECKS = (
     Check("px_sane", _check_sane),
     Check("px_outliers", _check_outliers, severity=Severity.WARN),
     Check("px_outliers_pending", _check_outliers_pending, severity=Severity.WARN),
+    *BOND_CHECKS,
 )
 
 
@@ -418,7 +377,7 @@ def _run(ctx: StepContext) -> dict:
         ctx.start, ctx.end, paths=ctx.paths, force_refetch=ctx.force_refetch,
         run_day=ctx.run_day,
         **{k: opts[k] for k in ("fetch_missing", "refresh_contracts", "specs", "max_cost_usd", "client",
-                                "workers") if k in opts},
+                                "workers", "bonds", "bond_curves", "bond_sources") if k in opts},
     )
 
 

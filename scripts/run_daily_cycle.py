@@ -20,9 +20,10 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from infra.api import databento_client as api  # noqa: E402
-from infra.config import DAILY_BACKFILL, FUTURES_ROOTS  # noqa: E402
+from infra.config import BOND_CURVES, DAILY_BACKFILL, FUTURES_ROOTS  # noqa: E402
 from infra.cycle.paths import CyclePaths  # noqa: E402
 from infra.cycle.px import plan_daily_px_data  # noqa: E402
+from infra.cycle.px_bonds import plan_daily_bond_px  # noqa: E402
 from infra.cycle.runner import run_daily_cycle, run_scheduled_daily, scheduled_windows  # noqa: E402
 from infra.cycle.universe import snapshot_grid_floor  # noqa: E402
 from infra.pipeline import contracts as contracts_pipe  # noqa: E402
@@ -55,6 +56,9 @@ def dry_run(start, end, force_refetch: bool) -> int:
             print(f"settlement  {ticker:22s} {g0.date()} -> {query_end:%F %H:%M}  est. ${cost:.4f}")
     for root, err in errors.items():
         print(f"universe    {root}: {err}")
+    for country, gaps in plan_daily_bond_px(start, end, force_refetch=force_refetch).items():
+        for g0, g1 in gaps:
+            print(f"bonds       {country:22s} {g0.date()} -> {g1.date()}  free ({BOND_CURVES[country].source})")
     print(f"{len(plan)} contracts to fetch; estimated total ${total:.4f}")
     return 0
 

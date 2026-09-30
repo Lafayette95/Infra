@@ -13,3 +13,16 @@ def _hermetic_adjustments_log(tmp_path_factory, monkeypatch):
     empty = tmp_path_factory.mktemp("no_adjustments")
     monkeypatch.setattr("infra.pipeline.daily.ADJUSTMENTS_DIR", empty)
     monkeypatch.setattr("infra.pipeline.wirp.ADJUSTMENTS_DIR", empty)
+
+
+@pytest.fixture(autouse=True)
+def _no_bond_network(monkeypatch):
+    """The px step fetches cash-bond curves from public websites (infra.pipeline.bonds.
+    SOURCES); no test may reach them. By default every source answers "nothing
+    published"; bond tests pass their own fake ``sources`` explicitly."""
+    import pandas as pd
+
+    def nothing(start, end):
+        return pd.DataFrame(columns=["timestamp", "maturity", "value"]), []
+
+    monkeypatch.setattr("infra.pipeline.bonds.SOURCES", {"treasury": nothing, "boe": nothing})

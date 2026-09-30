@@ -183,3 +183,55 @@ day's stored DV01.
 **Interim option considered, not taken:** an empirical DV01 from regressing futures
 price moves on a benchmark yield series (would need a yield feed - the natural first
 user of `backfill_daily_raw_data`). Rejected for now in favour of doing it properly.
+
+---
+
+## UK par yields derived from the BoE spot curve don't reproduce the BoE's own par series
+
+**Found:** 2026-09-30, building the cash-bond px pipeline (CLAUDE.md 13).
+**Where:** `infra/processing/bond_curves.py` (`PAR_METHODS`, `par_from_spot`), config
+`BOND_CURVES["UK"].par_method`.
+**Status:** open. The method is modular by design (user decision 2026-09-30) so it can
+be swapped once the gap is understood.
+
+**The issue:** the BoE publishes its nominal gilt curve as SPOT (zero-coupon) yields on
+a 0.5y grid (0.5-40y), and par yields only for 5/10/20y (IADB `IUDSNPY`, `IUDMNPY`,
+`IUDLNPY`). We derive par for all seven tenors from the spot grid (semi-annual coupons,
+discount factors straight off the grid). Against the BoE's own par series, over
+2026-08/09 (same dates, verified not a date offset): 5y -0.6bp (sd 0.5), 10y -3.6bp
+(sd 1.5), 20y +1.6bp (sd 0.9). Reading the spot rates as continuously compounded is worse
+overall (+5.1 / +3.1 / +9.3bp), so `semiannual_from_spot` is the default; the BoE's site
+doesn't state the spot curve's compounding.
+
+**Why it matters:** the goal is a curve matching what a desk sees (e.g. Bloomberg); a few
+bp at 10y is material for RV. Not yet checked against Bloomberg at all (no access here).
+
+**Options:** (1) find the BoE's par methodology (coupon dates on the real gilt cycle -
+7 Jun/7 Dec - rather than valuation date + 0.5y steps? a different spot compounding?)
+and add it as a new `PAR_METHODS` entry; (2) use the BoE's own par for 5/10/20y and
+derive only 2/3/7/30y (rejected for now: two methods on one curve); (3) calibrate
+against Bloomberg values for a few dates, once the user provides them.
+
+---
+
+## Cash-bond curves: Germany has no source yet; conventions differ per source
+
+**Found:** 2026-09-30 (CLAUDE.md 13).
+**Status:** open, both pending user decisions.
+
+**Germany:** the ECB Data Portal publishes par yields (`YC` dataflow, `PY_*`) only for
+euro-area aggregates - AAA issuers (`G_N_A`) or all issuers (`G_N_C`) - no German-only
+curve. The Bundesbank's open SDMX API (German term structure, e.g.
+`BBSIS/D.I.ZST.ZI.EUR.S1311.B.A604.R10XX.R.A.A._Z._Z.A`, zero-coupon) answered
+2026-09-30 with a JavaScript proof-of-work bot challenge on every path (303 ->
+`/.enodia/challenge`), and "rate exceeded" from a browser - possibly triggered by our
+own probing burst. Not worked around. Options: re-test with single, spaced requests; the
+ECB AAA curve labelled honestly (e.g. `EA_AAA_BOND_10y`, never `DE_`); a manual download.
+
+**Conventions (on hold, user 2026-09-30):** each curve is stored exactly as its source
+publishes it - US par on a semi-annual bond-equivalent basis; UK par with semi-annual
+coupons; the ECB's par with annual coupons, if added. Not harmonised.
+
+**Minor, noted:** the bad-print rule can't judge a tenor whose typical daily move is
+exactly 0 - Treasury quotes 2 decimals, so the US 2y during zero rates (65 days,
+2020-21) was skipped.
