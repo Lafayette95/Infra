@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Install (or reinstall) the daily cycle's two launchd agents for the current user:
+# Install (or reinstall) the daily cycle's launchd agents for the current user:
 #   com.infra.prefect-server  - Prefect API/UI + run history (http://127.0.0.1:4200)
-#   com.infra.daily-cycle     - serves the Tue-Sat 10:00 UTC schedule
+#   com.infra.daily-cycle     - serves the Tue-Sat 06:00 New York schedule
 #   com.infra.daily-cycle-watchdog - hourly missed-run alert (macOS notification)
+#   com.infra.daily-cycle-keepawake - 10 min awake after the 05:55 wake, bridging to the run
 # Templates live in deploy/launchd/. Logs: ~/Library/Logs/infra/.
 #   scripts/install_launchd.sh            # install / reload
 #   scripts/install_launchd.sh uninstall  # stop and remove
@@ -12,7 +13,7 @@ ENV_BIN="/opt/homebrew/Caskroom/miniconda/base/envs/infra-env/bin"
 LOG_DIR="$HOME/Library/Logs/infra"
 AGENTS="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
-NAMES=(com.infra.prefect-server com.infra.daily-cycle com.infra.daily-cycle-watchdog)
+NAMES=(com.infra.prefect-server com.infra.daily-cycle com.infra.daily-cycle-watchdog com.infra.daily-cycle-keepawake)
 
 # bootout is asynchronous: bootstrapping again before launchd has fully removed the old
 # instance fails with "Bootstrap failed: 5: Input/output error" (hit 2026-09-29, which left
