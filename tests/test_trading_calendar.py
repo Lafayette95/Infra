@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from infra.config import FUTURES_ROOTS, TRADING_HOURS
-from infra.trading_calendar import trading_day
+from infra.trading_calendar import snap_instants, trading_day
 
 D = pd.Timestamp
 
@@ -64,3 +64,28 @@ def test_every_trading_session_resolves_without_error():
     idx = pd.DatetimeIndex(["2026-09-21 12:00"])
     for dataset in TRADING_HOURS:
         trading_day(idx, dataset)  # must not raise
+
+
+# ------------------------------------------------------------------ swap benchmark closes
+def test_snap_instants_follow_each_zones_own_dst():
+    # 2026-03-20: New York is already on EDT (switched 03-08), London still on GMT (switches
+    # 03-29) - the weeks a fixed "5 hours apart" assumption would get wrong
+    days = ["2026-01-15", "2026-03-20", "2026-07-15"]
+    ny = snap_instants(days, "15:00", "America/New_York")
+    ldn = snap_instants(days, "16:15", "Europe/London")
+    assert list(ny) == [pd.Timestamp("2026-01-15 20:00"), pd.Timestamp("2026-03-20 19:00"),
+                        pd.Timestamp("2026-07-15 19:00")]
+    assert list(ldn) == [pd.Timestamp("2026-01-15 16:15"), pd.Timestamp("2026-03-20 16:15"),
+                         pd.Timestamp("2026-07-15 15:15")]
+    assert ny.tz is None and ldn.tz is None  # tz-naive UTC, like every stored timestamp
+
+
+def test_snap_instants_ignore_any_time_of_day_on_the_input_days():
+    assert snap_instants([pd.Timestamp("2026-07-15 23:59")], "15:30", "America/New_York")[0] == \
+        pd.Timestamp("2026-07-15 19:30")
+
+
+def test_a_snap_inside_a_spring_forward_gap_raises():
+    with pytest.raises(Exception):
+        snap_instants(["2026-03-08"], "02:30", "America/New_York")
+

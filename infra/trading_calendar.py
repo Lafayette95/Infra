@@ -38,3 +38,18 @@ def trading_day(index: pd.DatetimeIndex, dataset: str) -> pd.DatetimeIndex:
     close = pd.Timestamp(session.close_time).time()
     bump = local.time >= close
     return day + pd.to_timedelta(bump.astype(int), unit="D")
+
+
+def snap_instants(days, local_time: str, timezone: str) -> pd.DatetimeIndex:
+    """A wall-clock time in a venue's zone (config's form, e.g. ``SwapCloseSpec``) -> the
+    UTC instant it falls at on each of ``days`` (local calendar dates), tz-naive UTC.
+
+    The one place a configured local time becomes UTC (CLAUDE.md 7): call it as soon as
+    the config is read, never carry the local time further. DST is the zone's own on each
+    day, so a 16:15 London snap is 15:15 UTC in summer and 16:15 UTC in winter. Raises
+    if the time doesn't exist that day (a spring-forward gap) rather than guessing.
+    """
+    dates = pd.DatetimeIndex(pd.to_datetime(days)).normalize()
+    local = (dates + pd.Timedelta(local_time + ":00")).tz_localize(timezone, nonexistent="raise",
+                                                                     ambiguous="raise")
+    return local.tz_convert("UTC").tz_localize(None)
