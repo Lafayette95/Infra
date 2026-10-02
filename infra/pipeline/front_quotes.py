@@ -31,7 +31,7 @@ from infra.config import (
     MAX_COST_USD,
     SCHEMA_BBO_1M,
 )
-from infra.coverage.intervals import Interval, merge_intervals, to_utc_day
+from infra.coverage.intervals import Interval, merge_intervals, split_intervals, to_utc_day
 from infra.pipeline import bbo
 from infra.pipeline import contracts as contracts_pipe
 from infra.pipeline.relative import volume_ranked_mapping
@@ -123,6 +123,13 @@ def fetch_front_quotes(
 
 # ------------------------------------------------------------------- parallel stages
 FETCH_WORKERS = 8  # Databento answers each request in ~1-2 min regardless of size (2026-10-02)
+# Quote requests are cut into pieces of at most this span, each its own job. Found
+# 2026-10-02: Databento slowed to ~17s per contract-DAY of bbo-1m, so a whole
+# contract-quarter (~90 days) could never finish inside the client's 5-minute deadline -
+# every attempt timed out and was retried until it failed. A week finishes well inside
+# it, and each lands (and is recorded covered) on its own, so a later failure loses
+# nothing already fetched.
+QUOTE_CHUNK = pd.Timedelta(days=7)
 
 
 def _parallel(jobs: dict, fetch, store, workers: int) -> dict[str, str]:
@@ -213,7 +220,8 @@ def backfill_front_quotes(
             if g:
                 gaps[ticker] = merge_intervals(g)
         out[r] = {"mapping": mapping, "gaps": gaps, "est_usd": price_front_quotes(r, gaps, client=client), "rows": 0}
-        jobs |= {f"quotes {r} {t}": (r, t, g) for t, g in gaps.items()}
+        jobs |= {f"quotes {r} {t} {a:%Y-%m-%d}": (r, t, [(a, b)])
+                 for t, g in gaps.items() for a, b in split_intervals(g, QUOTE_CHUNK)}
     if dry_run:
         return {"roots": out, "errors": errors}
 
@@ -230,7 +238,7 @@ def backfill_front_quotes(
         jobs, lambda k, j: bbo.fetch_bbo_raw(j[1], j[2], dataset=cfgs[j[0]].dataset, max_cost_usd=max_cost_usd, client=client),
         store_quotes, workers)
     for r in roots:  # a root with a failed request never reached 0 - report it anyway, marked incomplete
-        out[r]["failed"] = [k.split()[-1] for k in errors if k.startswith(f"quotes {r} ")]
+        out[r]["failed"] = [" ".join(k.split()[2:]) for k in errors if k.startswith(f"quotes {r} ")]
         if pending[r] > 0 and on_root:
             on_root(r, out[r])
     return {"roots": out, "errors": errors}

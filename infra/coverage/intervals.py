@@ -68,3 +68,15 @@ def find_missing_ranges(
     if clamped is None:
         return []
     return subtract_intervals(clamped, covered)
+
+
+def split_intervals(intervals: Iterable[Interval], max_span: pd.Timedelta) -> list[Interval]:
+    """Each interval cut into consecutive pieces no longer than ``max_span`` - so a long
+    request becomes several short ones that each finish (and are recorded) on their own."""
+    out: list[Interval] = []
+    for start, end in intervals:
+        cursor = start
+        while cursor < end:
+            out.append((cursor, min(cursor + max_span, end)))
+            cursor = cursor + max_span
+    return out

@@ -62,3 +62,11 @@ def test_fetches_run_in_parallel_but_every_store_happens_on_the_calling_thread()
     assert time.monotonic() - t0 < 0.6  # 4 x 0.2s fetches overlapped, not serial
     assert sorted(stored) == [("a", 10), ("b", 20), ("c", 30)] and len(fetch_threads) > 1
     assert errors == {"bad": "ConnectionError: 504 gateway timeout"}  # collected, the rest still stored
+
+
+def test_long_quote_windows_are_cut_into_weekly_pieces():
+    from infra.coverage.intervals import split_intervals
+    pieces = split_intervals([(D("2015-01-01"), D("2015-01-20")), (D("2015-03-01"), D("2015-03-03"))],
+                             pd.Timedelta(days=7))
+    assert pieces == [(D("2015-01-01"), D("2015-01-08")), (D("2015-01-08"), D("2015-01-15")),
+                      (D("2015-01-15"), D("2015-01-20")), (D("2015-03-01"), D("2015-03-03"))]
