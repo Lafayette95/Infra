@@ -508,6 +508,16 @@ coverage split, since contracts' gaps differ. (b) Fetch the pool concurrently, a
 **Status:** open, deferred (user decision 2026-10-01).
 
 **The issue:** the futures contracts table is reference data (which contracts exist, their expiries), the same kind of data as the new Treasury reference store, but it lives in its own top-level `definitions/` folder. **Why not now:** moving it touches every caller of `FUTURES_CONTRACTS_FILE`, the definition-snapshot coverage file and the daily cycle's paths, for no functional gain yet. **To do:** move the store and coverage under `Reference/Futures`, update config and `CyclePaths`, and migrate the files once.
+
+---
+
+## Bonds: FedInvest price history before 2016 not fetched yet
+
+**Found:** 2026-10-01, planning per-CUSIP Treasury prices (CLAUDE.md 18).
+**Status:** open, deferred (user decision 2026-10-01: start from 2016).
+
+**The issue:** FedInvest's daily END OF DAY prices go back to 2008-09-02 (verified; nothing before), but the first backfill starts in 2016 to match the CMT store. **To do:** backfill 2008-09-02..2015-12-31, about 1,850 business days at 2 requests each (form + submit), ~45 min, free.
+
 ---
 
 ## Swap closes: the adjusted method starts ~3 months after the archive

@@ -56,6 +56,14 @@ DAILY_OPTIONS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "options.parquet"
 # CURVE ("US", "UK"), since one request always returns the whole curve.
 DAILY_BONDS_DIR = DAILY_ROOT / "Bonds"
 DAILY_BONDS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "bonds.parquet"
+# US Treasury prices per CUSIP (FedInvest END OF DAY, + accrued and yield) - CLAUDE.md 18.
+# Every in-scope security on the page is stored (one free request per day returns them
+# all); which bonds a consumer uses is a VIEW (on-the-run map, futures baskets).
+DAILY_TREASURY_PRICES_DIR = DAILY_ROOT / "TreasuryPrices"
+DAILY_TREASURY_PRICES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "treasury_prices.parquet"
+# An empty page this many days old is a holiday (covered); a newer one, or a page whose
+# END OF DAY column isn't posted yet, is asked again on the next run.
+TREASURY_PRICES_SETTLE_DAYS = 3
 
 # Daily-cycle outputs (infra/cycle, CLAUDE.md section 12). Derived metrics ARE persisted
 # here (unlike the dashboard's on-demand analytics) because the cycle's revision checks
@@ -72,6 +80,12 @@ WIRP_1S_DIR = DERIVED_ROOT / "WIRP_1s"
 # Benchmark swap closes snapped from DTCC trades (SWAP_CLOSES; CLAUDE.md 16) - one row per
 # (snap instant, close, currency, tenor, method).
 SWAP_CLOSES_DIR = DERIVED_ROOT / "SwapCloses"
+# On-the-run yield benchmark (CLAUDE.md 18): per day and tenor, the END OF DAY yield of the
+# on-the-run CUSIP (issue-date convention, so it always has a price), stored under the SAME
+# tickers as the CMT par curve (US_BOND_10y) - a consumer picks the series by ``source``
+# (BOND_YIELD_SOURCES) through infra.pipeline.bond_yields.read_bond_yields.
+OTR_YIELDS_DIR = DERIVED_ROOT / "OTRYields"
+BOND_YIELD_SOURCES = ("cmt", "otr")
 BMK_ROOT = DATABASE_ROOT / "Bmk"
 # Full dated snapshots of the database, one per cycle run day (``_vintages/YYYY-MM-DD``) -
 # the baseline each run's "no revisions" check compares against.

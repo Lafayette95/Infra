@@ -95,6 +95,17 @@ def _no_reference_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_fedinvest_network(monkeypatch):
+    """Treasury prices come from FedInvest (infra.pipeline.treasury_prices.FETCH); no test
+    may reach it. By default every day is an empty page; price tests pass fakes."""
+    import pandas as pd
+
+    from infra.api.fedinvest_client import COLUMNS
+    monkeypatch.setattr("infra.pipeline.treasury_prices.FETCH", lambda day: pd.DataFrame(columns=COLUMNS))
+    monkeypatch.setattr("infra.pipeline.treasury_prices.PAUSE_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _no_cme_ftp_network(monkeypatch):
     """CME's conversion-factor files come from its FTP (infra.pipeline.futures_baskets
     LIST/FETCH); no test may reach it. By default nothing is listed."""
