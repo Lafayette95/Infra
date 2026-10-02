@@ -124,3 +124,38 @@ def _no_databento_availability_network(monkeypatch):
 
     monkeypatch.setattr("infra.api.databento_client.available_end",
                         lambda *a, **k: pd.Timestamp.now(tz="UTC").tz_localize(None))
+
+
+@pytest.fixture(autouse=True)
+def _no_external_network(monkeypatch):
+    """No test may reach the outside world: every non-loopback connection fails AT ONCE,
+    naming the address - so an unstubbed fetch shows up as a clear error instead of a
+    hang (seen 2026-10-02: one suite run stalled >10 minutes in a raw-step test; the
+    committed code was then verified to make no external call). Loopback stays open -
+    Prefect's test harness runs a local server."""
+    import ipaddress
+    import socket
+
+    def _is_loopback(address) -> bool:
+        host = address[0] if isinstance(address, tuple) else address
+        if host in ("localhost",):
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    connect, create_connection = socket.socket.connect, socket.create_connection
+
+    def guarded_connect(self, address):
+        if not _is_loopback(address):
+            raise OSError(f"external network blocked in tests: {address} - stub this call (tests/conftest.py)")
+        return connect(self, address)
+
+    def guarded_create_connection(address, *args, **kwargs):
+        if not _is_loopback(address):
+            raise OSError(f"external network blocked in tests: {address} - stub this call (tests/conftest.py)")
+        return create_connection(address, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket, "create_connection", guarded_create_connection)

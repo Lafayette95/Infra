@@ -54,3 +54,17 @@ def test_nothing_below_the_models_imports_them():
         if bad:
             offenders.append(f"{path.relative_to(INFRA.parent)}: {sorted(bad)}")
     assert not offenders, "upward imports into infra/models:\n" + "\n".join(offenders)
+
+
+def test_the_suite_cannot_reach_the_outside_world():
+    """tests/conftest.py blocks every non-loopback connection: an unstubbed fetch fails
+    at once with a clear message instead of hanging the suite."""
+    import time
+    import urllib.request
+
+    import pytest
+
+    t = time.monotonic()
+    with pytest.raises(OSError, match="external network blocked in tests"):
+        urllib.request.urlopen("https://api.stlouisfed.org/fred/series?series_id=PAYEMS", timeout=30)
+    assert time.monotonic() - t < 5
