@@ -74,7 +74,7 @@ def read_auctions(as_of=None, *, nominal_only: bool = True, start=None, end=None
     for auctions not yet closed). No network."""
     raw = parquet_store.read_partitioned(root, start=start, end=end)
     if raw is None or raw.empty:
-        return pd.DataFrame(columns=ta.COLUMNS)
+        return ta.empty()
     df = raw[ta.COLUMNS].sort_values(ta.KEYS).reset_index(drop=True)
     df = ta.nominal_coupons(df) if nominal_only else df
     return ta.as_of(df, as_of) if as_of is not None else df

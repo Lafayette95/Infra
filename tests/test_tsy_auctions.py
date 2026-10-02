@@ -86,3 +86,17 @@ def test_tentative_schedule_rows():
     assert rows["timestamp"].iloc[0] == D("2026-11-10 18:00")  # 13:00 New York (EST)
     assert rows["known_from"].iloc[0] == D("2026-08-05")  # known since the refunding, not since today
     assert rows["source"].iloc[0] == "treasury_schedule"
+
+
+
+def test_no_auctions_is_a_typed_empty_frame_and_the_checks_cope(tmp_path):
+    """A window with no auctions (an empty store, or none in range) must not break the
+    checks' date arithmetic (found 2026-10-02 in auctions_results_due)."""
+    from infra.cycle.core import StepContext
+    from infra.cycle.paths import CyclePaths
+    from infra.cycle.raw_reference import _check_auctions_sane, _check_results_due
+
+    empty = pa.read_auctions(root=tmp_path / "none")
+    assert empty.empty and str(empty["timestamp"].dtype).startswith("datetime64")
+    ctx = StepContext(D("2026-09-08"), D("2026-09-12"), D("2026-09-12"), CyclePaths.under(tmp_path))
+    assert _check_results_due(ctx)[0] and _check_auctions_sane(ctx)[0]

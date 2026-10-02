@@ -47,10 +47,22 @@ def _close_time(text: str) -> str:
     return f"{hour:02d}:{m.group(2)}"
 
 
+def empty() -> pd.DataFrame:
+    """No auctions, with TYPED columns - an untyped empty frame breaks date arithmetic
+    downstream (found 2026-10-02: ``timestamp + lag < now`` raised TypeError in the
+    auctions_results_due check on a window with no auctions)."""
+    df = pd.DataFrame({c: pd.Series(dtype="object") for c in COLUMNS})
+    for c in ("timestamp", *DATES):
+        df[c] = df[c].astype("datetime64[ms]")
+    for c in (*NUMERIC, "tenor_years"):
+        df[c] = df[c].astype("float64")
+    return df
+
+
 def parse(records: pd.DataFrame) -> pd.DataFrame:
     """Raw API records (strings) -> typed ``COLUMNS``."""
     if records.empty:
-        return pd.DataFrame(columns=COLUMNS)
+        return empty()
     df = pd.DataFrame({c: records.get(c, pd.Series("null", index=records.index)).astype(str) for c in TEXT})
     for c in DATES:
         df[c] = pd.to_datetime(records[c].replace("null", None), errors="coerce").astype("datetime64[ms]")
