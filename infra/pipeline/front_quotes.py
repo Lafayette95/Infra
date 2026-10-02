@@ -98,11 +98,45 @@ def plan_front_quotes(
     return mapping, gaps
 
 
-def price_front_quotes(root: str, gaps: dict[str, list[Interval]], *, client=None) -> float:
-    """Estimated USD for ``gaps`` (Databento's free cost endpoint)."""
-    dataset = FUTURES_ROOTS[root].dataset
-    return sum(api.estimate_cost(dataset, SCHEMA_BBO_1M, [t], a, b, "raw_symbol", client)
-               for t, intervals in gaps.items() for a, b in intervals)
+def price_front_quotes(root: str, gaps: dict[str, list[Interval]], *, client=None,
+                       unresolvable: list | None = None) -> float:
+    """Estimated USD for ``gaps`` (Databento's free cost endpoint). A window Databento
+    cannot resolve the symbol for (422 symbology) is REMOVED from ``gaps`` and appended to
+    ``unresolvable`` instead of failing the whole run: a contract can be listed in its
+    definition before it trades (TN: activation 2015-12-18, first resolvable mid-Jan 2016)."""
+    from databento.common.error import BentoClientError
+
+    def price(t, a, b):
+        try:
+            return api.estimate_cost(dataset, SCHEMA_BBO_1M, [t], a, b, "raw_symbol", client)
+        except BentoClientError as exc:
+            if "symbology" not in str(exc):
+                raise
+            return None
+
+    dataset, total = FUTURES_ROOTS[root].dataset, 0.0
+    for t in list(gaps):
+        kept = []
+        for a, b in gaps[t]:
+            usd = price(t, a, b)
+            if usd is not None:
+                total += usd
+                kept.append((a, b))
+                continue
+            # partly unresolvable (e.g. starts before the contract trades): keep the weeks that resolve
+            for wa, wb in split_intervals([(a, b)], QUOTE_CHUNK):
+                usd = price(t, wa, wb)
+                if usd is None:
+                    if unresolvable is not None:
+                        unresolvable.append((t, wa, wb))
+                else:
+                    total += usd
+                    kept.append((wa, wb))
+        if kept:
+            gaps[t] = kept
+        else:
+            del gaps[t]
+    return total
 
 
 def fetch_front_quotes(
@@ -222,7 +256,9 @@ def backfill_front_quotes(
             g = [x for a, b in intervals for x in bbo.plan_bbo_update(ticker, a, b, coverage_file=bbo_coverage)]
             if g:
                 gaps[ticker] = merge_intervals(g)
-        out[r] = {"mapping": mapping, "gaps": gaps, "est_usd": price_front_quotes(r, gaps, client=client), "rows": 0}
+        unresolvable = []
+        est = price_front_quotes(r, gaps, client=client, unresolvable=unresolvable)  # drops unresolvable windows
+        out[r] = {"mapping": mapping, "gaps": gaps, "est_usd": est, "rows": 0, "unresolvable": unresolvable}
         jobs |= {f"quotes {r} {t} {a:%Y-%m-%d}": (r, t, [(a, b)])
                  for t, g in gaps.items() for a, b in split_intervals(g, QUOTE_CHUNK)}
     if dry_run:

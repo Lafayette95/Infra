@@ -46,7 +46,10 @@ def main() -> int:
         rolls = ", ".join(f"{d:%Y-%m-%d} {a}->{b}" for d, a, b in roll_switches(info["mapping"], 0))
         print(f"{root}: rolls [{rolls}] | {len(info['gaps'])} contract(s), est. ${info['est_usd']:.3f}"
               + ("" if args.dry_run else f" | stored {info['rows']:,} quotes")
-              + (f" | FAILED {', '.join(info['failed'])} - rerun to fill" if info.get("failed") else ""), flush=True)
+              + (f" | FAILED {', '.join(info['failed'])} - rerun to fill" if info.get("failed") else "")
+              + (" | not resolvable on Databento (skipped): "
+                 + ", ".join(f"{t} {a:%Y-%m-%d}..{b:%Y-%m-%d}" for t, a, b in info["unresolvable"])
+                 if info.get("unresolvable") else ""), flush=True)
 
     res = fq.backfill_front_quotes(args.roots, args.start, args.end, pad=pad, dry_run=args.dry_run,
                                    workers=args.workers, max_cost_usd=args.max_cost, client=client,

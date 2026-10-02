@@ -79,3 +79,21 @@ def test_a_contract_is_never_front_before_it_lists():
     out = drop_unlisted(m, contracts)[0]
     assert out[:D("2015-12-17")].isna().all() and (out[D("2015-12-18"):] == "TNH6").all()
     assert quote_windows(drop_unlisted(m, contracts))["TNH6"] == [(D("2015-12-18"), D("2016-03-02"))]
+
+
+def test_a_window_databento_cannot_resolve_is_skipped_not_fatal(monkeypatch):
+    from databento.common.error import BentoClientError
+
+    from infra.api import databento_client as api
+    from infra.pipeline.front_quotes import price_front_quotes
+
+    def cost(dataset, schema, symbols, start, end, stype, client):
+        if start < D("2016-01-11"):
+            raise BentoClientError(http_status=422, message="422 symbology_invalid_request")
+        return 0.1
+    monkeypatch.setattr(api, "estimate_cost", cost)
+    gaps = {"TNH6": [(D("2015-12-18"), D("2016-01-22"))]}  # one window, partly before it trades
+    skipped = []
+    assert round(price_front_quotes("TN", gaps, unresolvable=skipped), 6) == 0.1  # only the week from 01-15 resolves
+    assert [w[1] for w in skipped] == [D("2015-12-18"), D("2015-12-25"), D("2016-01-01"), D("2016-01-08")]
+    assert gaps["TNH6"] == [(D("2016-01-15"), D("2016-01-22"))]
