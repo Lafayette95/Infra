@@ -6,6 +6,7 @@ Reads push predicates down through a PyArrow dataset before touching pandas.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -21,6 +22,8 @@ from infra.config import (
 from infra.processing.transforms import add_partition_columns
 
 _PARTITION_COLS = ["year", "quarter"]
+READ_RETRIES = 4  # see read_partitioned: a concurrent writer can replace a file mid-read
+READ_RETRY_PAUSE_S = 0.2
 
 
 def has_data(root: Path) -> bool:
@@ -84,11 +87,22 @@ def read_partitioned(
     """
     if not has_data(root):
         return None
-    dataset = _dataset(root)
-    table = dataset.to_table(
-        columns=columns,
-        filter=build_filter(start=start, end=end, equals_in=equals_in),
-    )
+    for attempt in range(READ_RETRIES + 1):
+        try:
+            table = _dataset(root).to_table(
+                columns=columns,
+                filter=build_filter(start=start, end=end, equals_in=equals_in),
+            )
+            break
+        except (OSError, pa.ArrowInvalid):
+            # a file atomically replaced by a concurrent writer between the dataset's
+            # listing (which notes each file's size) and the read shows up as a truncated
+            # page / bad thrift header: list the store again and retry. Found 2026-10-02
+            # while a backfill rewrote Daily/Futures every few seconds; a real, persistent
+            # corruption still raises after the last attempt.
+            if attempt == READ_RETRIES:
+                raise
+            time.sleep(READ_RETRY_PAUSE_S * (attempt + 1))
     df = table.to_pandas()
     return df.drop(columns=[c for c in _PARTITION_COLS if c in df.columns])
 
