@@ -527,6 +527,17 @@ coverage split, since contracts' gaps differ. (b) Fetch the pool concurrently, a
 **Status:** open, not fixed.
 
 **The issue:** the map ranks ORIGINAL issues by their original term, which is right for coupons (a 10y reopening stays the same series) and wrong for bills. Since 2016 the only original-issue bill terms are 26, 17, 52 and 8 weeks; the 4-week and 13-week bills are auctioned as REOPENINGS of older 26/52-week bills (today's 13-week bill is a CUSIP first issued as a 26-week bill). The reference table holds one row per CUSIP (the original issue), so it can't see those auctions. **Why not now:** the consumers so far (futures baskets, coupon benchmarks) only need coupons. **To do:** rank bills from the auction rows themselves (each auction's own ``security_term``, reopenings included) - read through `infra.pipeline.tsy_auctions.read_auctions(nominal_only=False)` - and add them to the map, e.g. as tenors `4w`/`13w`/`26w`/`52w`.
+
+---
+
+## Reference: futures basket rules before 2023-12 are not verified
+
+**Found:** 2026-10-01, computing Treasury futures baskets (CLAUDE.md 18).
+**Where:** `infra.config.TREASURY_BASKET_RULES`, `infra.processing.futures_baskets`.
+**Status:** open, not verified.
+
+**The issue:** computed baskets (`source = "computed"`) apply TODAY's deliverable-grade rules, which are validated against every CME file from 2023-12-09 on (CME's own baskets and factors). Before that there's no CME file to check against, and the rules may have changed: in particular ZN's remaining-term window (now 6.5-8y), and the contracts' start dates (TN first listed 2016, Z3N relaunched 2021, TWE more recently - a computed basket for a contract that didn't trade yet means nothing). **Why not now:** CME's site blocks this machine (2026-10-01), and its FTP keeps files only from 2023-12-09. **Options:** (a) give each rule an effective contract month once the history is confirmed (CME contract-spec PDFs or rule-change notices, read by hand, or archived copies via the Wayback Machine - `infra.api.wayback_client`); (b) check computed baskets against CTD behaviour (implied repo of the cheapest bond vs SOFR) in the old period.
+
 ---
 
 ## Tails: history harvest unfinished; failure analysis pending

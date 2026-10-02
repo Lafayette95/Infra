@@ -92,3 +92,11 @@ def _no_reference_network(monkeypatch):
     monkeypatch.setattr("infra.cycle.raw_reference.TAILS_LIST", lambda *a, **k: pd.DataFrame(
         {"timestamp": pd.Series(dtype="datetime64[ms]"), "original": pd.Series(dtype=str), "digest": pd.Series(dtype=str)}))
     monkeypatch.setattr("infra.cycle.raw_reference.TAILS_FETCH", lambda *a, **k: b"")
+
+
+@pytest.fixture(autouse=True)
+def _no_cme_ftp_network(monkeypatch):
+    """CME's conversion-factor files come from its FTP (infra.pipeline.futures_baskets
+    LIST/FETCH); no test may reach it. By default nothing is listed."""
+    monkeypatch.setattr("infra.pipeline.futures_baskets.LIST", lambda: [])
+    monkeypatch.setattr("infra.pipeline.futures_baskets.PAUSE_S", 0.0)

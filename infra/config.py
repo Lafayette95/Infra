@@ -114,6 +114,50 @@ TREASURY_OTR_CONVENTIONS = ("issue", "auction")
 # on - earlier days: TOFIX.md.
 TREASURY_PRICES_START = "2016-01-04"
 TREASURY_OTR_DEFAULT_CONVENTION = "issue"
+# Treasury futures delivery baskets with per-contract conversion factors
+# (Reference/Treasuries/FuturesBaskets, keys timestamp / root / contract / cusip). From
+# CME's own daily files where they exist - ftp.cmegroup.com/settle/TCF/TCF_YYYYMMDD.csv,
+# every deliverable CUSIP for the next three contract months of each Treasury future, from
+# 2023-12-09 (verified 2026-10-01; archived raw in RawData/CME_TCF) - and computed from the
+# eligibility rules and CME's conversion-factor formula before that.
+CME_TCF_DIR = DATABASE_ROOT / "RawData" / "CME_TCF"  # under RAW_DATA_ROOT (defined below)
+TREASURY_BASKETS_DIR = TREASURY_REF_DIR / "FuturesBaskets"
+# CME's product code in the TCF files -> our futures root (FUTURES_ROOTS where we trade it;
+# Z3N - 3y note - and TWE - 20y bond - are kept too, they're in the files anyway).
+# Deliverable-grade rules, for computing baskets where CME's files don't reach (CLAUDE.md
+# 17). Remaining term is measured from the FIRST day of the delivery month (the max from
+# its LAST day where ``max_from_last_day``); ``cf_months`` = 1 (whole months) or 3 (whole
+# quarters) is how CME rounds that term in the conversion factor. Checked against every
+# CME file 2023-12..2026-10; whether they held unchanged before 2023-12 is NOT verified
+# (TOFIX.md).
+@dataclass(frozen=True)
+class BasketRule:
+    min_remaining_months: int
+    max_remaining_months: int | None = None
+    max_from_last_day: bool = False
+    max_inclusive: bool = True
+    max_original_months: int | None = None
+    original_months: int | None = None  # exact original term required (TN: 10y notes only)
+    cf_months: int = 3
+
+
+TREASURY_BASKET_RULES: dict[str, BasketRule] = {
+    "ZT": BasketRule(21, 24, max_from_last_day=True, max_original_months=63, cf_months=1),
+    "Z3N": BasketRule(33, 36, max_from_last_day=True, max_original_months=84, cf_months=1),
+    "ZF": BasketRule(50, max_original_months=63, cf_months=1),
+    "ZN": BasketRule(78, 96, max_original_months=120),
+    "TN": BasketRule(113, 120, original_months=120),
+    "ZB": BasketRule(180, 300, max_inclusive=False),
+    "UB": BasketRule(300),
+    "TWE": BasketRule(230, 239),
+}
+# Computed baskets cover these roots only, from their first listed day: TN launched
+# 2016-01-11; Z3N (relaunched 2021) and TWE start dates aren't verified, so they get no
+# computed history (CME's files cover them from 2023-12).
+TREASURY_BASKET_HISTORY: dict[str, str] = {"ZT": "2016-01-04", "ZF": "2016-01-04", "ZN": "2016-01-04",
+                                           "TN": "2016-01-11", "ZB": "2016-01-04", "UB": "2016-01-04"}
+CME_TCF_ROOTS: dict[str, str] = {"26": "ZT", "3YR": "Z3N", "25": "ZF", "21": "ZN", "TN": "TN", "17": "ZB",
+                                 "TWE": "TWE", "UBE": "UB"}
 # Non-price raw inputs (the daily cycle's ``raw`` step, 1b). Macro releases are stored as
 # every published VINTAGE of each source series (a release date per value), not just the
 # latest revised history - see MACRO_RELEASES below and infra/pipeline/releases.py.
