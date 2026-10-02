@@ -18,10 +18,12 @@ import numpy as np
 import pandas as pd
 
 from infra.api import databento_client as api
-from infra.config import BOND_CURVES, DAILY_BACKFILL, MAX_COST_USD, SCHEMA_STATISTICS, BondCurve, DailyBackfillSpec
+from infra.config import (BAD_PRINT_RULES, BOND_CURVES, DAILY_BACKFILL, MAX_COST_USD, SCHEMA_STATISTICS, BadPrintRules,
+                          BondCurve, DailyBackfillSpec)
 from infra.cycle.bad_prints import (  # noqa: F401 - re-exported, the px step's public API
     _NEXT_SESSION_LOOKAHEAD,
     BAD_PRINT_SOURCE,
+    exempt_sessions,
     last_weekday,
     peer_outliers_frame,
     treatment_rows,
@@ -305,18 +307,21 @@ def _check_sane(ctx: StepContext):
 
 def peer_outliers(
     settle: pd.DataFrame, members: dict[str, UniverseMember], start: pd.Timestamp, end: pd.Timestamp,
+    *, rules: BadPrintRules | None = BAD_PRINT_RULES,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Futures bad-print candidates (``peer_outliers_frame`` on settlements): peers are
     the nearest same-root contracts by expiry; a root with too few contracts that day
     (bond futures carry 2) falls back to every same-currency, same-category contract
-    (e.g. the USD Treasury complex)."""
+    (e.g. the USD Treasury complex). ``rules``: the market factor across each currency's
+    other curves and the policy-day exemptions (``infra.config.BAD_PRINT_RULES``; None =
+    the base rule alone)."""
     from infra.config import FUTURES_ROOTS
     meta = pd.DataFrame(
-        [(t, m.root, m.curve_order, (FUTURES_ROOTS[m.root].currency, FUTURES_ROOTS[m.root].category))
-         for t, m in members.items()],
-        columns=["ticker", "root", "order", "group"]).set_index("ticker")
+        [(t, m.root, m.curve_order, (FUTURES_ROOTS[m.root].currency, FUTURES_ROOTS[m.root].category),
+          FUTURES_ROOTS[m.root].currency) for t, m in members.items()],
+        columns=["ticker", "root", "order", "group", "market"]).set_index("ticker")
     return peer_outliers_frame(settle.rename(columns={"settlement_price": "value"}), meta, start, end,
-                               group_label="currency+category")
+                               group_label="currency+category", rules=rules, exempt=exempt_sessions(rules))
 
 
 def treat_bad_prints(

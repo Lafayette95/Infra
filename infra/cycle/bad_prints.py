@@ -4,9 +4,14 @@ and position on it, and a per-instrument policy. CLAUDE.md section 12.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 
+from infra.config import FOMC_MEETINGS, BadPrintRules
+
+log = logging.getLogger(__name__)
 _ONE_DAY = pd.Timedelta(days=1)
 
 # Custom outlier check (test c): a BAD PRINT, not a big market day. Each move is first put
@@ -31,6 +36,37 @@ OUTLIER_LOOKBACK = 60
 OUTLIER_MIN_HISTORY = 20
 
 
+def fomc_decision_sessions(meetings=FOMC_MEETINGS) -> pd.DatetimeIndex:
+    """The first futures session whose settlement follows each FOMC decision: the
+    announcement day, or the next weekday when it fell on a weekend (Sunday 2020-03-15)."""
+    days = pd.to_datetime([m.end_date for m in meetings])
+    return pd.DatetimeIndex([d + pd.offsets.BDay(0) if d.weekday() >= 5 else d for d in days])
+
+
+# Event-date sources for BadPrintRules.exempt_events: name -> () -> sessions
+EXEMPTION_EVENTS = {"fomc": fomc_decision_sessions}
+
+
+def exempt_sessions(rules: BadPrintRules | None) -> set[tuple[pd.Timestamp, str]]:
+    """``{(session, root)}`` on which ``rules`` exempt a root's candidates."""
+    if rules is None:
+        return set()
+    return {(pd.Timestamp(d), root) for name, roots in rules.exempt_events
+            for d in EXEMPTION_EVENTS[name]() for root in roots}
+
+
+def market_factor(day: pd.DataFrame, rules: BadPrintRules) -> pd.Series:
+    """Per row of one day's frame (``z``, ``root``, ``market``): the median |z| of the
+    OTHER curves in the same market, floored at ``rules.market_scaling_floor``; the floor
+    alone when fewer than ``rules.market_scaling_min_instruments`` such instruments moved."""
+    out = pd.Series(rules.market_scaling_floor, index=day.index, dtype="float64")
+    for idx, r in day.iterrows():
+        other = day[(day["market"] == r["market"]) & (day["root"] != r["root"])]["z"].abs()
+        if len(other) >= rules.market_scaling_min_instruments:
+            out[idx] = max(rules.market_scaling_floor, float(other.median()))
+    return out
+
+
 def last_weekday(day: pd.Timestamp) -> pd.Timestamp:
     day = pd.Timestamp(day).normalize()
     while day.weekday() >= 5:
@@ -40,7 +76,8 @@ def last_weekday(day: pd.Timestamp) -> pd.Timestamp:
 
 def peer_outliers_frame(
     values: pd.DataFrame, meta: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp,
-    *, group_label: str = "group", min_abs_dev: float | None = None,
+    *, group_label: str = "group", min_abs_dev: float | None = None, rules: BadPrintRules | None = None,
+    exempt: set[tuple[pd.Timestamp, str]] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The instrument-agnostic bad-print rule (see the OUTLIER_* constants). ``values``:
     ``ticker, timestamp, value`` (with history before ``start``, for each instrument's own
@@ -51,19 +88,29 @@ def peer_outliers_frame(
     judged. ``min_abs_dev`` (optional, in ``value`` units) additionally requires the move
     to be out of line with the same peers' median move IN RAW UNITS - for sources quoted so
     coarsely that each instrument's own scale is quantised (see the cash-bond caller).
-    Returns ``(flagged, pending)`` for days in ``[start, end]``."""
+    ``rules`` (optional, ``infra.config.BadPrintRules``): with ``market_scaling`` and a
+    ``market`` column in ``meta``, both thresholds are multiplied by the day's market
+    factor (``market_factor``); ``exempt``: ``{(day, root)}`` whose candidates are logged
+    and dropped, never flagged. Returns ``(flagged, pending)`` for days in ``[start, end]``,
+    each with ``market_k`` (1.0 when not scaled)."""
     df = values[values["ticker"].isin(meta.index)].sort_values(["ticker", "timestamp"]).copy()
     df["move"] = df.groupby("ticker")["value"].diff()
     df["scale"] = df.groupby("ticker")["move"].transform(
         lambda m: m.abs().shift(1).rolling(OUTLIER_LOOKBACK, min_periods=OUTLIER_MIN_HISTORY).median())
     df["z"] = df["move"] / df["scale"]
     df = df[np.isfinite(df["z"]) & (df["timestamp"] >= start)]
-    cols = ["ticker", "timestamp", "move", "z", "dev", "peers"]
+    cols = ["ticker", "timestamp", "move", "z", "dev", "peers", "market_k"]
     if df.empty:
         return pd.DataFrame(columns=cols), pd.DataFrame(columns=cols)
     df["root"] = df["ticker"].map(meta["root"])
     df["expiry"] = df["ticker"].map(meta["order"])
     df["group"] = df["ticker"].map(meta["group"])
+    scale = rules is not None and rules.market_scaling and "market" in meta.columns
+    if scale:
+        df["market"] = df["ticker"].map(meta["market"])
+        df["market_k"] = pd.concat([market_factor(day, rules) for _, day in df.groupby("timestamp")])
+    else:
+        df["market_k"] = 1.0
 
     devs, pools, raw_devs = [], [], []
     for _, day in df.groupby("timestamp"):
@@ -83,7 +130,14 @@ def peer_outliers_frame(
     df["raw_dev"] = pd.Series(dict(raw_devs))
     df = df.dropna(subset=["dev"])
     df["next_dev"] = df.groupby("ticker")["dev"].shift(-1)
-    candidate = (df["z"].abs() >= OUTLIER_Z_MIN) & (df["dev"].abs() >= OUTLIER_DEV_MIN) & (df["timestamp"] <= end)
+    k = df["market_k"]
+    candidate = (df["z"].abs() >= OUTLIER_Z_MIN * k) & (df["dev"].abs() >= OUTLIER_DEV_MIN * k) & (df["timestamp"] <= end)
+    if exempt:
+        on_event = pd.Series([(t, r) in exempt for t, r in zip(df["timestamp"], df["root"])], index=df.index)
+        for r in df[candidate & on_event].itertuples():
+            log.info("bad-print candidate %s %s exempt (policy-decision session): z %.1f, dev %.1f",
+                     r.ticker, pd.Timestamp(r.timestamp).date(), r.z, r.dev)
+        candidate &= ~on_event
     if min_abs_dev is not None:
         candidate &= df["raw_dev"].abs() >= min_abs_dev
     reverted = (np.sign(df["next_dev"]) == -np.sign(df["dev"])) & (df["next_dev"].abs() >= OUTLIER_REVERSAL * df["dev"].abs())
@@ -124,8 +178,9 @@ def treatment_rows(
         rows.append({
             "store": store, "timestamp": r.timestamp, "key": r.ticker, "column": column,
             "action": action, "original": original, "adjusted": adjusted, "source": BAD_PRINT_SOURCE,
-            "detail": (f"{prefix}off-peer move (z {r.z:.1f}, peer deviation {r.dev:.1f}) "
-                       f"reversed next session ({r.next_dev:.1f}){note}"),
+            "detail": (f"{prefix}off-peer move (z {r.z:.1f}, peer deviation {r.dev:.1f}"
+                       + (f", market x{r.market_k:.1f}" if getattr(r, "market_k", 1.0) > 1.0 else "")
+                       + f") reversed next session ({r.next_dev:.1f}){note}"),
             "run_day": run_day,
         })
     return rows

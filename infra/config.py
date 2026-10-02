@@ -692,6 +692,33 @@ DAILY_BACKFILL: dict[str, DailyBackfillSpec] = {
     "R": DailyBackfillSpec(0, enabled=False),
 }
 
+
+# Bad-print rule extensions for FUTURES settlements (infra.cycle.bad_prints, CLAUDE.md 12),
+# added 2026-10-02 after the 2018-2025 SR1 backfill showed the base rule (calibrated on
+# 2025-26, no shocks) blanking genuine moves: the 2020-03 emergency cut and crash days and
+# the 2022-02-10 CPI print. Each part switches off or changes here:
+#   * MARKET SCALING - on a day the whole market moves, a bigger off-peer move is
+#     tolerated: both thresholds are divided by k = the median |z| that day across the
+#     OTHER curves of the same currency (USD STIR judged against the Treasury futures, EUR
+#     against the Bund complex), floored at ``market_scaling_floor`` so a quiet day is
+#     judged exactly as before. Other curves, because a bad print on a short curve (ESR: 6
+#     contracts) inflates its own curve's median enough to excuse itself (2026-09-11). Not
+#     VIX: equity vol, and it FELL 7 points on 2020-03-10. Fewer than
+#     ``market_scaling_min_instruments`` other instruments that day -> no scaling.
+#   * EVENT EXEMPTIONS - on a policy decision's first settlement, the listed roots' front
+#     contracts reprice alone BY DESIGN (2020-03-03: Treasuries moved only 2.4x normal), so
+#     no market factor can excuse them; such candidates are logged, never treated.
+#     ``exempt_events``: event name (infra.cycle.bad_prints.EXEMPTION_EVENTS) -> roots.
+@dataclass(frozen=True)
+class BadPrintRules:
+    market_scaling: bool = True
+    market_scaling_floor: float = 1.0
+    market_scaling_min_instruments: int = 3
+    exempt_events: tuple[tuple[str, tuple[str, ...]], ...] = (("fomc", ("ZQ", "SR1", "SR3")),)
+
+
+BAD_PRINT_RULES = BadPrintRules()
+
 # ------------------------------------------------------------------ cash-bond curves
 # Daily constant-maturity PAR yields per sovereign, stored as absolute tickers
 # ``<country>_BOND_<tenor>y`` (e.g. "US_BOND_10y"), in percent. Each curve has its own

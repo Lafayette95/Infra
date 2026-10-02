@@ -629,15 +629,6 @@ day's vintage would have been lost.
 
 ---
 
-## Cycle: the bad-print rule flags genuine STIR moves on shock days
-
-**Found:** 2026-10-02, backfilling SR1 settlements 2018-2025 (CLAUDE.md 12, 20).
-**Where:** `infra.cycle.bad_prints` / `infra.cycle.px.peer_outliers`; policy `DailyBackfillSpec.strict_ranks`.
-**Status:** open - the 5 false treatments were removed from the adjustments log by hand; the rule is unchanged.
-
-**The issue:** the rule (|z| >= 5, |peer deviation| >= 6, and the deviation reversing next session) was calibrated on 2025-2026 settlements, which had no emergency moves. On SR1's 2018-2025 history it flagged SR1H0 2020-03-03 (the emergency 50bp cut), SR1H0 + SR1J0 2020-03-09/10 (the crash days before the March 15 cut) and SR1H2 2022-02-10 (the hot CPI print), and set them to NA (ranks 0-1 are strict). All five are smooth, genuine paths: the front contract moves far more than its peers when the next weeks' policy is repriced, and partial retracements next day are normal in a shock. **Risk:** the scheduled run would do the same to ZQ / SR1 / SR3 front contracts on the next emergency move or big data surprise - NA where the data matters most. **Options:** exempt days with an FOMC decision (incl. unscheduled, `FOMC_MEETINGS`) or a top-tier release (CPI, payrolls - the release calendar, CLAUDE.md 17); require the reversal to undo most of the move rather than any of it; for monthly STIR fronts, check the print against the realised fixings it settles on (a front SR1 / ZQ contract's fair value is largely known); recalibrate on 2018-2026 now that the history exists.
-
----
 
 ## Financing: v1 simplifications to revisit
 
