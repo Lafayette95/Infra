@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from infra.config import MacroRelease
+from infra.reference.events import EventSeries
 from infra.models.nowcast import kalman, transforms
 from infra.models.nowcast.dfm import _aggregate, fit
 from infra.models.nowcast.news import decompose
@@ -93,7 +94,9 @@ def test_to_monthly_weekly_only_complete_months():
 
 
 def _rel(ticker, freq, blocks, *, units="level", transform="", sign=1):
-    return MacroRelease(ticker, ticker, freq, "fred", ticker, units, freq == "Q", freq == "Q", freq == "Q",
+    series = EventSeries(ticker, f"E_{ticker}", ticker, "u", "SA", store_id=ticker, frequency=freq, source="fred",
+                         derive=units)
+    return MacroRelease(ticker, ticker, series, freq == "Q", freq == "Q", freq == "Q",
                         False, True, freq != "Q", sign, transform, "Activity", "Hard", tuple(blocks))
 
 

@@ -20,9 +20,9 @@ from pathlib import Path
 import pandas as pd
 
 from infra.api import fred_client
-from infra.config import MACRO_RELEASES, RELEASE_CALENDAR_DIR
+from infra.config import RELEASE_CALENDAR_DIR
 from infra.processing import release_calendar as rc
-from infra.reference.events import EVENTS, EconEvent, series_by_bbg
+from infra.reference.events import EVENTS, SERIES, EconEvent
 from infra.storage import parquet_store
 
 log = logging.getLogger(__name__)
@@ -34,14 +34,13 @@ TREASURY_SCHEDULE_SOURCE = "treasury_schedule"
 RULE_HORIZON_MONTHS = 12
 
 
-def calendar_patterns(releases=MACRO_RELEASES) -> dict[str, list[str]]:
-    """event id -> the calendar-name patterns of its series (they live on the nowcast's
-    release table for now; the registry takes them over in the planned migration)."""
+def calendar_patterns(series: dict | None = None) -> dict[str, list[str]]:
+    """event id -> the calendar-name patterns of its registry series."""
+    series = SERIES if series is None else series
     out: dict[str, list[str]] = {}
-    for ticker, rel in releases.items():
-        s = series_by_bbg(ticker)
-        if s is not None and rel.calendar_pattern:
-            out.setdefault(s.event, []).append(rel.calendar_pattern)
+    for s_ in series.values():
+        if s_.calendar_pattern:
+            out.setdefault(s_.event, []).append(s_.calendar_pattern)
     return out
 
 

@@ -23,7 +23,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from infra.config import CALENDAR_PAGES, MACRO_RELEASES  # noqa: E402
+from infra.config import CALENDAR_PAGES  # noqa: E402
+from infra.reference.events import SERIES  # noqa: E402
 from infra.pipeline import econ_calendar as pc  # noqa: E402
 from infra.processing.econ_calendar import matches, normalize_report  # noqa: E402
 
@@ -33,7 +34,7 @@ _AUDIT = re.compile(r"ism|pmi|purchasing|confidence|nfib|small.business|existing
 
 def names() -> int:
     rows = pc.read_calendar_from_disk()
-    cal = {t: r.calendar_pattern for t, r in MACRO_RELEASES.items() if r.calendar_pattern}
+    cal = {s.bbg_ticker or s.id: s.calendar_pattern for s in SERIES.values() if s.calendar_pattern}
     seen = rows.groupby("report").agg(n=("timestamp", "size"), first=("timestamp", "min"), last=("timestamp", "max"))
     for name, r in seen.iterrows():
         if not _AUDIT.search(name):

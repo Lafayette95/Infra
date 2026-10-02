@@ -558,24 +558,6 @@ retried under `PARSER_VERSION` 3.
 
 ---
 
-## Registry: identifiers still live on the nowcast's MacroRelease
-
-**Found:** 2026-10-01. **Where:** `infra/config.py` (`MacroRelease.source`/`series_id`/`calendar_pattern`/
-`calendar_scale`, `_CALENDAR_CROSSCHECK`), `infra/reference/events.py`. **Status:** planned.
-
-**The issue:** the event registry was built as a new module beside the nowcast's release
-table. Source ids and calendar patterns were deliberately left on `MacroRelease`, because
-`infra/config.py` was being edited by several sessions at once. The registry should own
-them ("what a series is"), and `MacroRelease` keep only how the nowcast uses a series
-(transform, sign, categories). `infra.pipeline.release_calendar.calendar_patterns`
-currently reaches into `MACRO_RELEASES` for the patterns. `tests/test_event_registry.py`
-keeps both consistent meanwhile.
-
-**Next step:** move the fields in one commit once `config.py` is quiet, and update the
-readers (`infra.pipeline.releases`, `econ_calendar`, `release_calendar`, the scripts).
-
----
-
 ## Ops: production runs from a working tree that several sessions edit at once
 
 **Found:** 2026-10-01. **Status:** open (workflow).

@@ -13,7 +13,15 @@ specific to the models sub-project.
     `storage` never import `infra.models`. Only `infra/dashboard` may, from above. This is
     enforced by `tests/test_architecture.py`.
 *   **The data lives in the main pipeline, not here:**
-    *   Release config: `infra.config.MACRO_RELEASES` / `MacroRelease`, one row per release.
+    *   Release config: `infra.config.MACRO_RELEASES` / `MacroRelease`, one row per release
+        of the user's table: HOW the nowcast uses a series (staging flags, sign,
+        transform, categories).
+    *   WHAT each series is and where it comes from lives in its registry entry,
+        `MacroRelease.series` (`infra.reference.events.SERIES`): source, stored id,
+        `derive` (units), frequency, calendar pattern and scale. `release.source` etc. are
+        read-through properties. Moved there 2026-10-02 with no behaviour change: the
+        nowcast, the calendar validation and the rule validation were byte-identical before
+        and after.
     *   Client: `infra/api/fred_client.py`.
     *   Pure vintage logic: `infra/processing/releases.py`.
     *   Read/plan/fetch/store: `infra/pipeline/releases.py`.

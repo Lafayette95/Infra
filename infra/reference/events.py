@@ -61,8 +61,32 @@ class EventSeries:
     units: str  # as PUBLISHED by the source (not as any model transforms it)
     seasonal_adjustment: str  # "SA" | "NSA" | "SAAR" | "n/a"
     bbg_ticker: str | None = None
-    fred_series_id: str | None = None
+    # WHERE the series comes from and how it is stored (set from ``_SOURCES`` below):
+    store_id: str | None = None  # the stored raw ticker: a FRED id, or "MW:<ticker>" (calendar)
     note: str = ""
+    frequency: str = "M"  # observation period: "Q" | "M" | "W"
+    # Fetcher in infra.pipeline.releases.SOURCES ("fred", "calendar", "fred+prelims"); None =
+    # no free source (kept for the record, skipped by the pipeline and the models).
+    source: str | None = None
+    # Stored raw series -> the series' own units, computed per vintage (so a derived value's
+    # release date is its inputs'): "level" as published | "diff" | "pct" (period % change)
+    # | "saar" (period % change, annualized by compounding) | "yoy" (vs a year earlier).
+    derive: str = "level"
+    # Its row name on the economic calendar (after infra.processing.econ_calendar.
+    # normalize_report). For a calendar-sourced series it IS the data source; for a FRED-
+    # sourced one a cross-check and the consensus (never data). None = no calendar row in
+    # the series' own units (PPI YoY, retail ex autos AND gas). Every observed variant must
+    # match, and nothing else (tests/test_econ_calendar.py::NAMES).
+    calendar_pattern: str | None = None
+    calendar_scale: float = 1.0  # calendar value x scale = the series' own units
+
+    @property
+    def fred_series_id(self) -> str | None:
+        return self.store_id if (self.source or "").startswith("fred") else None
+
+    @property
+    def available(self) -> bool:
+        return self.source is not None
 
 
 _E = EconEvent
@@ -212,6 +236,45 @@ SERIES: dict[str, EventSeries] = {s.id: s for s in (
     _S("US_CHICAGO_PMI", "US_CHICAGO_PMI", "MNI Chicago business barometer", "diffusion index", "SA",
        "CHPMINDX Index"),
 )}
+
+
+# Where each series comes from: (frequency, source, store_id, derive, calendar_pattern,
+# calendar_scale). FRED ids verified 2026-09-30 against FRED's own series metadata
+# (scripts/update_releases.py --verify); each choice and its evidence is in
+# infra/models/CLAUDE.md section 2. Calendar patterns cover every name variant 2009-2026
+# (scripts/backfill_econ_calendar.py --names), incl. the 2019/2025 shutdown markers.
+_SOURCES: dict[str, tuple] = {
+    "US_GDP_QOQ_SAAR": ("Q", 'fred', 'GDPC1', "saar", r"^((2nd|3rd|second|third|advance) estimate )?(gdp|gross domestic product)( revision)?( \((real annual rate|revision|first revision|second revision)\))?$", 1.0),
+    "US_PCE_PRICE_INDEX": ("M", 'fred', 'PCEPI', "pct", r"^pce (price )?(index|idx m m)$", 1.0),
+    "US_NFP_LEVEL": ("M", 'fred', 'PAYEMS', "diff", r"^(nonfarm payrolls|employment report)$", 0.001),
+    "US_UNEMPLOYMENT_RATE": ("M", 'fred', 'UNRATE', "level", r"^unemployment rate$", 1.0),
+    "US_WHOLESALE_INVENTORIES": ("M", 'fred', 'I42IMSM144SCEN', "pct", r"^wholesale inventories$", 1.0),
+    "US_NFIB_OPTIMISM": ("M", 'calendar', 'MW:SBOITOTL', "level", r"^nfib\b", 1.0),
+    "US_CPI_NSA": ("M", 'fred', 'CPIAUCNS', "yoy", r"^(cpi|consumer price index)( year over year| y y)$", 1.0),
+    "US_PPI_FINAL_DEMAND_NSA": ("M", 'fred', 'PPIFID', "yoy", None, 1.0),
+    "US_INITIAL_CLAIMS": ("W", 'fred', 'ICSA', "level", r"^(weekly )?(initial )?jobless claims( \((regular )?state program sa\))?$", 1.0),
+    "US_ADP_LEVEL": ("M", 'fred', 'ADPMNUSNERSA', "diff", r"^adp (national )?(employment|jobs)( report)?$", 1.0),
+    "US_UMICH_SENTIMENT": ("M", 'fred+prelims', 'UMCSENT', "level", r"^(u ?mich(igan)? )?(prelim(inary)? |final )?consumer (sentiment|survey)( index)?( \((final|preliminary|prelim|revised)\)| final| prelim(inary)?)?$", 1.0),
+    "US_RETAIL_EX_AUTOS_GAS": ("M", 'fred', 'MARTSSM44W72USS', "pct", None, 1.0),
+    "US_INDUSTRIAL_PRODUCTION": ("M", 'fred', 'INDPRO', "pct", r"^industrial production( m m)?$", 1.0),
+    "US_HOUSING_STARTS": ("M", 'fred', 'HOUST', "level", r"^housing starts( \((saar|annual rate)\))?$", 0.001),
+    "US_PHILLY_GENERAL": ("M", 'fred', 'GACDFSA066MSFRBPHI', "level", r"^philly fed( manufacturing)?( index)?$|^philadelphia fed( s)? (manufacturing|business outlook) survey$", 1.0),
+    "US_EXISTING_HOME_SALES": ("M", 'calendar', 'MW:ETSLTOTL', "level", r"^existing home sales( \((annual rate|saar)\))?$", 1.0),
+    "US_CFNAI": ("M", 'fred', 'CFNAI', "level", r"^chicago (fed )?national (activity )?index$|^chicago (fed )?national activity$", 1.0),
+    "US_ISM_MANUFACTURING_PMI": ("M", 'calendar', 'MW:NAPMPMI', "level", r"^ism( report on business)?( manufacturing)?( index| indext| pmi)?$", 1.0),
+    "US_ISM_SERVICES_PMI": ("M", 'calendar', 'MW:NAPMNMI', "level", r"^ism( report on business)? (non ?manufacturi?ng|on manufacturing|services)( index| pmi)?$", 1.0),
+    "US_SPGLOBAL_MANUFACTURING_PMI": ("M", 'calendar', 'MW:MPMIUSMA', "level", r"^(?!.*(services|serivces|non ?manufacturing|composite|chicago|ism))(?=.*\bpmi\b)(?=.*(markit|market|arkit|s&p|flash|final|prelim|manufacturing)).*$|^(s&p|markit)( global)? (final|flash) manufacturing$", 1.0),
+    "US_CHICAGO_PMI": ("M", 'calendar', 'MW:CHPMINDX', "level", r"^chicago (pmi|business barometer|manufacturing pmi|purchasing managers)", 1.0),
+    "US_DURABLE_GOODS_ORDERS": ("M", 'fred', 'DGORDER', "pct", r"^durable goods orders$", 1.0),
+    "US_RICHMOND_COMPOSITE": ("M", None, None, "level", None, 1.0),
+    "US_CB_CONFIDENCE": ("M", 'calendar', 'MW:CONCCONF', "level", r"^(conference (board|bd) )?consumer confidence( index)?$", 1.0),
+    "US_SPGLOBAL_COMPOSITE_PMI": ("M", 'calendar', 'MW:MPMIUSCA', "level", r"^(?!.*(chicago|ism))(?=.*\bpmi\b)(?=.*composite).*$", 1.0),
+    "US_SPGLOBAL_SERVICES_PMI": ("M", 'calendar', 'MW:MPMIUSSA', "level", r"^(?!.*(composite|chicago|ism))(?=.*\bpmi\b)(?=.*(services|serivces|non ?manufacturing)).*$", 1.0),
+    "US_EMPIRE_GENERAL": ("M", 'fred', 'GACDISA066MSFRBNY', "level", r"^empire state( manufacturing)?( index| survey)?$", 1.0),
+}
+SERIES = {k: (replace(s_, frequency=_SOURCES[k][0], source=_SOURCES[k][1], store_id=_SOURCES[k][2],
+                      derive=_SOURCES[k][3], calendar_pattern=_SOURCES[k][4], calendar_scale=_SOURCES[k][5])
+              if k in _SOURCES else s_) for k, s_ in SERIES.items()}
 
 
 def event_of(series_id: str) -> EconEvent:

@@ -8,6 +8,8 @@ import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from infra.reference.events import EventSeries, series_by_bbg
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # ---------------------------------------------------------------- database paths
@@ -756,18 +758,13 @@ RELEASE_BLOCKS = (  # the table's subcategory columns, in its order
 
 @dataclass(frozen=True)
 class MacroRelease:
+    """A row of the user's release table: HOW the nowcast uses a series. WHAT the series is
+    and where it comes from (source, stored id, units derivation, frequency, calendar name)
+    lives in its registry entry, ``series`` (infra.reference.events) - the properties below
+    read through to it, so ``release.source`` etc. keep working."""
     ticker: str  # Bloomberg ticker (the table's key) - or our own id for a free proxy
     name: str
-    frequency: str  # observation period: "Q" | "M" | "W"
-    # Fetcher in infra.pipeline.releases.SOURCES; None = no free source (kept for the
-    # record, skipped by the pipeline and the model).
-    source: str | None
-    series_id: str | None  # the source's own id - the stored raw ticker
-    # Raw source series -> the table's units, computed per vintage (so a derived value's
-    # release date is its inputs'): "level" as published | "diff" | "pct" (period % change)
-    # | "saar" (period % change, annualized by compounding) | "yoy" (% change vs the same
-    # period a year earlier).
-    units: str
+    series: EventSeries  # its registry series (infra.reference.events.SERIES)
     # The table's staging flags: which scheduled estimates exist (Advance/Prelim/Final);
     # NoStage = one scheduled print, anything later is an ordinary revision.
     advanced: bool
@@ -783,19 +780,35 @@ class MacroRelease:
     blocks: tuple[str, ...]  # subset of RELEASE_BLOCKS
     proxy_for: tuple[str, ...] = ()  # a free proxy: the table rows it stands in for
     note: str = ""
-    # source="calendar": regex matching this release's row name on the economic calendar
-    # (after infra.processing.econ_calendar.normalize_report: lower case, "U.S."/"US"
-    # dropped, punctuation to spaces). Names drift across the years - every observed
-    # variant must match, and nothing else may (tests/test_econ_calendar.py).
-    calendar_pattern: str | None = None
-    # calendar value x calendar_scale = this release's own units (payrolls are quoted in
-    # persons, the table's NFP change is in thousands -> 1e-3). For a FRED-sourced release
-    # the calendar row is a CROSS-CHECK and the consensus (``consensus_mw``), never data.
-    calendar_scale: float = 1.0
+
+    # read-through to the registry series (one source of truth)
+    @property
+    def frequency(self) -> str:
+        return self.series.frequency
+
+    @property
+    def source(self) -> str | None:
+        return self.series.source
+
+    @property
+    def series_id(self) -> str | None:
+        return self.series.store_id
+
+    @property
+    def units(self) -> str:
+        return self.series.derive
+
+    @property
+    def calendar_pattern(self) -> str | None:
+        return self.series.calendar_pattern
+
+    @property
+    def calendar_scale(self) -> float:
+        return self.series.calendar_scale
 
     @property
     def available(self) -> bool:
-        return self.source is not None
+        return self.series.available
 
     @property
     def stages(self) -> tuple[str, ...]:
@@ -812,127 +825,89 @@ _E5 = "ecdf_no_demean_exp:1305"
 _PMI = "deman_fix:50;ecdf_no_demean_exp:130"
 
 
-def _r(ticker, name, freq, source, sid, units, adv, pre, fin, short, med, nostage, sign, transform,
-       cat1, cat2, blocks, note="", calendar_pattern=None, calendar_scale=1.0):
-    return MacroRelease(ticker, name, freq, source, sid, units, bool(adv), bool(pre), bool(fin), bool(short),
-                        bool(med), bool(nostage), sign, transform, cat1, cat2, tuple(blocks), note=note,
-                        calendar_pattern=calendar_pattern, calendar_scale=calendar_scale)
+def _r(ticker, name, adv, pre, fin, short, med, nostage, sign, transform, cat1, cat2, blocks, note=""):
+    series = series_by_bbg(ticker)
+    if series is None:
+        raise KeyError(f"{ticker}: no registry series (infra.reference.events.SERIES)")
+    return MacroRelease(ticker, name, series, bool(adv), bool(pre), bool(fin), bool(short), bool(med),
+                        bool(nostage), sign, transform, cat1, cat2, tuple(blocks), note=note)
 
 
-# Columns: ticker, name, freq, source, series id, units | Advanced, Preliminary, Final,
-# ShortHistory, BbgMedian, NoStage | Sign, Transform | Cat1, Cat2, subcategories.
-# FRED ids verified 2026-09-30 against FRED's own series metadata (scripts/update_releases.py
-# --verify): title, frequency, units and seasonal adjustment all match the table's row.
+# Columns: ticker, name | Advanced, Preliminary, Final, ShortHistory, BbgMedian, NoStage |
+# Sign, Transform | Cat1, Cat2, subcategories. Each row's series (source, stored id, units,
+# frequency, calendar name) is its registry entry, by Bloomberg ticker.
 _TABLE = (
-    _r("GDP CQOQ Index", "US GDP chained 2012 dollars QoQ SAAR", "Q", "fred", "GDPC1", "saar",
+    _r("GDP CQOQ Index", "US GDP chained 2012 dollars QoQ SAAR",
        1, 1, 1, 0, 1, 0, 1, "rolling_ma:4;" + _E5, _A, _H, (_HOU, _CON, _MAN, _OB),
-       note="the nowcast TARGET: enters the model in native units (QoQ % SAAR), not transformed. Built "
-            "from the real GDP LEVEL (GDPC1, vintages since 1991-12) rather than BEA's published growth "
-            "(A191RL1Q225SBEA, vintages only since 2014-09): verified 2026-09-30 to match the published "
-            "growth within 0.05pp (its 1-decimal rounding) at every vintage checked"),
-    _r("PCE CRCH Index", "US personal consumption expenditures chain price index", "M", "fred", "PCEPI", "pct",
+       note="the nowcast TARGET: enters the model in native units (QoQ % SAAR), not transformed. Built from the real GDP LEVEL (GDPC1, vintages since 1991-12) rather than BEA's published growth (A191RL1Q225SBEA, vintages only since 2014-09): verified 2026-09-30 to match the published growth within 0.05pp (its 1-decimal rounding) at every vintage checked"),
+    _r("PCE CRCH Index", "US personal consumption expenditures chain price index",
        0, 0, 0, 0, 1, 1, 1, "rolling_ma:12;" + _E5, _P, _H, ("Price_Retail",),
-       note="table name truncated ('US Personal Consumption Expend...'); read as the PCE price index "
-            "MoM per the table's Price/Price_Retail categories - confirm"),
-    _r("NFP TCH Index", "US employees on nonfarm payrolls, total change", "M", "fred", "PAYEMS", "diff",
+       note="table name truncated ('US Personal Consumption Expend...'); read as the PCE price index MoM per the table's Price/Price_Retail categories - confirm"),
+    _r("NFP TCH Index", "US employees on nonfarm payrolls, total change",
        0, 0, 0, 0, 1, 1, 1, _E5, _A, _H, (_LAB,)),
-    _r("USURTOT Index", "U-3 US unemployment rate", "M", "fred", "UNRATE", "level",
+    _r("USURTOT Index", "U-3 US unemployment rate",
        0, 0, 0, 0, 1, 1, -1, "ecdf_exp:1305", _A, _H, (_LAB,)),
-    _r("MWINCHNG Index", "Merchant wholesalers inventories MoM", "M", "fred", "I42IMSM144SCEN", "pct",
+    _r("MWINCHNG Index", "Merchant wholesalers inventories MoM",
        0, 1, 1, 1, 1, 0, 1, "rolling_ma:3;" + _E5, _A, _H, (_CON,),
-       note="from the Census Monthly Wholesale Trade release (FRED release 290), dated when the number is "
-            "first published. WHLSLRIMSA (used until 2026-10-01) is the same total in the combined Manufacturing "
-            "and Trade Inventories release, a median 6 days LATER - caught by the calendar cross-check"),
-    _r("SBOITOTL Index", "NFIB small business optimism", "M", "calendar", "MW:SBOITOTL", "level",
-       0, 0, 0, 0, 1, 1, 1, "deman_fix:100;" + _E5, _A, _S, (_OB,), note="NFIB: no official free history - archived MarketWatch calendar",
-       calendar_pattern=r"^nfib\b"),
-    _r("CPI YOY Index", "US CPI urban consumers YoY NSA", "M", "fred", "CPIAUCNS", "yoy",
+       note='from the Census Monthly Wholesale Trade release (FRED release 290), dated when the number is first published. WHLSLRIMSA (used until 2026-10-01) is the same total in the combined Manufacturing and Trade Inventories release, a median 6 days LATER - caught by the calendar cross-check'),
+    _r("SBOITOTL Index", "NFIB small business optimism",
+       0, 0, 0, 0, 1, 1, 1, "deman_fix:100;" + _E5, _A, _S, (_OB,),
+       note='NFIB: no official free history - archived MarketWatch calendar'),
+    _r("CPI YOY Index", "US CPI urban consumers YoY NSA",
        0, 0, 0, 0, 1, 1, 1, "ecdf_exp:1305", _P, _H, ("Price_Retail",)),
-    _r("FDIUFDYO Index", "US PPI final demand YoY NSA", "M", "fred", "PPIFID", "yoy",
+    _r("FDIUFDYO Index", "US PPI final demand YoY NSA",
        0, 0, 0, 0, 1, 1, 1, _E5, _P, _H, ("Price_WholeSales",)),
-    _r("INJCJC Index", "Initial jobless claims", "W", "fred", "ICSA", "level",
+    _r("INJCJC Index", "Initial jobless claims",
        0, 0, 0, 0, 1, 1, -1, "ecdf_exp:1305", _A, _H, (_LAB,)),
-    _r("ADP CHNG Index", "ADP national employment report, change", "M", "fred", "ADPMNUSNERSA", "diff",
+    _r("ADP CHNG Index", "ADP national employment report, change",
        0, 0, 0, 0, 1, 1, 1, _E5, _A, _H, (_LAB,)),
-    _r("CONSSENT Index", "University of Michigan consumer sentiment", "M", "fred+prelims", "UMCSENT", "level",
+    _r("CONSSENT Index", "University of Michigan consumer sentiment",
        0, 1, 1, 0, 1, 0, 1, "ecdf_exp:1305", _A, _S, (_CON,),
-       note="FRED (ALFRED) carries only the end-of-month FINAL; the mid-month PRELIMINARY comes from the "
-            "archived economic calendar (infra.pipeline.releases.fred_with_calendar_prelims)"),
-    _r("RSTAXAG% Index", "Adjusted retail sales less autos and gas MoM", "M", "fred", "MARTSSM44W72USS", "pct",
+       note='FRED (ALFRED) carries only the end-of-month FINAL; the mid-month PRELIMINARY comes from the archived economic calendar (infra.pipeline.releases.fred_with_calendar_prelims)'),
+    _r("RSTAXAG% Index", "Adjusted retail sales less autos and gas MoM",
        0, 0, 0, 0, 1, 1, 1, "rolling_ma:3;" + _E5, _A, _H, (_CON,)),
-    _r("IP CHNG Index", "US industrial production MoM", "M", "fred", "INDPRO", "pct",
+    _r("IP CHNG Index", "US industrial production MoM",
        0, 0, 0, 0, 1, 1, 1, "rolling_ma:12;" + _E5, _A, _H, (_MAN,)),
-    _r("NHSPSTOT Index", "US new privately owned housing starts", "M", "fred", "HOUST", "level",
+    _r("NHSPSTOT Index", "US new privately owned housing starts",
        0, 0, 0, 0, 1, 1, 1, "ecdf_exp:1305", _A, _H, (_HOU,)),
-    _r("OUTFGAF Index", "Philadelphia Fed business outlook, general activity", "M", "fred",
-       "GACDFSA066MSFRBPHI", "level", 0, 0, 0, 0, 1, 1, 1, _E5, _A, _S, (_OB,)),
-    _r("ETSLTOTL Index", "US existing home sales SAAR", "M", "calendar", "MW:ETSLTOTL", "level",
+    _r("OUTFGAF Index", "Philadelphia Fed business outlook, general activity",
+       0, 0, 0, 0, 1, 1, 1, _E5, _A, _S, (_OB,)),
+    _r("ETSLTOTL Index", "US existing home sales SAAR",
        0, 0, 0, 0, 1, 1, 1, "ecdf_exp:1305", _A, _H, (_HOU,),
-       note="NAR: FRED keeps only 13 months - archived MarketWatch calendar (SAAR, units)",
-       calendar_pattern=r"^existing home sales( \((annual rate|saar)\))?$"),
-    _r("CFNAI Index", "Chicago Fed National Activity Index", "M", "fred", "CFNAI", "level",
+       note='NAR: FRED keeps only 13 months - archived MarketWatch calendar (SAAR, units)'),
+    _r("CFNAI Index", "Chicago Fed National Activity Index",
        0, 0, 0, 0, 1, 1, 1, "rolling_ma:3;" + _E5, _A, _S, (_CON, _OB)),
-    _r("NAPMPMI Index", "ISM manufacturing PMI", "M", "calendar", "MW:NAPMPMI", "level",
-       0, 0, 0, 0, 1, 1, 1, _PMI, _A, _S, (_MAN,), note="ISM: proprietary, off FRED since 2016 - archived MarketWatch calendar",
-       calendar_pattern=r"^ism( report on business)?( manufacturing)?( index| indext| pmi)?$"),
-    _r("NAPMNMI Index", "ISM services PMI", "M", "calendar", "MW:NAPMNMI", "level",
-       0, 0, 0, 0, 1, 1, 1, _PMI, _A, _S, (_OB,), note="ISM: proprietary - archived MarketWatch calendar",
-       calendar_pattern=r"^ism( report on business)? (non ?manufacturi?ng|on manufacturing|services)( index| pmi)?$"),
-    _r("MPMIUSMA Index", "S&P Global US manufacturing PMI", "M", "calendar", "MW:MPMIUSMA", "level",
-       0, 1, 1, 0, 1, 0, 1, _PMI, _A, _S, (_MAN,), note="S&P Global (Markit before 2022): proprietary - archived MarketWatch calendar; flash = preliminary, final = final",
-       calendar_pattern=r"^(?!.*(services|serivces|non ?manufacturing|composite|chicago|ism))(?=.*\bpmi\b)(?=.*(markit|market|arkit|s&p|flash|final|prelim|manufacturing)).*$|^(s&p|markit)( global)? (final|flash) manufacturing$"),
-    _r("CHPMINDX Index", "MNI Chicago business barometer", "M", "calendar", "MW:CHPMINDX", "level",
-       0, 0, 0, 0, 1, 1, 1, _PMI, _A, _S, (_OB,), note="MNI: proprietary - archived MarketWatch calendar",
-       calendar_pattern=r"^chicago (pmi|business barometer|manufacturing pmi|purchasing managers)"),
-    _r("DGNOCHNG Index", "US durable goods new orders MoM", "M", "fred", "DGORDER", "pct",
+    _r("NAPMPMI Index", "ISM manufacturing PMI",
+       0, 0, 0, 0, 1, 1, 1, _PMI, _A, _S, (_MAN,),
+       note='ISM: proprietary, off FRED since 2016 - archived MarketWatch calendar'),
+    _r("NAPMNMI Index", "ISM services PMI",
+       0, 0, 0, 0, 1, 1, 1, _PMI, _A, _S, (_OB,),
+       note='ISM: proprietary - archived MarketWatch calendar'),
+    _r("MPMIUSMA Index", "S&P Global US manufacturing PMI",
+       0, 1, 1, 0, 1, 0, 1, _PMI, _A, _S, (_MAN,),
+       note='S&P Global (Markit before 2022): proprietary - archived MarketWatch calendar; flash = preliminary, final = final'),
+    _r("CHPMINDX Index", "MNI Chicago business barometer",
+       0, 0, 0, 0, 1, 1, 1, _PMI, _A, _S, (_OB,),
+       note='MNI: proprietary - archived MarketWatch calendar'),
+    _r("DGNOCHNG Index", "US durable goods new orders MoM",
        0, 1, 1, 1, 1, 0, 1, "rolling_ma:12;ecdf_no_demean_exp:130", _A, _H, (_OB,)),
-    _r("RCHSINDX Index", "Richmond Fed manufacturing survey, composite", "M", None, None, "level",
+    _r("RCHSINDX Index", "Richmond Fed manufacturing survey, composite",
        0, 0, 0, 0, 1, 1, 1, "ecdf_no_demean_exp:130", _A, _S, (_MAN,),
-       note="not on FRED; the Richmond Fed publishes it - no client yet (TOFIX.md)"),
-    _r("CONCCONF Index", "Conference Board consumer confidence", "M", "calendar", "MW:CONCCONF", "level",
-       0, 0, 0, 0, 1, 1, 1, "ecdf_exp:1305", _A, _S, (_CON,), note="Conference Board: proprietary - archived MarketWatch calendar",
-       calendar_pattern=r"^(conference (board|bd) )?consumer confidence( index)?$"),
-    _r("MPMIUSCA Index", "S&P Global US composite PMI", "M", "calendar", "MW:MPMIUSCA", "level",
-       0, 1, 1, 0, 1, 0, 1, _PMI, _A, _S, (_OB,), note="S&P Global: proprietary - archived MarketWatch calendar",
-       calendar_pattern=r"^(?!.*(chicago|ism))(?=.*\bpmi\b)(?=.*composite).*$"),
-    _r("MPMIUSSA Index", "S&P Global US services PMI", "M", "calendar", "MW:MPMIUSSA", "level",
-       0, 1, 1, 0, 1, 0, 1, _PMI, _A, _S, (_OB,), note="S&P Global (Markit before 2022): proprietary - archived MarketWatch calendar; flash = preliminary, final = final",
-       calendar_pattern=r"^(?!.*(composite|chicago|ism))(?=.*\bpmi\b)(?=.*(services|serivces|non ?manufacturing)).*$"),
-    _r("EMPRGBCI Index", "Empire State manufacturing survey, general conditions", "M", "fred",
-       "GACDISA066MSFRBNY", "level", 0, 0, 0, 0, 1, 1, 1, "ecdf_no_demean_exp:130", _A, _S, (_MAN,),
-       note="the SEASONALLY ADJUSTED headline - GACDINA066MNFRBNY (NSA) was used until 2026-10-01, caught by the "
-            "calendar cross-check (0% match vs the published headline; scripts/validate_econ_calendar.py)"),
+       note='not on FRED; the Richmond Fed publishes it - no client yet (TOFIX.md)'),
+    _r("CONCCONF Index", "Conference Board consumer confidence",
+       0, 0, 0, 0, 1, 1, 1, "ecdf_exp:1305", _A, _S, (_CON,),
+       note='Conference Board: proprietary - archived MarketWatch calendar'),
+    _r("MPMIUSCA Index", "S&P Global US composite PMI",
+       0, 1, 1, 0, 1, 0, 1, _PMI, _A, _S, (_OB,),
+       note='S&P Global: proprietary - archived MarketWatch calendar'),
+    _r("MPMIUSSA Index", "S&P Global US services PMI",
+       0, 1, 1, 0, 1, 0, 1, _PMI, _A, _S, (_OB,),
+       note='S&P Global (Markit before 2022): proprietary - archived MarketWatch calendar; flash = preliminary, final = final'),
+    _r("EMPRGBCI Index", "Empire State manufacturing survey, general conditions",
+       0, 0, 0, 0, 1, 1, 1, "ecdf_no_demean_exp:130", _A, _S, (_MAN,),
+       note='the SEASONALLY ADJUSTED headline - GACDINA066MNFRBNY (NSA) was used until 2026-10-01, caught by the calendar cross-check (0% match vs the published headline; scripts/validate_econ_calendar.py)'),
 )
 
-# The calendar row of each FRED-sourced release: (pattern, scale) - a CROSS-CHECK of the
-# FRED data (scripts/validate_econ_calendar.py) and the release's consensus, never its
-# data. Only where the calendar quotes the table's own units; left out where it doesn't:
-# PPI (the calendar quotes MoM, the table is YoY NSA), retail sales (ex autos, not ex
-# autos AND gas). Names: every variant 2009-2026 (scripts/backfill_econ_calendar.py
-# --names), incl. the COVID-era claims variants and the 2019 shutdown's "(new date)".
-_CALENDAR_CROSSCHECK: dict[str, tuple[str, float]] = {
-    "GDP CQOQ Index": (r"^((2nd|3rd|second|third|advance) estimate )?(gdp|gross domestic product)( revision)?"
-                       r"( \((real annual rate|revision|first revision|second revision)\))?$", 1.0),
-    "PCE CRCH Index": (r"^pce (price )?(index|idx m m)$", 1.0),
-    "NFP TCH Index": (r"^(nonfarm payrolls|employment report)$", 1e-3),
-    "USURTOT Index": (r"^unemployment rate$", 1.0),
-    "MWINCHNG Index": (r"^wholesale inventories$", 1.0),
-    "CPI YOY Index": (r"^(cpi|consumer price index)( year over year| y y)$", 1.0),
-    "INJCJC Index": (r"^(weekly )?(initial )?jobless claims( \((regular )?state program sa\))?$", 1.0),
-    "ADP CHNG Index": (r"^adp (national )?(employment|jobs)( report)?$", 1.0),
-    "CONSSENT Index": (r"^(u ?mich(igan)? )?(prelim(inary)? |final )?consumer (sentiment|survey)( index)?"
-                       r"( \((final|preliminary|prelim|revised)\)| final| prelim(inary)?)?$", 1.0),
-    "IP CHNG Index": (r"^industrial production( m m)?$", 1.0),
-    "NHSPSTOT Index": (r"^housing starts( \((saar|annual rate)\))?$", 1e-3),
-    "OUTFGAF Index": (r"^philly fed( manufacturing)?( index)?$|^philadelphia fed( s)? (manufacturing|business outlook) survey$",
-                      1.0),
-    "CFNAI Index": (r"^chicago (fed )?national (activity )?index$|^chicago (fed )?national activity$", 1.0),
-    "DGNOCHNG Index": (r"^durable goods orders$", 1.0),
-    "EMPRGBCI Index": (r"^empire state( manufacturing)?( index| survey)?$", 1.0),
-}
-_TABLE = tuple(replace(r, calendar_pattern=_CALENDAR_CROSSCHECK[r.ticker][0],
-                       calendar_scale=_CALENDAR_CROSSCHECK[r.ticker][1]) if r.ticker in _CALENDAR_CROSSCHECK else r
-               for r in _TABLE)
 MACRO_RELEASES: dict[str, MacroRelease] = {r.ticker: r for r in _TABLE}
 
 

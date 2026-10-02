@@ -8,6 +8,7 @@ import pytest
 
 from infra.api import fred_client
 from infra.config import MacroRelease
+from infra.reference.events import EventSeries
 from infra.cycle.core import StepContext
 from infra.cycle.paths import CyclePaths
 from infra.cycle.raw import RAW_STEP
@@ -151,7 +152,7 @@ def test_store_then_refetch_windows_keep_true_publication_days(tmp_path):
 def test_load_releases_fetches_only_the_gap(tmp_path):
     root, cov = tmp_path / "rel", tmp_path / "cov.parquet"
     fake = FakeFred(_pubs())
-    rel = {"NFP": MacroRelease("NFP", "n", "M", "fred", "PAYEMS", "diff", 0, 0, 0, 0, 1, 1, 1, "", "Activity",
+    rel = {"NFP": MacroRelease("NFP", "n", EventSeries("NFP", "E_NFP", "n", "u", "SA", store_id="PAYEMS", frequency="M", source="fred", derive="diff"), 0, 0, 0, 0, 1, 1, 1, "", "Activity",
                                "Hard", ("Activity_Labor",))}
     prel.load_releases(["PAYEMS"], "2026-08-10", root=root, coverage_file=cov, releases=rel, sources={"fred": fake})
     prel.load_releases(["PAYEMS"], "2026-08-10", root=root, coverage_file=cov, releases=rel, sources={"fred": fake})
@@ -162,7 +163,7 @@ def test_load_releases_fetches_only_the_gap(tmp_path):
 
 
 # ------------------------------------------------------------------ cycle step
-_FRED_ONLY = {"NFP": MacroRelease("NFP", "n", "M", "fred", "PAYEMS", "diff", 0, 0, 0, 0, 1, 1, 1, "", "Activity",
+_FRED_ONLY = {"NFP": MacroRelease("NFP", "n", EventSeries("NFP", "E_NFP", "n", "u", "SA", store_id="PAYEMS", frequency="M", source="fred", derive="diff"), 0, 0, 0, 0, 1, 1, 1, "", "Activity",
                                   "Hard", ("Activity_Labor",))}
 
 def _ctx(tmp_path, start, end, **kw):
@@ -172,9 +173,9 @@ def _ctx(tmp_path, start, end, **kw):
 def test_raw_step_fetches_and_checks(tmp_path, monkeypatch):
     fake = FakeFred(_pubs())
     monkeypatch.setattr("infra.pipeline.releases.SOURCES", {"fred": fake})
-    rel = {"NFP": MacroRelease("NFP", "n", "M", "fred", "PAYEMS", "diff", 0, 0, 0, 0, 1, 1, 1, "", "Activity",
+    rel = {"NFP": MacroRelease("NFP", "n", EventSeries("NFP", "E_NFP", "n", "u", "SA", store_id="PAYEMS", frequency="M", source="fred", derive="diff"), 0, 0, 0, 0, 1, 1, 1, "", "Activity",
                                "Hard", ("Activity_Labor",)),
-           "ISM": MacroRelease("ISM", "i", "M", None, None, "level", 0, 0, 0, 0, 1, 1, 1, "", "Activity",
+           "ISM": MacroRelease("ISM", "i", EventSeries("ISM", "E_ISM", "i", "u", "SA", store_id=None, frequency="M", source=None, derive="level"), 0, 0, 0, 0, 1, 1, 1, "", "Activity",
                                "Survey", ("Activity_Manufacturing",))}
     monkeypatch.setattr("infra.cycle.raw_releases.MACRO_RELEASES", rel)
     outcome = execute_step(RAW_STEP, _ctx(tmp_path, "2026-09-01", "2026-09-10"))
@@ -221,7 +222,7 @@ def test_releases_due_judges_only_when_the_calendar_is_fresh(tmp_path):
     from infra.pipeline import release_calendar as prc
 
     paths = CyclePaths.under(tmp_path)
-    rel = {"NFP TCH Index": MacroRelease("NFP TCH Index", "n", "M", "fred", "PAYEMS", "diff", 0, 0, 0, 0, 1, 1, 1,
+    rel = {"NFP TCH Index": MacroRelease("NFP TCH Index", "n", EventSeries("NFP TCH Index", "E_NFP TCH Index", "n", "u", "SA", store_id="PAYEMS", frequency="M", source="fred", derive="diff"), 0, 0, 0, 0, 1, 1, 1,
                                          "", "Activity", "Hard", ("Activity_Labor",))}
     assert due_releases("2026-09-01", "2026-09-10", paths=paths, releases=rel)[0] is None  # no calendar
     # history: PAYEMS published on each of the release's past dates (07-03, 08-07) - so it is judged
@@ -252,7 +253,7 @@ def test_releases_due_skips_series_not_tied_to_every_release_date(tmp_path):
     from infra.pipeline import release_calendar as prc
 
     paths = CyclePaths.under(tmp_path)
-    rel = {"NFP TCH Index": MacroRelease("NFP TCH Index", "n", "M", "fred", "PAYEMS", "diff", 0, 0, 0, 0, 1, 1, 1,
+    rel = {"NFP TCH Index": MacroRelease("NFP TCH Index", "n", EventSeries("NFP TCH Index", "E_NFP TCH Index", "n", "u", "SA", store_id="PAYEMS", frequency="M", source="fred", derive="diff"), 0, 0, 0, 0, 1, 1, 1,
                                          "", "Activity", "Hard", ("Activity_Labor",))}
     dates = pd.DatetimeIndex(["2026-07-03", "2026-07-20", "2026-08-07", "2026-08-21", "2026-09-04", "2026-09-18"])
     prc.refresh_release_calendar(root=paths.release_calendar_dir, observed=D("2026-09-20"),

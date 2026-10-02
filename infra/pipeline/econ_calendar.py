@@ -32,9 +32,10 @@ import numpy as np
 import pandas as pd
 
 from infra.api import wayback_client
-from infra.config import CALENDAR_COVERAGE_FILE, CALENDAR_DIR, CALENDAR_PAGES, MACRO_RELEASES, CalendarPage
+from infra.config import CALENDAR_COVERAGE_FILE, CALENDAR_DIR, CALENDAR_PAGES, CalendarPage
 from infra.coverage.intervals import Interval, find_missing_ranges, merge_intervals, to_utc_day
 from infra.processing import econ_calendar as ec
+from infra.reference.events import EVENTS, SERIES
 from infra.storage import coverage_store, parquet_store
 
 log = logging.getLogger(__name__)
@@ -183,17 +184,27 @@ def harvested_through(page: CalendarPage, *, coverage_file: Path = CALENDAR_COVE
     return None
 
 
+def _series_by_store_id(store_id: str, series: dict | None = None):
+    series = SERIES if series is None else series
+    return next(s_ for s_ in series.values() if s_.store_id == store_id)
+
+
+def _staged(s_) -> bool:
+    """Published as a preliminary (flash) and then a final estimate (the registry's event stages)."""
+    ev = EVENTS.get(s_.event)
+    return ev is not None and any(st in ("flash", "preliminary") for st in ev.stages)
+
+
 def calendar_vintages(series_id: str, start, end, *, root: Path = CALENDAR_DIR,
-                      coverage_file: Path = CALENDAR_COVERAGE_FILE, releases=None, page_key: str = "marketwatch"):
+                      coverage_file: Path = CALENDAR_COVERAGE_FILE, series=None, page_key: str = "marketwatch"):
     """The ``"calendar"`` source of infra.pipeline.releases (``fn(series_id, start, end)``):
     the release's vintages from the stored calendar rows - local, no network - and the
     publication days genuinely covered: up to where the harvest has reached."""
-    releases = MACRO_RELEASES if releases is None else releases
-    rel = next(r for r in releases.values() if r.series_id == series_id)
-    # a release the table stages (Preliminary/Final: the S&P flash -> final PMIs) takes
-    # actuals only - its "previous" is the same period's flash (ec.release_vintages)
-    df = ec.release_vintages(read_calendar_from_disk(root=root), rel.calendar_pattern,
-                             use_previous=not rel.preliminary, frequency=rel.frequency, scale=rel.calendar_scale)
+    s_ = _series_by_store_id(series_id, series)
+    # an event published in flash/preliminary -> final stages (the S&P PMIs) takes actuals
+    # only - its final's "previous" is the same period's flash (ec.release_vintages)
+    df = ec.release_vintages(read_calendar_from_disk(root=root), s_.calendar_pattern,
+                             use_previous=not _staged(s_), frequency=s_.frequency, scale=s_.calendar_scale)
     df = df[df["realtime_start"] < pd.Timestamp(end)].reset_index(drop=True)
     frontier = harvested_through(CALENDAR_PAGES[page_key], coverage_file=coverage_file)
     covered_end = min(pd.Timestamp(end), frontier) if frontier is not None else pd.Timestamp(start)
@@ -203,20 +214,19 @@ def calendar_vintages(series_id: str, start, end, *, root: Path = CALENDAR_DIR,
 PRELIM_LAST_DAY = 20  # an unlabelled row released by this day of its month is a preliminary
 
 
-def calendar_prelims(series_id: str, end, *, root: Path = CALENDAR_DIR, releases=None) -> pd.DataFrame:
+def calendar_prelims(series_id: str, end, *, root: Path = CALENDAR_DIR, series=None) -> pd.DataFrame:
     """The calendar's PRELIMINARY prints of a release FRED only carries as finals (UMich:
     FRED has the end-of-month final, the calendar also the mid-month preliminary;
     verified 2026-10-01, 75 calendar prints FRED never had). ``realtime_start, date,
     value`` vintages, typo-filtered. A row is preliminary when its name says so
     ("(preliminary)", "prelim"), never when it says final, and otherwise when released
     by PRELIM_LAST_DAY of its month (preliminaries mid-month, finals in the last week)."""
-    releases = MACRO_RELEASES if releases is None else releases
-    rel = next(r for r in releases.values() if r.series_id == series_id)
+    s_ = _series_by_store_id(series_id, series)
     rows = read_calendar_from_disk(root=root)
     name = rows["report"].str.lower()
     prelim = ~name.str.contains("final") & (name.str.contains("prelim") | (rows["timestamp"].dt.day <= PRELIM_LAST_DAY))
-    v = ec.release_vintages(rows[prelim], rel.calendar_pattern, use_previous=False, frequency=rel.frequency,
-                            scale=rel.calendar_scale)
+    v = ec.release_vintages(rows[prelim], s_.calendar_pattern, use_previous=False, frequency=s_.frequency,
+                            scale=s_.calendar_scale)
     return v[v["realtime_start"] < pd.Timestamp(end)].reset_index(drop=True)
 
 

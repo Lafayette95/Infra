@@ -34,3 +34,15 @@ def test_staged_releases_agree_with_the_table():
 def test_treasury_coupon_auctions_and_fomc():
     assert {f"US_TSY_AUCTION_{t}Y" for t in (2, 3, 5, 7, 10, 20, 30)} <= set(EVENTS)
     assert EVENTS["US_FOMC_DECISION"].time_et == "14:00" and len(FOMC_MEETINGS) > 0
+
+
+def test_identifiers_live_only_on_the_registry():
+    """Each nowcast release links to THE registry entry (no copy), and every calendar-
+    sourced or FRED-sourced series is fully specified there."""
+    for ticker, rel in MACRO_RELEASES.items():
+        assert rel.series is SERIES[rel.series.id], ticker
+    for s in SERIES.values():
+        if s.source is not None:
+            assert s.store_id and s.derive in {"level", "diff", "pct", "saar", "yoy"} and s.frequency in "WMQ", s.id
+        if s.source == "calendar":
+            assert s.calendar_pattern and s.store_id.startswith("MW:"), s.id
