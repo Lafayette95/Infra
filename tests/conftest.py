@@ -33,3 +33,53 @@ def _network_always_ready(monkeypatch):
     """The Prefect flows wait for real DNS before running (infra.cycle.network); tests
     must never depend on - or hang for 10 minutes without - a network."""
     monkeypatch.setattr("infra.cycle.flows.wait_for_network", lambda *a, **k: 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _no_release_network(monkeypatch):
+    """The raw step fetches macro-release vintages from FRED (infra.pipeline.releases.
+    SOURCES); no test may reach it. By default every source answers "nothing published";
+    release tests pass their own fake ``sources`` explicitly."""
+    import pandas as pd
+
+    def nothing(series_id, start, end):
+        return pd.DataFrame(columns=["realtime_start", "date", "value"]), []
+
+    monkeypatch.setattr("infra.pipeline.releases.SOURCES",
+                        {"fred": nothing, "calendar": nothing, "fred+prelims": nothing})
+    monkeypatch.setattr("infra.pipeline.releases.CONFIGURED",
+                        {"fred": lambda: True, "calendar": lambda: True, "fred+prelims": lambda: True})
+
+
+@pytest.fixture(autouse=True)
+def _no_bulk_network(monkeypatch):
+    """The raw step snapshots the BLS/BEA bulk files (infra.pipeline.bulk_series); no test
+    may reach them. By default no source has published anything (a version of None is
+    never downloaded); bulk tests pass their own fakes explicitly."""
+    monkeypatch.setattr("infra.pipeline.bulk_series.LAST_MODIFIED", {"bls": lambda d: None, "bea": lambda d: None})
+    monkeypatch.setattr("infra.pipeline.bulk_series.CONFIGURED", {"bls": lambda: True, "bea": lambda: True})
+
+
+@pytest.fixture(autouse=True)
+def _no_cpi_weights_network(monkeypatch):
+    """The raw step fetches due CPI weight years from bls.gov (infra.pipeline.cpi_weights);
+    no test may reach it. By default BLS has published nothing."""
+    monkeypatch.setattr("infra.pipeline.cpi_weights.FETCH", lambda years: {})
+    monkeypatch.setattr("infra.pipeline.cpi_weights.CONFIGURED", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _no_reference_network(monkeypatch):
+    """The raw step refreshes the release calendar (FRED release dates, NAR), Treasury
+    auctions (Fiscal Data) and auction tails (the Wayback Machine) - no test may reach
+    them. Each hook answers "nothing new"; tests of those pieces pass their own."""
+    import pandas as pd
+
+    monkeypatch.setattr("infra.cycle.raw_reference.FRED_DATES_FETCH", lambda release_id: pd.DatetimeIndex([]))
+    monkeypatch.setattr("infra.cycle.raw_reference.NAR_FETCH", lambda: "")
+    monkeypatch.setattr("infra.cycle.raw_reference.TREASURY_SCHEDULE_FETCH", lambda: (
+        "<AuctionCalendar><StartDate>2000-01-01</StartDate></AuctionCalendar>"))
+    monkeypatch.setattr("infra.cycle.raw_reference.AUCTIONS_FETCH", lambda since: pd.DataFrame())
+    monkeypatch.setattr("infra.cycle.raw_reference.TAILS_LIST", lambda *a, **k: pd.DataFrame(
+        {"timestamp": pd.Series(dtype="datetime64[ms]"), "original": pd.Series(dtype=str), "digest": pd.Series(dtype=str)}))
+    monkeypatch.setattr("infra.cycle.raw_reference.TAILS_FETCH", lambda *a, **k: b"")

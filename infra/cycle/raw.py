@@ -1,5 +1,9 @@
 """Step 1b - ``backfill_daily_raw_data``: non-price raw inputs (macro releases, EFFR,
-calendars, ...). Nothing is registered yet; this is the slot new raw sources plug into.
+calendars, ...). Registered: ``releases`` (every vintage of the nowcast's macro releases,
+infra.cycle.raw_releases), ``bulk`` (full-granularity CPI / PPI / PCE snapshots,
+infra.cycle.raw_bulk), ``cpi_weights`` (CPI relative importance, once a year,
+infra.cycle.raw_cpi_weights), and the reference data - ``release_calendar``, ``tsy_auctions``,
+``auction_tails`` (infra.cycle.raw_reference).
 
 A raw source is a function ``(start, end, *, paths, force_refetch) -> dict`` added to
 ``RAW_SOURCES``; each should also contribute its own checks to ``RAW_CHECKS``.
@@ -12,9 +16,23 @@ import pandas as pd
 
 from infra.cycle.core import Check, Step, StepContext
 from infra.cycle.paths import CyclePaths
+from infra.cycle.raw_bulk import BULK_CHECKS, backfill_daily_bulk
+from infra.cycle.raw_cpi_weights import CPI_WEIGHTS_CHECKS, backfill_daily_cpi_weights
+from infra.cycle.raw_releases import RELEASE_CHECKS, backfill_daily_releases
+from infra.cycle.raw_reference import (AUCTION_CHECKS, CALENDAR_CHECKS, TAILS_CHECKS, backfill_daily_auction_tails,
+                                       backfill_daily_release_calendar, backfill_daily_tsy_auctions)
 
-RAW_SOURCES: dict[str, Callable[..., dict]] = {}
-RAW_CHECKS: tuple[Check, ...] = ()
+# Run in this order: "cpi_weights" dates each weight year from the ALFRED CPI vintages that
+# "releases" stores, and matches item codes from the CPI catalog that "bulk" stores.
+# "release_calendar" after "releases" (its releases_due check reads the fresh calendar);
+# "auction_tails" after "tsy_auctions" (tails are matched to the stored auctions).
+RAW_SOURCES: dict[str, Callable[..., dict]] = {"releases": backfill_daily_releases, "bulk": backfill_daily_bulk,
+                                               "cpi_weights": backfill_daily_cpi_weights,
+                                               "release_calendar": backfill_daily_release_calendar,
+                                               "tsy_auctions": backfill_daily_tsy_auctions,
+                                               "auction_tails": backfill_daily_auction_tails}
+RAW_CHECKS: tuple[Check, ...] = (RELEASE_CHECKS + BULK_CHECKS + CPI_WEIGHTS_CHECKS + CALENDAR_CHECKS
+                                 + AUCTION_CHECKS + TAILS_CHECKS)
 
 
 def backfill_daily_raw_data(

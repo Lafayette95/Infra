@@ -22,6 +22,19 @@ class CyclePaths:
     bmk_root: Path
     vintage_root: Path
     adjustments_dir: Path
+    releases_dir: Path
+    releases_coverage: Path
+    release_calendar_dir: Path
+    econ_calendar_dir: Path
+    tsy_auctions_dir: Path
+    tsy_auctions_coverage: Path
+    tsy_tails_dir: Path
+    tsy_tails_manifest: Path
+    raw_data_root: Path
+    bulk_coverage: Path
+    bulk_catalog_dir: Path
+    cpi_weights_dir: Path
+    cpi_weights_coverage: Path
 
     @classmethod
     def default(cls) -> CyclePaths:
@@ -37,6 +50,19 @@ class CyclePaths:
             bmk_root=config.BMK_ROOT,
             vintage_root=config.VINTAGE_ROOT,
             adjustments_dir=config.ADJUSTMENTS_DIR,
+            releases_dir=config.RELEASES_DIR,
+            releases_coverage=config.RELEASES_COVERAGE_FILE,
+            release_calendar_dir=config.RELEASE_CALENDAR_DIR,
+            econ_calendar_dir=config.CALENDAR_DIR,
+            tsy_auctions_dir=config.TSY_AUCTIONS_DIR,
+            tsy_auctions_coverage=config.TSY_AUCTIONS_COVERAGE_FILE,
+            tsy_tails_dir=config.TSY_TAILS_DIR,
+            tsy_tails_manifest=config.TSY_TAILS_COVERAGE_FILE,
+            raw_data_root=config.RAW_DATA_ROOT,
+            bulk_coverage=config.BULK_COVERAGE_FILE,
+            bulk_catalog_dir=config.BULK_CATALOG_DIR,
+            cpi_weights_dir=config.CPI_WEIGHTS_DIR,
+            cpi_weights_coverage=config.CPI_WEIGHTS_COVERAGE_FILE,
         )
 
     @classmethod

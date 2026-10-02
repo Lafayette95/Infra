@@ -226,6 +226,170 @@ vs its neighbours' - IS handled: `infra.cycle.px_bonds.BOND_MIN_ABS_DEV`.)
 
 ---
 
+## Nowcast: calendar-sourced releases have no LIVE source; Richmond Fed has none at all
+
+**Found:** 2026-09-30/10-01. **Where:** `infra/pipeline/econ_calendar.py`, `infra.config.CALENDAR_PAGES`.
+**Status:** open.
+
+**The issue:** ISM ×2, S&P Global PMIs ×3, MNI Chicago, the Conference Board, NFIB and NAR
+existing home sales have no official free history. Their history now comes from archived
+MarketWatch calendar pages (Wayback Machine, `infra/models/CLAUDE.md` 3a). That is a
+HISTORY source only:
+*   Its capture timing makes it about 67% reliable for T−1 by the 06:00 ET run (measured
+    Apr–Sep 2026; median 12.7h, 90th percentile 55h after a 10:00 ET release).
+*   The live MarketWatch page answers scripts with HTTP 401.
+
+So these series go stale after each harvest, and `releases_fresh` warns.
+
+**Options (user, 2026-10-01: build the history first, then look for a live source):**
+(1) a calendar page that serves plain HTML to a script (Briefing.com, Yahoo Finance,
+broker calendars - none checked yet); (2) triggering a Wayback "Save Page Now" capture
+before the run (a daily public capture under our IP - needs the user's OK); (3) a
+browser-driven fetch (heavy for a headless 06:00 job).
+
+**Also still missing:** the Richmond Fed composite (`RCHSINDX`). It is free from the
+Richmond Fed itself, but not on FRED and not on the MarketWatch calendar; it needs its own
+client. The earlier plan of free proxies (Kansas City/Dallas Fed surveys, Philly non-mfg,
+NY Fed services, new home sales/permits) is no longer needed for the nine calendar
+releases, but would still add breadth to the thin Manufacturing/Housing blocks.
+
+**Older history is patchy:** 2009–11 has few captures; 2012–19 has 25–47 weeks a year.
+A month whose release week was never archived is only recovered from the next month's
+"previous" (dated late), and for the S&P PMIs (actuals only) not at all. Any second
+archived calendar (Briefing.com, Yahoo) would fill gaps and cross-check values.
+
+---
+
+## Nowcast: history published before ALFRED's vintage archive is only pseudo-real-time
+
+**Found:** 2026-09-30. **Where:** `infra/processing/releases.py`, `infra/models/nowcast/panel.py`.
+**Status:** open, not yet measured on real data.
+
+**The issue:** ALFRED keeps vintages only from some date per series (for many series this
+is the 1990s or later). Every observation older than a series' first archived vintage
+arrives in one bulk "publication" on that first vintage day, already revised. For
+estimation this doesn't matter: the model is fit on a snapshot, and revised history is
+standard. It does matter for a real-time BACKTEST (news, or `nowcast_history`) over such
+dates. There, as-of views before the first vintage have no data at all, and the first
+vintage day shows a huge spurious batch of "news".
+
+**Measured 2026-09-30 (first archived vintage per series):**
+*   GDP (`GDPC1`): 1991-12.
+*   `PAYEMS`: 1955. `UNRATE`: 1960. `HOUST`: 1960. `CPIAUCNS`: 1949. `INDPRO`: 1927.
+*   `DGORDER`: 1999. `UMCSENT`: 1998. `PCEPI`: 2000.
+*   `ICSA`: 2009. `CFNAI`: 2011. `WHLSLRIMSA`: 2013. `PPIFID`: 2014. Empire: 2014.
+    Philly: 2015.
+*   Retail ex autos and gas (`MARTSSM44W72USS`): 2018-05.
+*   ADP: 2022-08 (ADP's relaunch).
+
+So a fully real-time panel only exists from mid-2018, or from 2022-08 with ADP.
+
+**Options:** (1) start backtests after every model series' first vintage (simplest; a
+check could enforce it); (2) impute each old period's publication day as
+period end + the series' typical first-print lag (median of the archived era), marked
+`pseudo=True`; (3) Philly Fed's Real-Time Data Set for the few series it covers. Measure
+each series' first vintage date once real data is on disk, then decide.
+
+---
+
+## Nowcast: weekly claims only enter as COMPLETE months
+
+**Found:** 2026-09-30. **Where:** `infra/models/nowcast/panel.py` (`to_monthly`, `"W"`).
+**Status:** accepted for v1.
+
+**The issue:** a month's claims value exists only once every week ending in it is
+published. A partial month would change as weeks arrive, and each new week would show up
+as a revision rather than news. The cost is that mid-month weekly claims prints move
+nothing until the month completes. The NY Fed has the same monthly treatment. The proper
+fix is a weekly-in-monthly measurement equation: each week observed at its month, loading
+on that month's factor with its own idiosyncratic component, so every week is its own
+news.
+
+---
+
+## Nowcast (version d): soft-prior penalty treats an AR(1) idio as white noise
+
+**Found:** 2026-09-30. **Where:** `infra/models/nowcast/dfm.py` (`m_step`, penalized rows).
+**Status:** accepted approximation.
+
+**The issue:** with `idio="ar1"`, a monthly release's idiosyncratic component is in the
+state, so the exact loading regression has only the tiny `KAPPA` noise. A MAP penalty
+`KAPPA/tau^2` would do nothing. The penalty is therefore scaled by the idio's
+unconditional variance `sig2/(1-rho^2)`, which treats the idio as the regression noise and
+ignores its serial correlation. The likelihood and E-step stay exact; only the strength of
+the shrinkage is approximate. With `idio="iid"` it is the exact MAP. Exact fix: a
+GLS-weighted penalty using the idio's AR(1) precision, or a Gibbs sampler for (d).
+
+---
+
+## Releases: a value DELETED in a later vintage is not recorded
+
+**Found:** 2026-09-30. **Where:** `infra/processing/releases.py` (`drop_unchanged`).
+**Status:** open, rare.
+
+**The issue:** the store keeps a row per changed value. If a later vintage REMOVES an
+observation (FRED `realtime_end` closes with no successor, e.g. a discontinued period), the
+store still shows the last value as current. The `realtime_end` of the last row is not
+stored. Fix: store a tombstone row (value NaN) at the day the value stopped being current,
+and have `snapshot` drop NaN.
+
+---
+
+## Nowcast: single-series blocks are degenerate (Housing, Price_WholeSales)
+
+**Found:** 2026-09-30, on the first real-data fit.
+**Where:** `infra/models/nowcast/spec.py` (`factor_structure`), `infra.config.MACRO_RELEASES`.
+**Status:** open, needs a user decision.
+
+**The issue:** once the proprietary series are dropped, `Activity_Housing` has one monthly
+member (housing starts, plus GDP) and `Price_WholeSales` has one (PPI). Each block factor
+then IS that series: its idiosyncratic variance goes to the floor, its `signal_share` in
+the news table is about 1.0 (seen: housing starts 0.998, PPI 0.996), and the factor adds a
+free parameter set but no pooling. Existing home sales was Housing's second member; a
+free proxy (new home sales, permits: the proxies entry above) would fix Housing.
+
+**Options:** (1) require at least 2 monthly members per block and fold smaller blocks into
+the global factor, or into their Cat1 parent (PPI into a single Price block); (2) add the
+housing proxies; (3) accept it (the nowcast is fine, only that block's signal share is
+not meaningful).
+
+---
+
+## Nowcast: per-block GDP attribution is fragile (correlated block factors)
+
+**Found:** 2026-09-30, on real data. **Where:** `infra/models/nowcast/dfm.py`, `spec.py`.
+**Status:** open, needs a user decision on the defaults for versions b/c/d.
+
+**The issue:** as specified (b/c/d = one factor per category, full VAR, no global factor),
+the block factors are highly correlated, and GDP's loadings on them come out with
+offsetting signs:
+*   b: Consumption −0.74, OtherBusiness +0.60.
+*   Unmasked c: block contributions of −12.8pp against +13.2pp.
+
+The nowcast itself is stable, but "which block drives GDP" is not interpretable.
+`global_factor=True` + `factor_dynamics="independent"` (the NY Fed / Bańbura–Modugno
+structure: blocks carry only local co-movement, uncorrelated with the global cycle)
+brings block contributions down to tenths of a pp. GDP's own loadings are still tiny and
+of mixed sign, because GDP is quarterly, noisy and loads on 5 factors.
+
+**Real-data fit (in-sample GDP R², 1990–2019, COVID excluded):**
+
+| Configuration | With table transforms | With `use_transforms=False` |
+|---|---|---|
+| a | 0.34 | 0.44 |
+| b | 0.58 | – |
+| c | 0.54 | – |
+| c + global + independent | 0.51 | 0.59 |
+| d, τ=0.3 | 0.59 | – |
+
+**Next step:** the user picks the defaults. Then run a real-time out-of-sample backtest
+(re-estimate each quarter on the vintage as of that day, compare with the first GDP print,
+from mid-2018: see the pseudo-real-time entry above) to choose between versions on
+forecast accuracy rather than in-sample fit.
+
+
+---
+
 ## Intraday WIRP: on an FOMC decision day, that meeting is already treated as past
 
 **Found:** 2026-09-30, building intraday WIRP (CLAUDE.md 14).
@@ -246,3 +410,126 @@ lives in the trading-calendar layer. **Options:** (1) add an FOMC-decision-insta
 to `infra.trading_calendar` (the sanctioned home for exchange/calendar time logic) and
 make meeting inclusion instant-based when `build_schedule` gets an intraday `today`;
 (2) store decision instants in UTC in `FOMC_MEETINGS` (verified per meeting).
+
+---
+
+## Inflation: bulk snapshots: vintages only from the first snapshot, versions only if seen
+
+**Found:** 2026-09-30, building `infra/pipeline/bulk_series.py`. **Status:** open, by design.
+
+**The issue:** BLS and BEA serve only the latest revised history, so vintages exist only from
+the first snapshot on. On first sight every historical value is stamped with that snapshot's
+publication day: PCE 2026-09-30, CPI 2026-09-11, PPI 2026-09-10. A
+point-in-time read before that day returns nothing from these stores. A version is also only
+captured if a run happens while it's current. A monthly file and a daily cycle make a miss
+unlikely. A same-day correction overwrites that day's rows, since the store is
+day-granular. Like the FRED releases store (entry above), a value DELETED by a later version
+is not recorded. **Options:** for earlier vintages of the headline series, use ALFRED
+(`MACRO_RELEASES`). For components, BLS/BEA archived release files (BEA's "Archive" of NIPA
+releases, BLS's archived CPI detailed reports) could be back-filled one release at a time,
+if deep component vintages turn out to matter.
+
+---
+
+## Inflation: CPI weights - only Table 1 (U.S. city average) is stored
+
+**Found:** 2026-09-30, building `infra/pipeline/cpi_weights.py`. **Status:** open.
+
+**The issue:** BLS's relative-importance files also carry Tables 2-7: metro areas, regions,
+population-size classes, and the areas' own weights. `parse_xlsx` reads only "Table 1". The
+area tables exist only in the 2020+ xlsx files (the .txt archives are Table 1 only), so
+area weights would have history from 2020. **Why not now:** national CPI modelling needs
+Table 1. **Fix:** a `table` column, and `parse_xlsx` over sheets 2-7. The column headers
+pair each area with CPI-U/CPI-W, and area names need mapping to `cu.area` codes.
+
+---
+
+## Docs: CLAUDE.md §15 still calls the macro-release section "section 14"
+
+**Found:** 2026-10-01. **Where:** root `CLAUDE.md` §15 (Full-Granularity US Inflation
+Data): "like section 14" and "ride the section-14 release pipeline".
+**Status:** open. Waiting until the inflation session has committed its own §15.
+
+**The issue:** the nowcast session added "Macro Releases & Nowcasting" as §14, colliding
+with the committed §14 "Intraday Data and Intraday WIRP". It was renamed §14a and placed
+after §14. §15 refers to the macro-release section by number, so both references should
+now read 14a. They weren't changed in place because that text is another session's
+uncommitted work (user decision 2026-10-01: commit theirs first, then fix the references
+in a separate commit).
+---
+
+## Calendar / auctions: remaining gaps
+
+**Found:** 2026-10-01. **Where:** `infra/pipeline/release_calendar.py`, `infra/pipeline/tsy_auctions.py`.
+**Status:** open. Wired into the daily cycle 2026-10-02 (`infra/cycle/raw_reference.py`); still to do:
+*   Agency full-year schedules (BEA, Census, Fed G.17; BLS with `BLS_CONTACT_EMAIL`) are
+    reachable but not fetched. FRED already dates these releases ~3 months ahead.
+*   No forward date at all for the S&P flash PMIs (no rule; S&P's release calendar page
+    returns 403 to scripts) or UMich (its "release schedule" page lists past reports only).
+*   Six archived calendar pages (2025-26, odd query-string variants) are listed by the
+    archive but return 404. Their weeks are covered by neighbouring days' pages.
+*   The harvested calendar store keeps only each row's LAST capture, so for past weeks a
+    release is known only from its own day: the nowcast's "coming up" view cannot be
+    replayed historically from it. A live calendar source would record first sightings
+    going forward (`known_from`).
+---
+
+## Tails: history harvest unfinished; failure analysis pending
+
+**Found:** 2026-10-01. **Where:** `scripts/backfill_auction_tails.py`, `infra/processing/auction_tails.py`.
+**Status:** open.
+
+**State at the end of 2026-10-01:** 737 archived recaps processed (ZeroHedge 700 of 1,111;
+ForexLive's 229 not reached), 295 passed both checks, 294 auctions with a checked tail
+(2011-08 .. 2023-02). The run stalled at 22:06 when the Internet Archive degraded: CDX
+timed out, playback returned 503 and then redirected to 7.8KB stubs. It was stopped and
+can be resumed: rerun the script. Passed articles are never re-fetched; everything else is
+retried under `PARSER_VERSION` 3.
+
+**Still to do once it completes:**
+*   **Diagnose the 79 "failed check" articles** (45 of them on the modern site): is it a
+    mis-read WI or high yield, a stated tail that contradicts high yield - WI, or a tail
+    above 15bp?
+*   **Old-site pass rate (2011-18) was 31%.** Measure what v3 recovers (URL-path dates,
+    high yield in the title). Many old-site captures lack the article text altogether.
+*   **Coverage report** by year and tenor (`backfill_auction_tails.py --report`), against
+    the archive-coverage estimate in `CLAUDE.md` §17.
+
+---
+
+## Registry: identifiers still live on the nowcast's MacroRelease
+
+**Found:** 2026-10-01. **Where:** `infra/config.py` (`MacroRelease.source`/`series_id`/`calendar_pattern`/
+`calendar_scale`, `_CALENDAR_CROSSCHECK`), `infra/reference/events.py`. **Status:** planned.
+
+**The issue:** the event registry was built as a new module beside the nowcast's release
+table. Source ids and calendar patterns were deliberately left on `MacroRelease`, because
+`infra/config.py` was being edited by several sessions at once. The registry should own
+them ("what a series is"), and `MacroRelease` keep only how the nowcast uses a series
+(transform, sign, categories). `infra.pipeline.release_calendar.calendar_patterns`
+currently reaches into `MACRO_RELEASES` for the patterns. `tests/test_event_registry.py`
+keeps both consistent meanwhile.
+
+**Next step:** move the fields in one commit once `config.py` is quiet, and update the
+readers (`infra.pipeline.releases`, `econ_calendar`, `release_calendar`, the scripts).
+
+---
+
+## Ops: production runs from a working tree that several sessions edit at once
+
+**Found:** 2026-10-01. **Status:** open (workflow).
+
+**The issue:** the daily cycle (launchd/Prefect, 06:00 New York) imports whatever is in
+this checkout, and on 2026-10-01 four sessions were editing it with uncommitted work. At
+22:41 one session's half-finished edit left `infra/config.py` unimportable (`CME_TCF_DIR`
+used `RAW_DATA_ROOT` before its definition). Every test failed until it was fixed a
+minute later. Had that state been live at 06:00, the whole run would have failed and the
+day's vintage would have been lost.
+
+**Options:**
+1. Run production from a separate clean checkout or worktree at a known commit, updated
+   on purpose.
+2. Have the scheduled run refuse to start on an import failure, alert immediately, and
+   retry (the watchdog only notices a missed vintage hours later).
+3. Have sessions work in worktrees and merge to main.
+

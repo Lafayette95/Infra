@@ -25,6 +25,11 @@ from infra.cycle.paths import CyclePaths  # noqa: E402
 from infra.cycle.network import wait_for_network  # noqa: E402
 from infra.cycle.px import plan_daily_px_data  # noqa: E402
 from infra.cycle.px_bonds import plan_daily_bond_px  # noqa: E402
+from infra.cycle.raw_bulk import plan_daily_bulk  # noqa: E402
+from infra.pipeline.cpi_weights import plan_weights_update  # noqa: E402
+from infra.cycle.raw_reference import TAILS_PER_RUN  # noqa: E402
+from infra.cycle.raw_releases import plan_daily_releases  # noqa: E402
+from infra.pipeline.tsy_auctions import plan_auctions_update  # noqa: E402
 from infra.cycle.runner import run_daily_cycle, run_scheduled_daily, scheduled_windows  # noqa: E402
 from infra.cycle.universe import snapshot_grid_floor  # noqa: E402
 from infra.pipeline import contracts as contracts_pipe  # noqa: E402
@@ -60,6 +65,16 @@ def dry_run(start, end, force_refetch: bool) -> int:
     for country, gaps in plan_daily_bond_px(start, end, force_refetch=force_refetch).items():
         for g0, g1 in gaps:
             print(f"bonds       {country:22s} {g0.date()} -> {g1.date()}  free ({BOND_CURVES[country].source})")
+    print(f"reference   release calendar refresh (FRED release dates, NAR - free); Treasury auctions from "
+          f"{plan_auctions_update().date()} (Fiscal Data - free); up to {TAILS_PER_RUN} archived auction recaps/source")
+    for sid, (source, ranges) in plan_daily_releases(start, end, force_refetch=force_refetch).items():
+        for g0, g1 in ranges:
+            print(f"releases    {sid:22s} {g0.date()} -> {g1.date()}  free ({source})")
+    for key, last in plan_daily_bulk().items():
+        seen = "never ingested" if last is None else f"latest version {last}"
+        print(f"bulk        {key:22s} {seen}; downloaded if a newer file is published  free")
+    for year in plan_weights_update(end):
+        print(f"cpi_weights {year:<22d} due, not on disk  free (bls)")
     print(f"{len(plan)} contracts to fetch; estimated total ${total:.4f}")
     return 0
 

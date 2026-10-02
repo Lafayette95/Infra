@@ -5,7 +5,7 @@ Code lives in ~/Repos/Infra; the database lives separately under ~/Database.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +81,43 @@ VINTAGES_KEPT = 2
 # data stores keep exactly what the vendor delivered; readers overlay this at read time.
 # infra.storage.adjustment_store, CLAUDE.md section 12.
 ADJUSTMENTS_DIR = DATABASE_ROOT / "_adjustments"
+# Non-price raw inputs (the daily cycle's ``raw`` step, 1b). Macro releases are stored as
+# every published VINTAGE of each source series (a release date per value), not just the
+# latest revised history - see MACRO_RELEASES below and infra/pipeline/releases.py.
+RAW_DATA_ROOT = DATABASE_ROOT / "RawData"
+RELEASES_DIR = RAW_DATA_ROOT / "Releases"
+RELEASES_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "releases.parquet"
+# Economic-calendar rows (actual / consensus / previous per release, as the calendar page
+# showed them), harvested from archived copies of MarketWatch's U.S. economic calendar -
+# the free source for releases with no official free history (ISM, S&P Global PMIs, ...).
+# See CALENDAR_PAGES and infra/pipeline/econ_calendar.py. Coverage is keyed by page and
+# on the CAPTURE-day axis ("every archived capture of these days was processed").
+CALENDAR_DIR = RAW_DATA_ROOT / "EconCalendar"
+CALENDAR_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "econ_calendar.parquet"
+# WHEN scheduled events happen (infra.reference.events says WHAT they are): one row per
+# (event, release instant, source), point-in-time via known_from / last_seen - see
+# infra/pipeline/release_calendar.py.
+RELEASE_CALENDAR_DIR = RAW_DATA_ROOT / "ReleaseCalendar"
+# US Treasury auctions (Fiscal Data auctions_query): one row per auction, results once held;
+# coverage keyed "auctions" on the auction-date axis, claimed only for HELD auctions.
+TSY_AUCTIONS_DIR = RAW_DATA_ROOT / "TsyAuctions"
+TSY_AUCTIONS_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "tsy_auctions.parquet"
+# Auction TAILS (high yield - when-issued yield at the close), one row per (auction,
+# source) - archived auction recaps (ZeroHedge, ForexLive) for history; more sources (a
+# futures-based estimate) can be added side by side. Coverage keyed by source, on the
+# article-URL axis (a processed URL is never fetched again).
+TSY_TAILS_DIR = RAW_DATA_ROOT / "TsyAuctionTails"
+TSY_TAILS_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "tsy_auction_tails.parquet"
+# Full-granularity inflation detail (CPI / PPI / PCE component trees) snapshotted from the
+# agencies' own bulk files - see BULK_DATASETS below and infra/pipeline/bulk_series.py.
+# One store per source (``BulkDataset.store``) under RAW_DATA_ROOT; coverage keyed by dataset.
+BULK_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "bulk_series.parquet"
+BULK_CATALOG_DIR = RAW_DATA_ROOT / "_catalog"
+# CPI relative importance (the item weights), one weight year = December Y, fetched once a
+# year - infra/pipeline/cpi_weights.py. BLS publishes them from December 1987 on.
+CPI_WEIGHTS_DIR = RAW_DATA_ROOT / "CPIWeights"
+CPI_WEIGHTS_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "cpi_weights.parquet"
+CPI_WEIGHTS_FIRST_YEAR = 1987
 
 # ------------------------------------------------------------------ API settings
 SCHEMA_OHLCV = "ohlcv-1m"
@@ -90,6 +127,10 @@ SCHEMA_BBO_1S = "bbo-1s"
 SCHEMA_DEFINITION = "definition"
 SCHEMA_STATISTICS = "statistics"
 API_KEY_ENV = "DATABENTO_API_KEY"
+FRED_API_KEY_ENV = "FRED_API_KEY"  # free key, fred.stlouisfed.org -> My Account -> API Keys
+# download.bls.gov answers 403 unless the User-Agent carries a contact email (verified
+# 2026-09-30: browser, generic and python-urllib agents are all refused).
+BLS_CONTACT_ENV = "BLS_CONTACT_EMAIL"
 
 # Hard budget guardrail: a single API request whose estimated cost exceeds this
 # raises instead of downloading. Override with INFRA_MAX_COST_USD.
@@ -219,6 +260,8 @@ TRADING_HOURS: dict[str, TradingSession] = {
         source="https://www.newsquawk.com/headlines/from-6th-july-2026-ice-will-be-aligning-the-trading-hours-of-uk-fistir-contracts-with-those-of-european-contracts-as-such-gilt-and-sonia-futures-will-open-at-1am-london-time-and-close-at-9pm",
     ),
 }
+
+
 
 # ------------------------------------------------------------------ daily cycle
 # Operational parameters of the scheduled daily cycle (infra/cycle, CLAUDE.md section 12).
@@ -389,3 +432,314 @@ FOMC_MEETINGS: tuple[FOMCMeeting, ...] = (
     FOMCMeeting("2026-10-27", "2026-10-28", False),
     FOMCMeeting("2026-12-08", "2026-12-09", True),
 )
+
+# ------------------------------------------------------------------ macro releases
+# The nowcast's release universe (infra/models/nowcast), transcribed 2026-09-30 from the
+# user's "Data Releases" table (OneNote, a photo read at full resolution - every cell
+# legible, incl. the 130 vs 1305 ECDF half-lives). One row per release; the table's
+# columns map 1:1 onto the fields below. The Bloomberg ticker is the KEY and a reference
+# only: there is no Bloomberg data here - each release is rebuilt from a free official
+# source series (``source`` + ``series_id``, which is what is STORED, as published,
+# every vintage), then turned into the table's units by ``units``.
+RELEASE_BLOCKS = (  # the table's subcategory columns, in its order
+    "Activity_Housing", "Activity_Consumption", "Activity_Manufacturing", "Activity_OtherBusiness",
+    "Activity_Trade", "Activity_Labor", "Activity_Gov",
+    "Price_Wages", "Price_Commo", "Price_WholeSales", "Price_Retail", "Price_Expectation",
+)
+
+
+@dataclass(frozen=True)
+class MacroRelease:
+    ticker: str  # Bloomberg ticker (the table's key) - or our own id for a free proxy
+    name: str
+    frequency: str  # observation period: "Q" | "M" | "W"
+    # Fetcher in infra.pipeline.releases.SOURCES; None = no free source (kept for the
+    # record, skipped by the pipeline and the model).
+    source: str | None
+    series_id: str | None  # the source's own id - the stored raw ticker
+    # Raw source series -> the table's units, computed per vintage (so a derived value's
+    # release date is its inputs'): "level" as published | "diff" | "pct" (period % change)
+    # | "saar" (period % change, annualized by compounding) | "yoy" (% change vs the same
+    # period a year earlier).
+    units: str
+    # The table's staging flags: which scheduled estimates exist (Advance/Prelim/Final);
+    # NoStage = one scheduled print, anything later is an ordinary revision.
+    advanced: bool
+    preliminary: bool
+    final: bool
+    short_history: bool  # the early stage(s) only exist for part of the history
+    bbg_median: bool  # the table uses a Bloomberg consensus median (not available here)
+    no_stage: bool
+    sign: int  # +1: higher = stronger economy / higher prices; -1 the reverse (claims, unemployment)
+    transform: str  # ";"-separated steps, infra.models.nowcast.transforms
+    cat1: str  # "Activity" | "Price"
+    cat2: str  # "Survey" | "Hard"
+    blocks: tuple[str, ...]  # subset of RELEASE_BLOCKS
+    proxy_for: tuple[str, ...] = ()  # a free proxy: the table rows it stands in for
+    note: str = ""
+    # source="calendar": regex matching this release's row name on the economic calendar
+    # (after infra.processing.econ_calendar.normalize_report: lower case, "U.S."/"US"
+    # dropped, punctuation to spaces). Names drift across the years - every observed
+    # variant must match, and nothing else may (tests/test_econ_calendar.py).
+    calendar_pattern: str | None = None
+    # calendar value x calendar_scale = this release's own units (payrolls are quoted in
+    # persons, the table's NFP change is in thousands -> 1e-3). For a FRED-sourced release
+    # the calendar row is a CROSS-CHECK and the consensus (``consensus_mw``), never data.
+    calendar_scale: float = 1.0
+
+    @property
+    def available(self) -> bool:
+        return self.source is not None
+
+    @property
+    def stages(self) -> tuple[str, ...]:
+        """Names of the scheduled estimates, in publication order ("first" when NoStage)."""
+        named = tuple(n for n, on in (("advance", self.advanced), ("preliminary", self.preliminary),
+                                      ("final", self.final)) if on)
+        return named or ("first",)
+
+
+_A, _P, _S, _H = "Activity", "Price", "Survey", "Hard"
+_HOU, _CON, _MAN, _OB, _LAB = ("Activity_Housing", "Activity_Consumption", "Activity_Manufacturing",
+                               "Activity_OtherBusiness", "Activity_Labor")
+_E5 = "ecdf_no_demean_exp:1305"
+_PMI = "deman_fix:50;ecdf_no_demean_exp:130"
+
+
+def _r(ticker, name, freq, source, sid, units, adv, pre, fin, short, med, nostage, sign, transform,
+       cat1, cat2, blocks, note="", calendar_pattern=None, calendar_scale=1.0):
+    return MacroRelease(ticker, name, freq, source, sid, units, bool(adv), bool(pre), bool(fin), bool(short),
+                        bool(med), bool(nostage), sign, transform, cat1, cat2, tuple(blocks), note=note,
+                        calendar_pattern=calendar_pattern, calendar_scale=calendar_scale)
+
+
+# Columns: ticker, name, freq, source, series id, units | Advanced, Preliminary, Final,
+# ShortHistory, BbgMedian, NoStage | Sign, Transform | Cat1, Cat2, subcategories.
+# FRED ids verified 2026-09-30 against FRED's own series metadata (scripts/update_releases.py
+# --verify): title, frequency, units and seasonal adjustment all match the table's row.
+_TABLE = (
+    _r("GDP CQOQ Index", "US GDP chained 2012 dollars QoQ SAAR", "Q", "fred", "GDPC1", "saar",
+       1, 1, 1, 0, 1, 0, 1, "rolling_ma:4;" + _E5, _A, _H, (_HOU, _CON, _MAN, _OB),
+       note="the nowcast TARGET: enters the model in native units (QoQ % SAAR), not transformed. Built "
+            "from the real GDP LEVEL (GDPC1, vintages since 1991-12) rather than BEA's published growth "
+            "(A191RL1Q225SBEA, vintages only since 2014-09): verified 2026-09-30 to match the published "
+            "growth within 0.05pp (its 1-decimal rounding) at every vintage checked"),
+    _r("PCE CRCH Index", "US personal consumption expenditures chain price index", "M", "fred", "PCEPI", "pct",
+       0, 0, 0, 0, 1, 1, 1, "rolling_ma:12;" + _E5, _P, _H, ("Price_Retail",),
+       note="table name truncated ('US Personal Consumption Expend...'); read as the PCE price index "
+            "MoM per the table's Price/Price_Retail categories - confirm"),
+    _r("NFP TCH Index", "US employees on nonfarm payrolls, total change", "M", "fred", "PAYEMS", "diff",
+       0, 0, 0, 0, 1, 1, 1, _E5, _A, _H, (_LAB,)),
+    _r("USURTOT Index", "U-3 US unemployment rate", "M", "fred", "UNRATE", "level",
+       0, 0, 0, 0, 1, 1, -1, "ecdf_exp:1305", _A, _H, (_LAB,)),
+    _r("MWINCHNG Index", "Merchant wholesalers inventories MoM", "M", "fred", "I42IMSM144SCEN", "pct",
+       0, 1, 1, 1, 1, 0, 1, "rolling_ma:3;" + _E5, _A, _H, (_CON,),
+       note="from the Census Monthly Wholesale Trade release (FRED release 290), dated when the number is "
+            "first published. WHLSLRIMSA (used until 2026-10-01) is the same total in the combined Manufacturing "
+            "and Trade Inventories release, a median 6 days LATER - caught by the calendar cross-check"),
+    _r("SBOITOTL Index", "NFIB small business optimism", "M", "calendar", "MW:SBOITOTL", "level",
+       0, 0, 0, 0, 1, 1, 1, "deman_fix:100;" + _E5, _A, _S, (_OB,), note="NFIB: no official free history - archived MarketWatch calendar",
+       calendar_pattern=r"^nfib\b"),
+    _r("CPI YOY Index", "US CPI urban consumers YoY NSA", "M", "fred", "CPIAUCNS", "yoy",
+       0, 0, 0, 0, 1, 1, 1, "ecdf_exp:1305", _P, _H, ("Price_Retail",)),
+    _r("FDIUFDYO Index", "US PPI final demand YoY NSA", "M", "fred", "PPIFID", "yoy",
+       0, 0, 0, 0, 1, 1, 1, _E5, _P, _H, ("Price_WholeSales",)),
+    _r("INJCJC Index", "Initial jobless claims", "W", "fred", "ICSA", "level",
+       0, 0, 0, 0, 1, 1, -1, "ecdf_exp:1305", _A, _H, (_LAB,)),
+    _r("ADP CHNG Index", "ADP national employment report, change", "M", "fred", "ADPMNUSNERSA", "diff",
+       0, 0, 0, 0, 1, 1, 1, _E5, _A, _H, (_LAB,)),
+    _r("CONSSENT Index", "University of Michigan consumer sentiment", "M", "fred+prelims", "UMCSENT", "level",
+       0, 1, 1, 0, 1, 0, 1, "ecdf_exp:1305", _A, _S, (_CON,),
+       note="FRED (ALFRED) carries only the end-of-month FINAL; the mid-month PRELIMINARY comes from the "
+            "archived economic calendar (infra.pipeline.releases.fred_with_calendar_prelims)"),
+    _r("RSTAXAG% Index", "Adjusted retail sales less autos and gas MoM", "M", "fred", "MARTSSM44W72USS", "pct",
+       0, 0, 0, 0, 1, 1, 1, "rolling_ma:3;" + _E5, _A, _H, (_CON,)),
+    _r("IP CHNG Index", "US industrial production MoM", "M", "fred", "INDPRO", "pct",
+       0, 0, 0, 0, 1, 1, 1, "rolling_ma:12;" + _E5, _A, _H, (_MAN,)),
+    _r("NHSPSTOT Index", "US new privately owned housing starts", "M", "fred", "HOUST", "level",
+       0, 0, 0, 0, 1, 1, 1, "ecdf_exp:1305", _A, _H, (_HOU,)),
+    _r("OUTFGAF Index", "Philadelphia Fed business outlook, general activity", "M", "fred",
+       "GACDFSA066MSFRBPHI", "level", 0, 0, 0, 0, 1, 1, 1, _E5, _A, _S, (_OB,)),
+    _r("ETSLTOTL Index", "US existing home sales SAAR", "M", "calendar", "MW:ETSLTOTL", "level",
+       0, 0, 0, 0, 1, 1, 1, "ecdf_exp:1305", _A, _H, (_HOU,),
+       note="NAR: FRED keeps only 13 months - archived MarketWatch calendar (SAAR, units)",
+       calendar_pattern=r"^existing home sales( \((annual rate|saar)\))?$"),
+    _r("CFNAI Index", "Chicago Fed National Activity Index", "M", "fred", "CFNAI", "level",
+       0, 0, 0, 0, 1, 1, 1, "rolling_ma:3;" + _E5, _A, _S, (_CON, _OB)),
+    _r("NAPMPMI Index", "ISM manufacturing PMI", "M", "calendar", "MW:NAPMPMI", "level",
+       0, 0, 0, 0, 1, 1, 1, _PMI, _A, _S, (_MAN,), note="ISM: proprietary, off FRED since 2016 - archived MarketWatch calendar",
+       calendar_pattern=r"^ism( report on business)?( manufacturing)?( index| indext| pmi)?$"),
+    _r("NAPMNMI Index", "ISM services PMI", "M", "calendar", "MW:NAPMNMI", "level",
+       0, 0, 0, 0, 1, 1, 1, _PMI, _A, _S, (_OB,), note="ISM: proprietary - archived MarketWatch calendar",
+       calendar_pattern=r"^ism( report on business)? (non ?manufacturi?ng|on manufacturing|services)( index| pmi)?$"),
+    _r("MPMIUSMA Index", "S&P Global US manufacturing PMI", "M", "calendar", "MW:MPMIUSMA", "level",
+       0, 1, 1, 0, 1, 0, 1, _PMI, _A, _S, (_MAN,), note="S&P Global (Markit before 2022): proprietary - archived MarketWatch calendar; flash = preliminary, final = final",
+       calendar_pattern=r"^(?!.*(services|serivces|non ?manufacturing|composite|chicago|ism))(?=.*\bpmi\b)(?=.*(markit|market|arkit|s&p|flash|final|prelim|manufacturing)).*$|^(s&p|markit)( global)? (final|flash) manufacturing$"),
+    _r("CHPMINDX Index", "MNI Chicago business barometer", "M", "calendar", "MW:CHPMINDX", "level",
+       0, 0, 0, 0, 1, 1, 1, _PMI, _A, _S, (_OB,), note="MNI: proprietary - archived MarketWatch calendar",
+       calendar_pattern=r"^chicago (pmi|business barometer|manufacturing pmi|purchasing managers)"),
+    _r("DGNOCHNG Index", "US durable goods new orders MoM", "M", "fred", "DGORDER", "pct",
+       0, 1, 1, 1, 1, 0, 1, "rolling_ma:12;ecdf_no_demean_exp:130", _A, _H, (_OB,)),
+    _r("RCHSINDX Index", "Richmond Fed manufacturing survey, composite", "M", None, None, "level",
+       0, 0, 0, 0, 1, 1, 1, "ecdf_no_demean_exp:130", _A, _S, (_MAN,),
+       note="not on FRED; the Richmond Fed publishes it - no client yet (TOFIX.md)"),
+    _r("CONCCONF Index", "Conference Board consumer confidence", "M", "calendar", "MW:CONCCONF", "level",
+       0, 0, 0, 0, 1, 1, 1, "ecdf_exp:1305", _A, _S, (_CON,), note="Conference Board: proprietary - archived MarketWatch calendar",
+       calendar_pattern=r"^(conference (board|bd) )?consumer confidence( index)?$"),
+    _r("MPMIUSCA Index", "S&P Global US composite PMI", "M", "calendar", "MW:MPMIUSCA", "level",
+       0, 1, 1, 0, 1, 0, 1, _PMI, _A, _S, (_OB,), note="S&P Global: proprietary - archived MarketWatch calendar",
+       calendar_pattern=r"^(?!.*(chicago|ism))(?=.*\bpmi\b)(?=.*composite).*$"),
+    _r("MPMIUSSA Index", "S&P Global US services PMI", "M", "calendar", "MW:MPMIUSSA", "level",
+       0, 1, 1, 0, 1, 0, 1, _PMI, _A, _S, (_OB,), note="S&P Global (Markit before 2022): proprietary - archived MarketWatch calendar; flash = preliminary, final = final",
+       calendar_pattern=r"^(?!.*(composite|chicago|ism))(?=.*\bpmi\b)(?=.*(services|serivces|non ?manufacturing)).*$"),
+    _r("EMPRGBCI Index", "Empire State manufacturing survey, general conditions", "M", "fred",
+       "GACDISA066MSFRBNY", "level", 0, 0, 0, 0, 1, 1, 1, "ecdf_no_demean_exp:130", _A, _S, (_MAN,),
+       note="the SEASONALLY ADJUSTED headline - GACDINA066MNFRBNY (NSA) was used until 2026-10-01, caught by the "
+            "calendar cross-check (0% match vs the published headline; scripts/validate_econ_calendar.py)"),
+)
+
+# The calendar row of each FRED-sourced release: (pattern, scale) - a CROSS-CHECK of the
+# FRED data (scripts/validate_econ_calendar.py) and the release's consensus, never its
+# data. Only where the calendar quotes the table's own units; left out where it doesn't:
+# PPI (the calendar quotes MoM, the table is YoY NSA), retail sales (ex autos, not ex
+# autos AND gas). Names: every variant 2009-2026 (scripts/backfill_econ_calendar.py
+# --names), incl. the COVID-era claims variants and the 2019 shutdown's "(new date)".
+_CALENDAR_CROSSCHECK: dict[str, tuple[str, float]] = {
+    "GDP CQOQ Index": (r"^((2nd|3rd|second|third|advance) estimate )?(gdp|gross domestic product)( revision)?"
+                       r"( \((real annual rate|revision|first revision|second revision)\))?$", 1.0),
+    "PCE CRCH Index": (r"^pce (price )?(index|idx m m)$", 1.0),
+    "NFP TCH Index": (r"^(nonfarm payrolls|employment report)$", 1e-3),
+    "USURTOT Index": (r"^unemployment rate$", 1.0),
+    "MWINCHNG Index": (r"^wholesale inventories$", 1.0),
+    "CPI YOY Index": (r"^(cpi|consumer price index)( year over year| y y)$", 1.0),
+    "INJCJC Index": (r"^(weekly )?(initial )?jobless claims( \((regular )?state program sa\))?$", 1.0),
+    "ADP CHNG Index": (r"^adp (national )?(employment|jobs)( report)?$", 1.0),
+    "CONSSENT Index": (r"^(u ?mich(igan)? )?(prelim(inary)? |final )?consumer (sentiment|survey)( index)?"
+                       r"( \((final|preliminary|prelim|revised)\)| final| prelim(inary)?)?$", 1.0),
+    "IP CHNG Index": (r"^industrial production( m m)?$", 1.0),
+    "NHSPSTOT Index": (r"^housing starts( \((saar|annual rate)\))?$", 1e-3),
+    "OUTFGAF Index": (r"^philly fed( manufacturing)?( index)?$|^philadelphia fed( s)? (manufacturing|business outlook) survey$",
+                      1.0),
+    "CFNAI Index": (r"^chicago (fed )?national (activity )?index$|^chicago (fed )?national activity$", 1.0),
+    "DGNOCHNG Index": (r"^durable goods orders$", 1.0),
+    "EMPRGBCI Index": (r"^empire state( manufacturing)?( index| survey)?$", 1.0),
+}
+_TABLE = tuple(replace(r, calendar_pattern=_CALENDAR_CROSSCHECK[r.ticker][0],
+                       calendar_scale=_CALENDAR_CROSSCHECK[r.ticker][1]) if r.ticker in _CALENDAR_CROSSCHECK else r
+               for r in _TABLE)
+MACRO_RELEASES: dict[str, MacroRelease] = {r.ticker: r for r in _TABLE}
+
+
+# Archived economic-calendar pages (infra/pipeline/econ_calendar.py). MarketWatch's U.S.
+# economic calendar moved URL in April 2020 and the old URL froze (its later captures
+# still show April 2020); both are listed, each with every query-string variant the
+# archive holds (``?siteid=...``, ``?mod=...``). ``variants`` are in PRIORITY order: on a
+# day with captures of several, the first variant's capture is used. Measured 2026-10-01:
+# Apr 2020 - Sep 2026 every week has a capture (336/336); 2009 - Apr 2020 366 of 590
+# weeks (62%; 2009-11 thin, 2012-19 25-47 weeks a year).
+@dataclass(frozen=True)
+class CalendarPage:
+    key: str  # coverage key
+    cdx_prefixes: tuple[str, ...]  # CDX prefix queries that list every variant
+    variants: tuple[str, ...]  # regexes on the captured URL, priority order; others ignored
+    history_start: str
+
+
+CALENDAR_PAGES: dict[str, CalendarPage] = {
+    "marketwatch": CalendarPage(
+        "marketwatch",
+        cdx_prefixes=("marketwatch.com/economy-politics/calendar", "marketwatch.com/tools/calendars/economic"),
+        variants=(r"(?i)/economy-politics/calendar(?:\?|$|%0a)", r"(?i)/economy-politics/calendars/economic",
+                  r"(?i)/tools/calendars/economic"),
+        history_start="2009-01-01",
+    ),
+}
+
+# ------------------------------------------------------------------ bulk series
+# Full-granularity US inflation: every published series of a survey/table set, taken from
+# the agency's own bulk flat file (free, no API limits). Neither agency serves VINTAGES,
+# so each newly published file version is stored as a vintage stamped with the file's own
+# HTTP Last-Modified day (the publication: 08:30 New York on release day, verified
+# 2026-09-30 for all four files) - point-in-time history accumulates from the first
+# snapshot on (infra/pipeline/bulk_series.py). Vintages before that: ALFRED, for the
+# headline series it carries (MACRO_RELEASES).
+
+
+@dataclass(frozen=True)
+class BulkDataset:
+    key: str  # coverage/catalog key
+    name: str
+    source: str  # fetcher in infra.pipeline.bulk_series.SOURCES: "bls" | "bea"
+    file: str  # BLS: survey code (download.bls.gov/pub/time.series/<file>/); BEA: data file name
+    store: str  # store directory under RAW_DATA_ROOT (one per source: ids are unique within it)
+    tables: tuple[str, ...] = ()  # BEA only: keep the series that appear in these tables
+    note: str = ""
+
+
+BULK_DATASETS: dict[str, BulkDataset] = {d.key: d for d in (
+    BulkDataset("cpi", "CPI - every item x area x index (CPI-U), SA and NSA", "bls", "cu", "BLS",
+                note="~4,000 current series (cu.series also lists discontinued ones); monthly periods only (annual averages M13 and the semiannual "
+                     "S01-S03 of the areas published half-yearly are not stored)"),
+    BulkDataset("ppi_commodity", "PPI by commodity, incl. the final demand-intermediate demand tree",
+                "bls", "wp", "BLS", note="~5,200 series; headline PPI final demand is WPUFD4"),
+    BulkDataset("ppi_industry", "PPI by industry (NAICS)", "bls", "pc", "BLS"),
+    BulkDataset("pce", "PCE by type of product: price indexes, nominal and real spending", "bea",
+                "NipaDataM.txt", "BEA",
+                tables=("U20404", "U20405", "U20406", "T20804", "T20805", "T20806"),
+                note="~1,170 series, the NIPA 'underlying detail' tree (U2040x) plus the monthly "
+                     "headline tables (T2080x). Price index DPCERG, core DPCCRG; U20405 nominal "
+                     "spending gives the weights"),
+)}
+
+# ALFRED sub-series of CPI / PCE / PPI, fetched with every vintage by the macro-release
+# pipeline (infra/pipeline/releases.py, same store RawData/Releases) - the POINT-IN-TIME
+# history of the main inflation components BEFORE the bulk snapshots (BULK_DATASETS)
+# started (Sep 2026). Not nowcast inputs, so kept out of MACRO_RELEASES. FRED id -> label;
+# each verified 2026-09-30 to have ALFRED vintages (first vintage in the comment). SA
+# versions throughout: seasonal adjustment is what gets revised (CPI every February).
+INFLATION_ALFRED_SERIES: dict[str, str] = {
+    # CPI-U, SA
+    "CPIAUCSL": "CPI all items",  # 1972
+    "CPILFESL": "CPI less food and energy",  # 1996
+    "CPIUFDSL": "CPI food",  # 1996
+    "CPIENGSL": "CPI energy",  # 1996
+    "CPIHOSSL": "CPI housing",  # 2009
+    "CPIAPPSL": "CPI apparel",  # 2009
+    "CPITRNSL": "CPI transportation",  # 2009
+    "CPIMEDSL": "CPI medical care",  # 2009
+    "CPIRECSL": "CPI recreation",  # 2009
+    "CPIEDUSL": "CPI education and communication",  # 2009
+    "CUSR0000SACL1E": "CPI commodities less food and energy (core goods)",  # 2011
+    "CUSR0000SASLE": "CPI services less energy services (core services)",  # 2011
+    # NOT the market's "supercore" (core services less shelter): this one still holds
+    # energy services - Jan 2024: 0.63% first print vs the ~0.85% supercore quoted then.
+    # Supercore = CUSR0000SASLE less CUSR0000SAH1, recombined with the CPI weights.
+    "CUSR0000SASL2RS": "CPI services less rent of shelter (incl. energy services)",  # 2011
+    "CUSR0000SAH1": "CPI shelter",  # 2011
+    "CUSR0000SEHA": "CPI rent of primary residence",  # 2011
+    "CUSR0000SEHC": "CPI owners' equivalent rent of residences",  # 2011
+    "CUSR0000SEHB": "CPI lodging away from home",  # 2011
+    "CUSR0000SETA01": "CPI new vehicles",  # 2011
+    "CUSR0000SETA02": "CPI used cars and trucks",  # 2011
+    "CUSR0000SETD": "CPI motor vehicle maintenance and repair",  # 2011
+    "CUSR0000SETG01": "CPI airline fares",  # 2013
+    "CUSR0000SAM1": "CPI medical care commodities",  # 2011
+    "CUSR0000SAM2": "CPI medical care services",  # 2011
+    "CUSR0000SAS4": "CPI transportation services",  # 2011
+    # PCE price indexes (PCEPI itself is in MACRO_RELEASES)
+    "PCEPILFE": "PCE less food and energy",  # 2000
+    "DGDSRG3M086SBEA": "PCE goods",  # 2013
+    "DSERRG3M086SBEA": "PCE services",  # 2013
+    "DFXARG3M086SBEA": "PCE food and beverages off-premises",  # 2013
+    "DNRGRG3M086SBEA": "PCE energy goods and services",  # 2013
+    "IA001260M": "PCE services excluding energy and housing (supercore)",  # 2023
+    "IA001176M": "PCE excluding food, energy and housing",  # 2023
+    # PPI final demand, SA (PPIFID itself is in MACRO_RELEASES)
+    "PPIFES": "PPI final demand less foods and energy",  # 2014
+    "PPIFDF": "PPI final demand foods",  # 2014
+    "PPIFDE": "PPI final demand energy",  # 2014
+    "PPIFDG": "PPI final demand goods",  # 2014
+    "PPIFDS": "PPI final demand services",  # 2014
+    "WPSFD49116": "PPI final demand less foods, energy and trade services",  # 2015
+    "WPSFD49511": "PPI personal consumption less foods, energy and trade services",  # 2015
+}

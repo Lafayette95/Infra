@@ -40,3 +40,17 @@ def test_importing_the_daily_cycle_never_loads_dash_or_plotly():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          cwd=INFRA.parent, check=True).stdout.strip().splitlines()[-1]
     assert out == "[]", out
+
+
+def test_nothing_below_the_models_imports_them():
+    """infra/models (the nowcast) sits above the data pipeline: api / processing /
+    pipeline / cycle / storage never import it (only the dashboard may, from above)."""
+    offenders = []
+    for path in INFRA.rglob("*.py"):
+        parts = path.relative_to(INFRA).parts
+        if parts[0] in ("models", "dashboard"):
+            continue
+        bad = {m for m in _imports(path) if m == "infra.models" or m.startswith("infra.models.")}
+        if bad:
+            offenders.append(f"{path.relative_to(INFRA.parent)}: {sorted(bad)}")
+    assert not offenders, "upward imports into infra/models:\n" + "\n".join(offenders)
