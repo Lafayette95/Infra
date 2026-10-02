@@ -229,4 +229,8 @@ def backfill_front_quotes(
     errors |= _parallel(
         jobs, lambda k, j: bbo.fetch_bbo_raw(j[1], j[2], dataset=cfgs[j[0]].dataset, max_cost_usd=max_cost_usd, client=client),
         store_quotes, workers)
+    for r in roots:  # a root with a failed request never reached 0 - report it anyway, marked incomplete
+        out[r]["failed"] = [k.split()[-1] for k in errors if k.startswith(f"quotes {r} ")]
+        if pending[r] > 0 and on_root:
+            on_root(r, out[r])
     return {"roots": out, "errors": errors}
