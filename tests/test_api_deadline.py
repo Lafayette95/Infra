@@ -109,3 +109,11 @@ def test_a_transient_error_that_persists_is_raised_after_the_last_attempt():
     with pytest.raises(BentoServerError):
         api.call_with_deadline(fn, what="t", attempts=3, **FAST)
     assert len(calls) == 3
+
+
+def test_a_stream_that_breaks_midway_is_retried_but_other_bento_errors_are_not():
+    from databento.common.error import BentoError
+    from infra.api.databento_client import is_transient
+    assert is_transient(BentoError("Error streaming response: Response ended prematurely"))
+    assert is_transient(BentoError("Error streaming response: HTTPSConnectionPool(...): Read timed out."))
+    assert not is_transient(BentoError("Symbol not found"))

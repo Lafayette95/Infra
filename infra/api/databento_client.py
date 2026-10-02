@@ -58,14 +58,21 @@ def is_transient(exc: BaseException) -> bool:
     """Worth retrying: a server-side (5xx) error, rate limiting (429), or a dropped
     connection. Never a client error (4xx - e.g. 422 range unavailable) or the cost guard:
     those are deterministic and retrying just repeats them. Added 2026-09-29 after the first
-    scheduled run lost 7 contracts to transient failures that succeeded on a manual retry."""
+    scheduled run lost 7 contracts to transient failures that succeeded on a manual retry.
+
+    A response stream that BREAKS partway ("Read timed out", "Response ended
+    prematurely") reaches us as a plain ``BentoError("Error streaming response: ...")`` -
+    also transient (added 2026-10-02: three bond-futures backfill requests failed this way
+    on their first and only attempt, ZFZ9 quotes, ZFZ5 and ZNH9 statistics)."""
     import aiohttp
     import requests
-    from databento.common.error import BentoClientError, BentoServerError
+    from databento.common.error import BentoClientError, BentoError, BentoServerError
     if isinstance(exc, BentoServerError):
         return True
     if isinstance(exc, BentoClientError):
         return getattr(exc, "http_status", None) == 429
+    if isinstance(exc, BentoError) and str(exc).startswith("Error streaming response"):
+        return True
     return isinstance(exc, (requests.ConnectionError, requests.Timeout, aiohttp.ClientConnectionError,
                             ConnectionError, TimeoutError))
 
