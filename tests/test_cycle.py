@@ -404,7 +404,7 @@ def test_scheduled_windows_are_business_days_with_per_step_overrides():
 
 def test_default_registry_order_and_backup_depends_on_everything():
     names = [s.name for s in DEFAULT_STEPS]
-    assert names[-1] == "backup" and names[0] == "px"
+    assert names[-1] == "backup" and names[0] == "ref"
     assert set(DEFAULT_STEPS[-1].depends_on) == set(names[:-1])
 
 
@@ -627,7 +627,7 @@ def test_carry_is_recognised_but_not_implemented_and_unknown_risk_rejected(stir_
 
 def test_bmk_steps_registered_in_dependency_order():
     names = [s.name for s in DEFAULT_STEPS]
-    assert names == ["px", "raw", "derived", "bmk_risk", "bmk_pnl", "backup"]
+    assert names == ["ref", "px", "raw", "derived", "bmk_risk", "bmk_pnl", "backup"]
 
 
 def test_px_plan_is_free_and_matches_what_backfill_then_fetches(env, monkeypatch):

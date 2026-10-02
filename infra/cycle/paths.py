@@ -36,6 +36,12 @@ class CyclePaths:
     cpi_weights_dir: Path
     cpi_weights_coverage: Path
     dtcc_dir: Path
+    cme_tcf_dir: Path
+    treasury_securities_dir: Path
+    treasury_otr_dir: Path
+    treasury_baskets_dir: Path
+    treasury_prices_dir: Path
+    treasury_prices_coverage: Path
 
     @classmethod
     def default(cls) -> CyclePaths:
@@ -65,6 +71,12 @@ class CyclePaths:
             cpi_weights_dir=config.CPI_WEIGHTS_DIR,
             cpi_weights_coverage=config.CPI_WEIGHTS_COVERAGE_FILE,
             dtcc_dir=config.DTCC_DIR,
+            cme_tcf_dir=config.CME_TCF_DIR,
+            treasury_securities_dir=config.TREASURY_SECURITIES_DIR,
+            treasury_otr_dir=config.TREASURY_OTR_DIR,
+            treasury_baskets_dir=config.TREASURY_BASKETS_DIR,
+            treasury_prices_dir=config.DAILY_TREASURY_PRICES_DIR,
+            treasury_prices_coverage=config.DAILY_TREASURY_PRICES_COVERAGE_FILE,
         )
 
     @classmethod

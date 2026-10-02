@@ -25,6 +25,7 @@ from infra.cycle.paths import CyclePaths  # noqa: E402
 from infra.cycle.network import wait_for_network  # noqa: E402
 from infra.cycle.px import plan_daily_px_data  # noqa: E402
 from infra.cycle.px_bonds import plan_daily_bond_px  # noqa: E402
+from infra.cycle.px_treasuries import plan_daily_treasury_px  # noqa: E402
 from infra.cycle.raw_bulk import plan_daily_bulk  # noqa: E402
 from infra.cycle.raw_dtcc import plan_daily_dtcc  # noqa: E402
 from infra.pipeline.cpi_weights import plan_weights_update  # noqa: E402
@@ -66,7 +67,13 @@ def dry_run(start, end, force_refetch: bool) -> int:
     for country, gaps in plan_daily_bond_px(start, end, force_refetch=force_refetch).items():
         for g0, g1 in gaps:
             print(f"bonds       {country:22s} {g0.date()} -> {g1.date()}  free ({BOND_CURVES[country].source})")
-    print(f"reference   release calendar refresh (FRED release dates, NAR - free); Treasury auctions from "
+    tsy_days = plan_daily_treasury_px(start, end, force_refetch=force_refetch)
+    if tsy_days:
+        print(f"treasuries  FedInvest prices        {len(tsy_days)} day(s), {tsy_days[0].date()} -> "
+              f"{tsy_days[-1].date()}  free")
+    print("ref         Treasury auctions, CME conversion-factor files not yet archived, then rebuild securities / "
+          "OTR map / baskets  free")
+    print(f"reference   release calendar refresh (FRED release dates, NAR - free); Treasury auctions (ref step) from "
           f"{plan_auctions_update().date()} (Fiscal Data - free); up to {TAILS_PER_RUN} archived auction recaps/source")
     for sid, (source, ranges) in plan_daily_releases(start, end, force_refetch=force_refetch).items():
         for g0, g1 in ranges:

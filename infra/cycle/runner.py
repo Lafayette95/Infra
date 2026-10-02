@@ -24,6 +24,7 @@ from infra.cycle.derived import DERIVED_STEP
 from infra.cycle.paths import CyclePaths
 from infra.cycle.px import PX_STEP
 from infra.cycle.raw import RAW_STEP
+from infra.cycle.ref import REF_STEP
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +35,9 @@ def _with_backup_last(steps: tuple[Step, ...]) -> tuple[Step, ...]:
     return (*others, dataclasses.replace(BACKUP_STEP, depends_on=tuple(s.name for s in others)))
 
 
-DEFAULT_STEPS: tuple[Step, ...] = _with_backup_last((PX_STEP, RAW_STEP, DERIVED_STEP, RISK_STEP, PNL_STEP))
+# ref first: px needs the reference built from today's auctions - but runs after it
+# WITHOUT depending on it (a ref failure must never block the settlements)
+DEFAULT_STEPS: tuple[Step, ...] = _with_backup_last((REF_STEP, PX_STEP, RAW_STEP, DERIVED_STEP, RISK_STEP, PNL_STEP))
 
 
 def _today() -> pd.Timestamp:

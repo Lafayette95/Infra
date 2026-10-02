@@ -566,3 +566,13 @@ day's vintage would have been lost.
    retry (the watchdog only notices a missed vintage hours later).
 3. Have sessions work in worktrees and merge to main.
 
+
+---
+
+## Derived: OTR yields and swap closes are not in the daily cycle yet
+
+**Found:** 2026-10-02, wiring the Treasury reference data and prices into the cycle (CLAUDE.md 12, 16, 18).
+**Where:** `infra.pipeline.bond_yields.build_otr_yields`, `infra.pipeline.swap_closes.backfill_swap_closes`; the `derived` step (`infra/cycle/derived.py`, `DERIVED_METRICS`).
+**Status:** open, deferred (user decision 2026-10-02: hold `derived` until the intraday data is scheduled).
+
+**The issue:** both are computed by hand today, so their stores only extend when someone runs them. `Derived/OTRYields` stops at the last `build_otr_yields()` and `Derived/SwapCloses` at 2026-09-30. **Why not now:** the futures-adjusted swap closes need each day's bond-futures `bbo-1m` quotes for the `.v.0` contracts. That's a daily intraday fetch, which belongs with scheduling the intraday cycle (`infra/cycle/intraday.py`, still run by hand). Wiring only half now would leave the adjusted closes silently stale. **To do, together:** (1) schedule the intraday fetch, including bond-futures `bbo-1m` for `SWAP_HEDGES` roots' `.v.0` (a few cents a day); (2) add OTR yields and swap closes (pure + adjusted, recomputing the last `SWAP_CORRECTION_DAYS` for late corrections) to `DERIVED_METRICS`, with presence / sanity / revision checks; (3) the OTR yields' check vs CMT (within a few bp, outside auction-to-issue days).
