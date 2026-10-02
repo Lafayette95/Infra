@@ -111,3 +111,16 @@ def _no_cme_ftp_network(monkeypatch):
     LIST/FETCH); no test may reach it. By default nothing is listed."""
     monkeypatch.setattr("infra.pipeline.futures_baskets.LIST", lambda: [])
     monkeypatch.setattr("infra.pipeline.futures_baskets.PAUSE_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _no_databento_availability_network(monkeypatch):
+    """Ranges ending recently make infra.pipeline.daily.bounded_by_availability ask
+    Databento's metadata API how far a dataset is published (api.available_end) - a live
+    request with the real key, so a test over recent dates silently hit the network, and
+    failed without the key or offline. By default the data counts as available up to now;
+    tests of the availability logic set their own stub."""
+    import pandas as pd
+
+    monkeypatch.setattr("infra.api.databento_client.available_end",
+                        lambda *a, **k: pd.Timestamp.now(tz="UTC").tz_localize(None))
