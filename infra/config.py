@@ -84,6 +84,36 @@ VINTAGES_KEPT = 2
 # data stores keep exactly what the vendor delivered; readers overlay this at read time.
 # infra.storage.adjustment_store, CLAUDE.md section 12.
 ADJUSTMENTS_DIR = DATABASE_ROOT / "_adjustments"
+# Reference data (the daily cycle's ``ref`` step, first): what instruments exist and their
+# fixed characteristics - not prices. CLAUDE.md section 18.
+REFERENCE_ROOT = DATABASE_ROOT / "Reference"
+TREASURY_REF_DIR = REFERENCE_ROOT / "Treasuries"
+# One row per CUSIP: its static characteristics, derived from the raw auctions store
+# (TSY_AUCTIONS_DIR) - no amounts: those grow with reopenings and live, point in time,
+# in the auctions.
+TREASURY_SECURITIES_DIR = TREASURY_REF_DIR / "Securities"
+# Security types kept. TIPS and floating-rate notes are excluded for now (user decision
+# 2026-10-01): FiscalData marks them by flag, not type (inflation_index_security /
+# floating_rate), so they are dropped by those flags.
+TREASURY_TYPES = ("Bill", "Note", "Bond")
+# On/off-the-run map (Reference/Treasuries/OTR): per business day and tenor, rank 0 = the
+# on-the-run issue, 1 = 1-old, ... down to TREASURY_OTR_DEPTH, original issues only (a
+# reopening of the 10y/20y/30y is the same series), not yet matured. Two switch
+# conventions are stored: "issue" (DEFAULT: a new issue counts from its issue date - it
+# has no price before, user decision 2026-10-01) and "auction" (market convention: from
+# the auction, when-issued). COUPONS only for now: a 4/13-week bill is a REOPENING of an
+# older 26/52-week bill, so bills need the auction-level terms (TOFIX.md).
+TREASURY_OTR_DIR = TREASURY_REF_DIR / "OTR"
+TREASURY_OTR_TENORS: dict[str, tuple[str, str]] = {
+    "2y": ("Note", "2-Year"), "3y": ("Note", "3-Year"), "5y": ("Note", "5-Year"), "7y": ("Note", "7-Year"),
+    "10y": ("Note", "10-Year"), "20y": ("Bond", "20-Year"), "30y": ("Bond", "30-Year"),
+}
+TREASURY_OTR_DEPTH = 5
+TREASURY_OTR_CONVENTIONS = ("issue", "auction")
+# Where the Treasury history (OTR map, per-CUSIP prices) starts; FedInvest has 2008-09-02
+# on - earlier days: TOFIX.md.
+TREASURY_PRICES_START = "2016-01-04"
+TREASURY_OTR_DEFAULT_CONVENTION = "issue"
 # Non-price raw inputs (the daily cycle's ``raw`` step, 1b). Macro releases are stored as
 # every published VINTAGE of each source series (a release date per value), not just the
 # latest revised history - see MACRO_RELEASES below and infra/pipeline/releases.py.

@@ -501,6 +501,15 @@ coverage split, since contracts' gaps differ. (b) Fetch the pool concurrently, a
     going forward (`known_from`).
 ---
 
+## Reference: futures contract definitions should move under `Reference`
+
+**Found:** 2026-10-01, creating `~/Database/Reference` (CLAUDE.md 18).
+**Where:** `~/Database/definitions/Futures/contracts.parquet` (`infra.config.FUTURES_CONTRACTS_FILE`, `infra.pipeline.contracts`).
+**Status:** open, deferred (user decision 2026-10-01).
+
+**The issue:** the futures contracts table is reference data (which contracts exist, their expiries), the same kind of data as the new Treasury reference store, but it lives in its own top-level `definitions/` folder. **Why not now:** moving it touches every caller of `FUTURES_CONTRACTS_FILE`, the definition-snapshot coverage file and the daily cycle's paths, for no functional gain yet. **To do:** move the store and coverage under `Reference/Futures`, update config and `CyclePaths`, and migrate the files once.
+---
+
 ## Swap closes: the adjusted method starts ~3 months after the archive
 
 **Found:** 2026-10-01, first two-year backfill of futures-adjusted swap closes (CLAUDE.md 16).
@@ -508,6 +517,16 @@ coverage split, since contracts' gaps differ. (b) Fetch the pool concurrently, a
 **Status:** open, not fixed.
 
 **The issue:** the bond-futures daily settlements only go back to 2024-09-30, the start of the DTCC archive, so the 60-day hedge-ratio regression has a full window only from about December 2024. The adjusted closes therefore miss about 45 early days that the pure ones have. **Fix:** fetch the bond `v.0` contracts' daily statistics for ~3 months before 2024-09-30 (cents; `statistics` is slow per request, see the entry above on slow statistics requests) and rerun `scripts/backfill_swap_closes.py`.
+
+---
+
+## Reference: bills are not in the on/off-the-run map
+
+**Found:** 2026-10-01, building the Treasury OTR map (CLAUDE.md 18).
+**Where:** `infra.config.TREASURY_OTR_TENORS`, `infra.processing.treasury_otr`.
+**Status:** open, not fixed.
+
+**The issue:** the map ranks ORIGINAL issues by their original term, which is right for coupons (a 10y reopening stays the same series) and wrong for bills. Since 2016 the only original-issue bill terms are 26, 17, 52 and 8 weeks; the 4-week and 13-week bills are auctioned as REOPENINGS of older 26/52-week bills (today's 13-week bill is a CUSIP first issued as a 26-week bill). The reference table holds one row per CUSIP (the original issue), so it can't see those auctions. **Why not now:** the consumers so far (futures baskets, coupon benchmarks) only need coupons. **To do:** rank bills from the auction rows themselves (each auction's own ``security_term``, reopenings included) - read through `infra.pipeline.tsy_auctions.read_auctions(nominal_only=False)` - and add them to the map, e.g. as tenors `4w`/`13w`/`26w`/`52w`.
 ---
 
 ## Tails: history harvest unfinished; failure analysis pending
