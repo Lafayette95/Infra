@@ -106,6 +106,20 @@ def _no_fedinvest_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_repo_network(monkeypatch):
+    """Repo rates (NY Fed, OFR, the DTCC GCF workbook) and the NY Fed's securities
+    lending (infra.pipeline.repo / sec_lending hooks); no test may reach them. By default
+    nothing is published; repo tests set their own fakes."""
+    def no_workbook():
+        raise RuntimeError("no GCF workbook in tests")
+
+    monkeypatch.setattr("infra.pipeline.repo.NYFED_FETCH", lambda rate, start, end: [])
+    monkeypatch.setattr("infra.pipeline.repo.OFR_FETCH", lambda mnemonics, start=None: {})
+    monkeypatch.setattr("infra.pipeline.repo.GCF_FETCH", no_workbook)
+    monkeypatch.setattr("infra.pipeline.sec_lending.FETCH", lambda start, end: [])
+
+
+@pytest.fixture(autouse=True)
 def _no_cme_ftp_network(monkeypatch):
     """CME's conversion-factor files come from its FTP (infra.pipeline.futures_baskets
     LIST/FETCH); no test may reach it. By default nothing is listed."""

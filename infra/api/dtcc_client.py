@@ -61,3 +61,31 @@ def fetch_cumulative(kind: str, day, *, sleep=time.sleep) -> bytes | None:
             last = f"{type(exc).__name__}: {exc}"
     raise DtccError(f"{file_name(kind, day)}: {last} after {RETRIES + 1} attempts")
 
+
+
+# The DTCC GCF Repo Index history (a different DTCC host, files.dtcc.com; verified
+# 2026-10-02): one workbook, sheet "Data 2005-2024", daily weighted average rates of GCF
+# repo by collateral (MBS, Treasury, Agency) from 2005-01-03 to 2024-12-31. Frozen: the
+# live CSV it was updated from now answers 404. DTCC's terms: personal, informational use
+# only - never republished.
+GCF_INDEX_URL = "https://files.dtcc.com/download/assets/GCF-Index-Graph.xlsx/c7e6be84ca1f11f090703666cfebbd61"
+
+
+def fetch_gcf_index_workbook(*, sleep=time.sleep) -> bytes:
+    """The GCF Repo Index history workbook (.xlsx bytes)."""
+    request = urllib.request.Request(GCF_INDEX_URL, headers={"User-Agent": "Mozilla/5.0"})
+    last = None
+    for attempt in range(RETRIES + 1):
+        if attempt:
+            sleep(BACKOFF_S * 2 ** (attempt - 1))
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT_S) as resp:
+                content = resp.read()
+            if content[:2] == b"PK":
+                return content
+            last = f"not an xlsx ({len(content)} bytes)"
+        except urllib.error.HTTPError as exc:
+            last = f"HTTP {exc.code}"
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            last = f"{type(exc).__name__}: {exc}"
+    raise DtccError(f"GCF index workbook: {last} after {RETRIES + 1} attempts")

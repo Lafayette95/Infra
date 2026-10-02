@@ -616,3 +616,69 @@ day's vintage would have been lost.
 **Status:** open, unexplained (not a known bug).
 
 **The issue:** 2016-2026 the OTR yields sit -0.3..+0.3bp from CMT on average; 2008-2015 they run -0.9..-1.6bp (30y: 0.0), with about twice the dispersion. Plausible causes, none verified: the Treasury's CMT fitting method changed in December 2021 (quasi-cubic Hermite spline -> monotone convex); FedInvest's END OF DAY pricing may have been sourced differently then; crisis-era volatility. **To check if it matters:** compare a few 2010-2015 days' FedInvest prices with another source, and read the Treasury's notice on the 2021 method change.
+
+---
+
+## Repo: per-CUSIP spread to spline (specialness signal) - held for the curve-building sub-project
+
+**Found:** 2026-10-02, planning the CTD model's financing inputs (CLAUDE.md 19).
+**Where:** not built. Would be a derived store `Derived/SpreadToSpline`, keys `timestamp`, `cusip`.
+**Status:** deliberately deferred (user decision 2026-10-02) until the curve-building sub-project exists, which will own the fitted Treasury curve.
+
+**The idea:** a bond that is special in repo trades RICH (owning it earns cheap financing), so its yield sits below a smooth curve fitted to its neighbours. Spread to spline complements the NY Fed lending fee (`Daily/SecLending`): the fee says "expensive to BORROW" but exists only for bonds the Fed holds and dealers borrowed; the spread says "expensive to OWN" for every bond, every day, and separates "rich because special" (negative spread AND a lending fee) from "rich for other reasons" (negative spread, no fee). It is also, more or less, what picks the cheapest-to-deliver. **Inputs already exist:** FedInvest END OF DAY prices and yields per CUSIP from 2008 (`Daily/TreasuryPrices`), the reference table and the OTR map. **Design choices to make there:** which bonds enter the fit (usually off-the-runs only: exclude on-the-run, 1-old and < ~1y to maturity, since those carry the very effects being measured), the curve family (Svensson as the Fed's own GSW curve, or a smoothing spline on yields), a robust loss so one bad print can't bend it. **Kept forward-compatible now:** every per-CUSIP store is keyed `(timestamp, cusip)` (prices, lending), the lending signal is a pure function (`infra.processing.sec_lending.excess_fee`), so a later per-CUSIP specialness view only joins stores - nothing built now has to change.
+
+---
+
+## Financing: SR1 settlements only from 2025-07, so no financing rate before then
+
+**Found:** 2026-10-02, building financing layer 1 (CLAUDE.md 20).
+**Where:** `Daily/Futures` (root SR1); `infra.pipeline.financing.sr1_settlements`.
+**Status:** open - waiting for the user's go-ahead (paid, Databento).
+
+**The issue:** layer 1 fits SOFR's path to SR1 settlements, and the daily cycle has only stored them since 2025-07-01, so a financing rate (and so any CTD / total-return history) before then can't be computed, and the ex-post check rests on 15 months. **Fix:** backfill SR1's 12 nearest contracts per day (the cycle's universe rule) from its launch, 2018-05-07, to 2025-06-30. Priced 2026-10-02: definition snapshots $0.02 (87 missing), settlements ~$0.11 (about 21,600 contract-days at the rate measured on the 2026-10-02 bond backfill) - ~$0.15 in all. Then rerun the layer-1 validation over 2018-2026 (it includes 2019's repo spike and 2020's emergency cuts).
+
+---
+
+## Financing: v1 simplifications to revisit
+
+**Found:** 2026-10-02 (CLAUDE.md 20). **Where:** `infra/analytics/sofr_curve.py`, `infra/analytics/specialness.py`, `infra.config.FINANCING_MODELS`.
+**Status:** open - documented v1 choices, each a candidate for a v2 layer.
+
+* **Year-end turn imposed from history** (median of the last 3). Near a year-end the December SR1 contract, with few unfixed days left, implies the turn itself (2025: ~+19bp implied vs +16 actual vs 3bp imposed); fit the turn as a parameter once December is mostly fixed.
+* **Month- and quarter-end spikes are smeared into the levels.** Measured harmless for financing averages (no premium on ordinary month-ends; quarter-ends ~0.5bp in the DVP-SOFR spread), but visible in fit residuals near month-ends.
+* **Specialness forecasts slightly over-react** (realised moves ~0.85-0.9 per unit forecast): a shrinkage factor fitted out of sample would fix the slope.
+* **Not borrowed = 0 specialness** assumes the Fed held the bond; holdings are only reported for bonds that were lent. SOMA holdings by CUSIP (the NY Fed's SOMA API) would remove the assumption.
+* **The successor's issue date is expected from the tenor's median cycle until announced** (about a week before the auction); Treasury's tentative auction schedule (section 17) would give it a quarter ahead.
+* **No delivery-squeeze effect:** the cheapest-to-deliver's specialness into delivery (open interest against available supply) is not modelled; flag it in the CTD model rather than forecast it.
+* **SIFMA calendar approximated** by federal holidays + Good Friday (SIFMA sometimes recommends only an early close on Good Friday).
+
+---
+
+## Repo: the DTCC GCF index is a biased proxy for general collateral before 2018
+
+**Found:** 2026-10-02 (CLAUDE.md 19).
+**Where:** `Daily/Repo`, series `DTCC_GCF_TSY` (2005-2024).
+**Status:** open - matters for financing before SOFR (total-return series and CTD history 2008-2018).
+
+**The issue:** the only free Treasury GC series before 2018-04 is DTCC's GCF index, and GCF (an inter-dealer, blind-brokered market) trades above the broad market by a REGIME-DEPENDENT amount: over 2018-2024 it sat above SOFR by 0.3bp (2021-22, abundant reserves) to 7.7bp (2018, scarce reserves), and spikes 200bp+ at year-ends. A constant splice shift would be wrong in some years by several bp. **Options:** (a) use GCF as is before 2018 and accept a few bp of bias (simplest; small next to most carry calculations); (b) model the GCF-SOFR basis on reserves (Fed H.4.1, on FRED) and apply it backwards; (c) find another pre-2018 series - the NY Fed published indicative SOFR history from 2014-08 in a one-off release (not in its API), worth checking.
+
+---
+
+## Repo: the minimum lending fee schedule is inferred, not sourced
+
+**Found:** 2026-10-02 (CLAUDE.md 19).
+**Where:** `infra.config.SEC_LENDING_MIN_FEE`.
+**Status:** open, low risk.
+
+**The issue:** the program's minimum fee (the floor under every lending fee) was inferred from the data: each regime's level is its most common daily minimum, each switch the first day at the new level. It fits the data (96.9% of days have their lowest fee exactly at the floor, none below), and `sec_lending_sane` warns if a future fee ever goes below it (a schedule change), but the dates are not yet matched to the NY Fed's own announcements. **To do:** find the NY Fed's notices for each change (1999 start 150bp; 2001-09-18; 2003-06-26; 2004-07-01; 2007-08-21; 2008-10-08; 2008-12-18; 2009-04-08) and cite them in the config.
+
+---
+
+## Repo: 3 lent Treasuries predate the auctions store
+
+**Found:** 2026-10-02 (CLAUDE.md 19).
+**Where:** `infra.cycle.px_repo._check_lending_sane`; CUSIPs 912810CE6, 912810CC0, 912810CG1 (8.75% 2008, 8.375% 2008, 9.125% 2009 bonds, issued 1978-79).
+**Status:** open, harmless - they only fail the "known Treasury" clause over a history run before 2002.
+
+**The issue:** the Treasury reference data starts with the auctions store's first auction (1979-10-31); these bonds were issued earlier, so they're unknown to it. **Options:** leave it (they matured in 2008-09 and never appear in a daily window); or add a tiny static list of pre-1979 securities if the reference table ever needs to reach back that far.
+

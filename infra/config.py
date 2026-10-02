@@ -94,6 +94,80 @@ SWAP_CLOSES_DIR = DERIVED_ROOT / "SwapCloses"
 # (BOND_YIELD_SOURCES) through infra.pipeline.bond_yields.read_bond_yields.
 OTR_YIELDS_DIR = DERIVED_ROOT / "OTRYields"
 BOND_YIELD_SOURCES = ("cmt", "otr")
+
+# Repo rates and the NY Fed's Treasury securities lending (CLAUDE.md 19), both fetched by
+# the px step. Free sources, verified 2026-10-02 (source facts in each infra/api client).
+REPO_DIR = DAILY_ROOT / "Repo"
+REPO_COVERAGE_FILE = DAILY_COVERAGE_DIR / "repo.parquet"
+NYFED_REPO_RATES = ("SOFR", "TGCR", "BGCR")
+NYFED_REPO_START = "2018-04-02"  # all three began that day
+# OFR's U.S. Repo Markets release: per service, the term buckets (and "T" = Treasury
+# collateral, all terms) stored. DVP (FICC cleared bilateral) has no collateral split but
+# is almost all Treasuries, so its term buckets are the best free TERM general-collateral
+# proxy. TRIV1 = tri-party excluding the Fed's own trades (its reverse repo facility).
+# LE30 ends 2025-08-12, replaced by B27 + B830.
+OFR_REPO_BUCKETS: dict[str, tuple[str, ...]] = {
+    "DVP": ("OO", "B27", "B830", "LE30", "G30", "TOT"),
+    "GCF": ("OO", "B27", "B830", "LE30", "G30", "TOT", "T"),
+    "TRI": ("OO", "B27", "B830", "LE30", "G30", "TOT", "T"),
+    "TRIV1": ("OO", "B27", "B830", "LE30", "G30", "TOT", "T"),
+}
+OFR_REPO_START = "2014-08-22"  # tri-party's first day; DVP and GCF start 2018-05-07
+# The finals of this series mark how far OFR's final data reaches (all finals move
+# together); days after it are re-requested every run until final.
+OFR_FINAL_REFERENCE = ("DVP", "OO")
+# The DTCC GCF Repo Index history - frozen, 2005-01-03..2024-12-31, fetched once.
+DTCC_GCF_SPAN = ("2005-01-03", "2024-12-31")
+# A day is claimed covered once this many days old (NY Fed rates can be revised the
+# afternoon after; lending extensions post the morning after).
+REPO_SETTLE_DAYS = 2
+SEC_LENDING_DIR = DAILY_ROOT / "SecLending"
+SEC_LENDING_COVERAGE_FILE = DAILY_COVERAGE_DIR / "sec_lending.parquet"
+SEC_LENDING_START = "1999-01-04"  # first operation in the API: 1999-04-29
+# The program's MINIMUM FEE (percent), (effective from, fee): bids can't go below it, so
+# only the fee ABOVE it signals specialness (infra.processing.sec_lending.excess_fee).
+# Inferred 2026-10-02 from the data itself - each regime's floor is the most common daily
+# minimum, the switch the first day at the new level - and checked: 96.9% of days have
+# their lowest fee exactly at this floor, none below it. Not yet matched to the NY Fed's
+# announcements (TOFIX.md). The pre-2008 changes follow the FOMC (2001-09-18 after 9/11,
+# 2003-06-26 the day after the cut to 1%, 2004-07-01 the day after the first hike) and the
+# crisis (2007-08-21, 2008-10-08, 2008-12-18).
+SEC_LENDING_MIN_FEE: tuple[tuple[str, float], ...] = (
+    ("1999-04-29", 1.50), ("2001-09-18", 1.00), ("2003-06-26", 0.75), ("2004-07-01", 1.00),
+    ("2007-08-21", 0.50), ("2008-10-08", 0.10), ("2008-12-18", 0.01), ("2009-04-08", 0.05),
+)
+
+# Financing models (CLAUDE.md 20): the rate a levered client pays to fund a Treasury,
+# built in three swappable LAYERS (infra.analytics.financing): ``base`` (general-collateral
+# path), ``basis`` (the client's spread over it) and ``specialness`` (per CUSIP, subtracted).
+# A model is a named combination, so two can run side by side. v1 ASSUMPTIONS (user
+# decisions 2026-10-02):
+#   * ROLLING OVERNIGHT funding, not term repo locked to the end date - a term premium
+#     then shows up in the futures' net basis, which is wanted;
+#   * base = SOFR's path implied by SR1 futures, flat between FOMC decisions, plus the
+#     year-end turn (median of the last ``year_end_turn_years`` year-ends);
+#   * basis = SOFR's 75th percentile minus its median (hedge funds fund in DVP above the
+#     dealers' median), a rolling ``basis_window``-fixing median held CONSTANT over the
+#     term; its own small year-end premium (~3bp) is left out;
+#   * specialness = per-CUSIP lifecycle profile (tenor x on/off-the-run rank x phase of the
+#     issuance cycle) plus today's observed deviation (NY Fed lending fee above the
+#     minimum) decaying with an estimated half-life, both estimated from the 5 years
+#     before the as-of year (infra.analytics.specialness). Not modelled: squeezes of the
+#     cheapest-to-deliver into futures delivery.
+@dataclass(frozen=True)
+class FinancingSpec:
+    base: str  # infra.analytics.financing.BASE_MODELS
+    basis: str  # BASIS_MODELS
+    specialness: str  # SPECIALNESS_MODELS
+    basis_window: int = 20  # published fixings in the basis's rolling median
+    year_end_turn_years: int = 3  # recent year-ends the imposed turn is estimated from
+    description: str = ""
+
+
+FINANCING_MODELS: dict[str, FinancingSpec] = {
+    "v1": FinancingSpec("sofr_futures", "sofr_p75", "lifecycle_decay",
+                        description="rolling O/N: SR1-implied SOFR + SOFR p75 basis - lifecycle/decay specialness"),
+}
 BMK_ROOT = DATABASE_ROOT / "Bmk"
 # Full dated snapshots of the database, one per cycle run day (``_vintages/YYYY-MM-DD``) -
 # the baseline each run's "no revisions" check compares against.
@@ -717,15 +791,77 @@ class FOMCMeeting:
     start_date: str  # "YYYY-MM-DD", first day of the (usually 2-day) meeting
     end_date: str  # "YYYY-MM-DD", decision/announcement day
     has_projections: bool  # Summary of Economic Projections released alongside (informational)
+    scheduled: bool = True  # False for an unscheduled (emergency) meeting - never anticipated in advance
 
 
-# Verified against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,
-# 2026-09-28. The Fed publishes next year's calendar around July of the prior year -
-# re-check that page (and re-verify existing dates) when extending this list.
-# 2025-08-22 was a "notation vote only" (no live 2-day meeting / rate decision in the
-# normal sense) and is deliberately excluded - treating it as a regular meeting would
-# corrupt the August 2025 month-to-meeting mapping.
+# Verified against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (2021-2027)
+# and .../fomchistorical{2018,2019,2020}.htm, 2026-10-02 (2025-2026 first verified
+# 2026-09-28). ``end_date`` is the ANNOUNCEMENT day: a rate change takes effect the next
+# day. The Fed publishes next year's calendar around July of the prior year - re-check
+# that page (and re-verify existing dates) when extending this list.
+# Excluded on purpose: 2025-08-22 was a "notation vote only" (no live meeting / rate
+# decision) - treating it as a regular meeting would corrupt the August 2025
+# month-to-meeting mapping; likewise conference calls without a rate decision. Included
+# as unscheduled: 2020-03-03 (the "March 2" call, cut announced March 3) and Sunday
+# 2020-03-15 (which replaced the scheduled March 17-18 meeting).
 FOMC_MEETINGS: tuple[FOMCMeeting, ...] = (
+    FOMCMeeting("2018-01-30", "2018-01-31", False),
+    FOMCMeeting("2018-03-20", "2018-03-21", True),
+    FOMCMeeting("2018-05-01", "2018-05-02", False),
+    FOMCMeeting("2018-06-12", "2018-06-13", True),
+    FOMCMeeting("2018-07-31", "2018-08-01", False),
+    FOMCMeeting("2018-09-25", "2018-09-26", True),
+    FOMCMeeting("2018-11-07", "2018-11-08", False),
+    FOMCMeeting("2018-12-18", "2018-12-19", True),
+    FOMCMeeting("2019-01-29", "2019-01-30", False),
+    FOMCMeeting("2019-03-19", "2019-03-20", True),
+    FOMCMeeting("2019-04-30", "2019-05-01", False),
+    FOMCMeeting("2019-06-18", "2019-06-19", True),
+    FOMCMeeting("2019-07-30", "2019-07-31", False),
+    FOMCMeeting("2019-09-17", "2019-09-18", True),
+    FOMCMeeting("2019-10-29", "2019-10-30", False),
+    FOMCMeeting("2019-12-10", "2019-12-11", True),
+    FOMCMeeting("2020-01-28", "2020-01-29", False),
+    FOMCMeeting("2020-03-03", "2020-03-03", False, scheduled=False),
+    FOMCMeeting("2020-03-15", "2020-03-15", False, scheduled=False),
+    FOMCMeeting("2020-04-28", "2020-04-29", False),
+    FOMCMeeting("2020-06-09", "2020-06-10", True),
+    FOMCMeeting("2020-07-28", "2020-07-29", False),
+    FOMCMeeting("2020-09-15", "2020-09-16", True),
+    FOMCMeeting("2020-11-04", "2020-11-05", False),
+    FOMCMeeting("2020-12-15", "2020-12-16", True),
+    FOMCMeeting("2021-01-26", "2021-01-27", False),
+    FOMCMeeting("2021-03-16", "2021-03-17", True),
+    FOMCMeeting("2021-04-27", "2021-04-28", False),
+    FOMCMeeting("2021-06-15", "2021-06-16", True),
+    FOMCMeeting("2021-07-27", "2021-07-28", False),
+    FOMCMeeting("2021-09-21", "2021-09-22", True),
+    FOMCMeeting("2021-11-02", "2021-11-03", False),
+    FOMCMeeting("2021-12-14", "2021-12-15", True),
+    FOMCMeeting("2022-01-25", "2022-01-26", False),
+    FOMCMeeting("2022-03-15", "2022-03-16", True),
+    FOMCMeeting("2022-05-03", "2022-05-04", False),
+    FOMCMeeting("2022-06-14", "2022-06-15", True),
+    FOMCMeeting("2022-07-26", "2022-07-27", False),
+    FOMCMeeting("2022-09-20", "2022-09-21", True),
+    FOMCMeeting("2022-11-01", "2022-11-02", False),
+    FOMCMeeting("2022-12-13", "2022-12-14", True),
+    FOMCMeeting("2023-01-31", "2023-02-01", False),
+    FOMCMeeting("2023-03-21", "2023-03-22", True),
+    FOMCMeeting("2023-05-02", "2023-05-03", False),
+    FOMCMeeting("2023-06-13", "2023-06-14", True),
+    FOMCMeeting("2023-07-25", "2023-07-26", False),
+    FOMCMeeting("2023-09-19", "2023-09-20", True),
+    FOMCMeeting("2023-10-31", "2023-11-01", False),
+    FOMCMeeting("2023-12-12", "2023-12-13", True),
+    FOMCMeeting("2024-01-30", "2024-01-31", False),
+    FOMCMeeting("2024-03-19", "2024-03-20", True),
+    FOMCMeeting("2024-04-30", "2024-05-01", False),
+    FOMCMeeting("2024-06-11", "2024-06-12", True),
+    FOMCMeeting("2024-07-30", "2024-07-31", False),
+    FOMCMeeting("2024-09-17", "2024-09-18", True),
+    FOMCMeeting("2024-11-06", "2024-11-07", False),
+    FOMCMeeting("2024-12-17", "2024-12-18", True),
     FOMCMeeting("2025-01-28", "2025-01-29", False),
     FOMCMeeting("2025-03-18", "2025-03-19", True),
     FOMCMeeting("2025-05-06", "2025-05-07", False),
@@ -742,6 +878,14 @@ FOMC_MEETINGS: tuple[FOMCMeeting, ...] = (
     FOMCMeeting("2026-09-15", "2026-09-16", True),
     FOMCMeeting("2026-10-27", "2026-10-28", False),
     FOMCMeeting("2026-12-08", "2026-12-09", True),
+    FOMCMeeting("2027-01-26", "2027-01-27", False),
+    FOMCMeeting("2027-03-16", "2027-03-17", True),
+    FOMCMeeting("2027-04-27", "2027-04-28", False),
+    FOMCMeeting("2027-06-08", "2027-06-09", True),
+    FOMCMeeting("2027-07-27", "2027-07-28", False),
+    FOMCMeeting("2027-09-14", "2027-09-15", True),
+    FOMCMeeting("2027-10-26", "2027-10-27", False),
+    FOMCMeeting("2027-12-07", "2027-12-08", True),
 )
 
 # ------------------------------------------------------------------ macro releases

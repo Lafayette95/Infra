@@ -25,6 +25,7 @@ from infra.cycle.paths import CyclePaths  # noqa: E402
 from infra.cycle.network import wait_for_network  # noqa: E402
 from infra.cycle.px import plan_daily_px_data  # noqa: E402
 from infra.cycle.px_bonds import plan_daily_bond_px  # noqa: E402
+from infra.cycle.px_repo import plan_daily_repo_px  # noqa: E402
 from infra.cycle.px_treasuries import plan_daily_treasury_px  # noqa: E402
 from infra.cycle.raw_bulk import plan_daily_bulk  # noqa: E402
 from infra.cycle.raw_dtcc import plan_daily_dtcc  # noqa: E402
@@ -71,6 +72,11 @@ def dry_run(start, end, force_refetch: bool) -> int:
     if tsy_days:
         print(f"treasuries  FedInvest prices        {len(tsy_days)} day(s), {tsy_days[0].date()} -> "
               f"{tsy_days[-1].date()}  free")
+    repo_plan, lending_ranges = plan_daily_repo_px(start, end, force_refetch=force_refetch)
+    for key, (g0, g1) in repo_plan.items():
+        print(f"repo        {key:22s} {g0.date()} -> {g1.date()}  free")
+    for g0, g1 in lending_ranges:
+        print(f"lending     NY Fed securities lending {g0.date()} -> {g1.date()}  free")
     print("ref         Treasury auctions, CME conversion-factor files not yet archived, then rebuild securities / "
           "OTR map / baskets  free")
     print(f"reference   release calendar refresh (FRED release dates, NAR - free); Treasury auctions (ref step) from "

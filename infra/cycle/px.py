@@ -30,6 +30,7 @@ from infra.cycle.checks import revision_check
 from infra.cycle.core import Check, Severity, Step, StepContext
 from infra.cycle.paths import CyclePaths
 from infra.cycle.px_bonds import BOND_CHECKS, backfill_daily_bond_px
+from infra.cycle.px_repo import REPO_CHECKS, backfill_daily_repo_px
 from infra.cycle.px_treasuries import TREASURY_CHECKS, backfill_daily_treasury_px
 from infra.cycle.universe import UniverseMember, daily_universe, rank_on
 from infra.pipeline import daily as dl
@@ -141,13 +142,14 @@ def backfill_daily_px_data(
     bond_sources=None,
     treasuries: bool = True,
     treasury_fetch=None,
+    repo: bool = True,
     **futures_options,
 ) -> dict:
     """Every daily px input over ``[start, end]`` (inclusive): futures settlements
     (``backfill_daily_futures_px``, whose keys stay at the top level - downstream steps
     read them there), cash-bond par yields under ``"bonds"`` (``bonds=False`` skips
-    them) and Treasury prices per CUSIP under ``"treasuries"`` (``treasuries=False`` skips
-    them). ``futures_options``: ``refresh_contracts``, ``specs``, ``max_cost_usd``,
+    them), Treasury prices per CUSIP under ``"treasuries"`` (``treasuries=False`` skips
+    them) and repo rates + securities lending under ``"repo"`` (``repo=False`` skips them). ``futures_options``: ``refresh_contracts``, ``specs``, ``max_cost_usd``,
     ``client``, ``workers``."""
     out = backfill_daily_futures_px(start, end, paths=paths, force_refetch=force_refetch,
                                      fetch_missing=fetch_missing, run_day=run_day, **futures_options)
@@ -158,6 +160,9 @@ def backfill_daily_px_data(
     if treasuries:
         out["treasuries"] = backfill_daily_treasury_px(start, end, paths=paths, force_refetch=force_refetch,
                                                        fetch_missing=fetch_missing, fetch=treasury_fetch)
+    if repo:
+        out["repo"] = backfill_daily_repo_px(start, end, paths=paths, force_refetch=force_refetch,
+                                             fetch_missing=fetch_missing)
     return out
 
 
@@ -376,6 +381,7 @@ PX_CHECKS = (
     Check("px_outliers_pending", _check_outliers_pending, severity=Severity.WARN),
     *BOND_CHECKS,
     *TREASURY_CHECKS,
+    *REPO_CHECKS,
 )
 
 
@@ -386,7 +392,7 @@ def _run(ctx: StepContext) -> dict:
         run_day=ctx.run_day,
         **{k: opts[k] for k in ("fetch_missing", "refresh_contracts", "specs", "max_cost_usd", "client",
                                 "workers", "bonds", "bond_curves", "bond_sources", "treasuries",
-                                "treasury_fetch") if k in opts},
+                                "treasury_fetch", "repo") if k in opts},
     )
 
 
