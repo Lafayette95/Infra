@@ -170,6 +170,15 @@ reference data (deliverable basket, coupons, maturities, conversion factors) and
 prices/yields, none of which this project sources. STIR futures don't have the problem
 (price = 100 - rate, so DV01 = point value x 0.01 exactly).
 
+**Update 2026-10-02 - the inputs now exist** (CLAUDE.md 18): deliverable baskets with
+per-contract conversion factors (`Reference/Treasuries/FuturesBaskets`: CME's own files
+from 2023-12-09, computed and cross-checked before that), coupons and maturities
+(`Reference/Treasuries/Securities`), and daily END OF DAY prices / yields per CUSIP
+(`Daily/TreasuryPrices`, from 2008). Repo for carry: SOFR (FRED). So the model is now a
+build, not a data problem: forward price of each deliverable to delivery, implied repo,
+cheapest-to-deliver, forward DV01 / conversion factor, with the switch option via a
+parallel yield bump across the basket.
+
 **Current state:** every bond-futures risk row is stored with `value = NaN` and the reason
 in `method`; the warn-level `dv01_coverage` check lists the affected roots every run.
 Bond futures pnl in CURRENCY is unaffected and real (settlement change x point value);
@@ -567,3 +576,43 @@ day's vintage would have been lost.
 **Status:** open, by design for now.
 
 **The issue:** on those two days FedInvest's page lists every security (362 and 369 rows) with the ~1pm BUY/SELL prices but END OF DAY all zero, so the pipeline (correctly) doesn't store them as complete days and leaves them uncovered. Every other business day 2008-09-02..2026-09-30 is stored or a holiday. **Why not fixed:** substituting the 1pm price would silently mix a different time of day into a 3:30pm-consistent series. **Options:** (a) leave the gaps (current); (b) store those days with `price_eod` NaN and `price_buy`/`price_sell` filled, marked, and cover them; (c) fill END OF DAY from the 1pm price plus the day's CMT move. The cycle's 30-day gap lookback never re-asks them; only a manual backfill over 2014 would.
+
+---
+
+## Swap closes: the futures-adjusted method's hedge gaps (short end, EUR, GBP)
+
+**Found:** 2026-10-01, building the futures-adjusted swap closes (CLAUDE.md 16).
+**Where:** `infra.config.SWAP_HEDGES`, `infra.pipeline.swap_hedge`.
+**Status:** open, not fixed.
+
+**The issue:** (1) 1-3y USD swaps are hedged with ZT, a 2y Treasury future - a reasonable proxy over a <=90-minute move, but the SR3 strip is the right hedge for the short end (it IS the SOFR curve). (2) EUR and GBP have no adjusted closes at all: Bund futures (Eurex, data from 2025-03) and gilt futures (ICE, disabled in the cycle) have no stored intraday quotes. **Why not now:** both need new `bbo-1m` backfills (SR3; Eurex/ICE), not yet priced, and the intraday fetch isn't scheduled. **To do:** price the SR3 `bbo-1m` backfill for the strip covering 1-3y; hedge 1-3y with the strip's forward-weighted move (no hedge ratio needed: price = 100 - rate); for EUR/GBP, decide whether Eurex/ICE quotes are worth adding.
+
+---
+
+## Treasury: no prices for a new issue between its auction and issue date
+
+**Found:** 2026-10-01, building the OTR yield benchmark (CLAUDE.md 18).
+**Where:** `Daily/TreasuryPrices`, `infra.pipeline.bond_yields` (the OTR series uses the "issue" convention).
+**Status:** open, no free source.
+
+**The issue:** a new issue trades when-issued from its auction but has no FedInvest price until its issue date, so the OTR yield series switches bond at the issue (CMT switches at the auction; the two differ by up to ~10bp at the 2y when the front is steeply inverted - 2023). **Checked 2026-10-02:** FINRA TRACE disseminates exactly those trades (on-the-run coupons from the day after the auction, end of day, from 2024-03-25), but free access is a web grid for personal non-commercial use and its terms forbid automated copying; automated access is the paid end-of-day file ($750/month). User decision: stay put. **Free option not yet built:** on auction-to-issue days, CMT's yield at the tenor is essentially the when-issued yield (CMT switches at the auction, bid side ~3:30pm) - nearly exact for the 2y, close for the others - so an "auction"-convention OTR yield series could use CMT for those days (yields only, no prices).
+
+---
+
+## Treasury: prices reach the daily cycle a day late
+
+**Found:** 2026-10-02, the first scheduled run with Treasury prices (CLAUDE.md 12, 18).
+**Where:** `infra.cycle.px_treasuries`; schedule `infra.cycle.flows.SCHEDULE_CRON` (06:00 New York).
+**Status:** open, acceptable for now.
+
+**The issue:** FedInvest posts day D's END OF DAY between 06:00 and ~10:00 New York on D+1 (absent at 06:00, posted by 09:57 on 2026-10-02), so the 06:00 run leaves D pending and stores it a run later - Treasury prices lag the futures settlements by a day. Nothing consumes them same-day yet. **Options:** (a) leave it; (b) a small extra Treasury-only fetch around 11:00 New York (a separate schedule calling `backfill_daily_treasury_px`); (c) pin the posting time down over a few days first.
+
+---
+
+## Treasury: OTR yields run ~1-1.5bp below CMT in 2008-2015
+
+**Found:** 2026-10-02, backfilling Treasury prices to 2008 (CLAUDE.md 18).
+**Where:** `Derived/OTRYields` vs FRED's `DGS*` (CMT).
+**Status:** open, unexplained (not a known bug).
+
+**The issue:** 2016-2026 the OTR yields sit -0.3..+0.3bp from CMT on average; 2008-2015 they run -0.9..-1.6bp (30y: 0.0), with about twice the dispersion. Plausible causes, none verified: the Treasury's CMT fitting method changed in December 2021 (quasi-cubic Hermite spline -> monotone convex); FedInvest's END OF DAY pricing may have been sourced differently then; crisis-era volatility. **To check if it matters:** compare a few 2010-2015 days' FedInvest prices with another source, and read the Treasury's notice on the 2021 method change.
