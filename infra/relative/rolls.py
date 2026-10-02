@@ -98,3 +98,42 @@ def volume_mapping(
         picked = tickers[order[: max_rank + 1]]
         out[i, : len(picked)] = picked
     return pd.DataFrame(out, index=dates, columns=columns, dtype=object)
+
+
+def contract_runs(mapping: pd.DataFrame, rank: int) -> list[tuple[str, pd.Timestamp, pd.Timestamp]]:
+    """``[(ticker, first_day, last_day + 1d)]`` - each UNBROKEN run of days ``rank`` sits
+    in one contract. Unlike a per-ticker min..max window this never merges two runs of
+    the same raw symbol: CME reuses symbols every decade (``ZNH5`` = March 2015 AND
+    March 2025), so a min..max across both would span ten years."""
+    col = mapping[rank]
+    runs, current, first, prev = [], None, None, None
+    for day, ticker in col.items():
+        if ticker != current or (prev is not None and day - prev > pd.Timedelta(days=7)):
+            if current is not None:
+                runs.append((current, first, prev + pd.Timedelta(days=1)))
+            current, first = ticker, day
+        prev = day
+    if current is not None:
+        runs.append((current, first, prev + pd.Timedelta(days=1)))
+    return [(t, a, b) for t, a, b in runs if t is not None]
+
+
+def roll_switches(mapping: pd.DataFrame, rank: int = 0) -> list[tuple[pd.Timestamp, str, str]]:
+    """``[(day, from_ticker, to_ticker)]`` - every day ``rank`` changes contract."""
+    col = mapping[rank].dropna()
+    prev = col.shift(1)
+    changed = col[(col != prev) & prev.notna()]
+    return [(day, prev[day], ticker) for day, ticker in changed.items()]
+
+
+def around_switch_windows(
+    mapping: pd.DataFrame, rank: int = 0, *, pad: pd.Timedelta = pd.Timedelta(days=7),
+) -> list[tuple[str, pd.Timestamp, pd.Timestamp]]:
+    """The OTHER contract's window around each switch of ``rank``: the incoming one for
+    ``pad`` before the switch day, the outgoing one for ``pad`` after it - so both legs
+    of a roll are on hand around it, and only there."""
+    out = []
+    for day, old, new in roll_switches(mapping, rank):
+        out.append((new, day - pad, day))
+        out.append((old, day, day + pad))
+    return out
