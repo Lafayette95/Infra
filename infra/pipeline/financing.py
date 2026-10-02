@@ -30,6 +30,7 @@ _ONE_DAY = pd.Timedelta(days=1)
 SR1_ROOT = "SR1"
 FIXING_HISTORY_DAYS = 3 * 366 + 60  # enough for the year-end turn's recent year-ends
 SETTLEMENT_LOOKBACK_DAYS = 10
+IMPLIED_RATE_BOUNDS_PCT = (-1.0, 25.0)
 
 
 def change_dates(as_of, meetings=FOMC_MEETINGS) -> list[pd.Timestamp]:
@@ -59,6 +60,10 @@ def sr1_settlements(as_of, *, futures_root: Path = DAILY_FUTURES_DIR,
     px = read_daily_from_disk(list(contracts["ticker"].astype(str)), as_of - pd.Timedelta(days=SETTLEMENT_LOOKBACK_DAYS),
                               as_of + _ONE_DAY, root=futures_root)
     px = px.dropna(subset=["settlement_price"])
+    # a contract's first listing day can carry a settlement of 0.0 (SR1H0 on 2019-08-16):
+    # keep only prices implying a plausible rate
+    implied = 100.0 - px["settlement_price"].astype(float)
+    px = px[implied.between(*IMPLIED_RATE_BOUNDS_PCT)]
     if px.empty:
         return pd.DataFrame(columns=["month", "price", "ticker", "settled_on"])
     day = px["timestamp"].max()
