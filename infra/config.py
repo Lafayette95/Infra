@@ -164,6 +164,16 @@ class FuturesRoot:
     category: str  # "STIR" | "Bonds"
     expiry_months: tuple[int, ...] = (3, 6, 9, 12)  # cycle ranked by relative tickers
     roll_offset_days: int = 0  # calendar roll this many days before expiry
+    # ``.v.N`` ranks the N+1+this nearest contracts by volume; None = VOLUME_EXTRA_CANDIDATES.
+    # Bond futures: 1, i.e. v.0 picks between the front two only - volume never leads
+    # further out, and every candidate is a contract whose volume must be fetched.
+    volume_extra_candidates: int | None = None
+    # ``.v.N`` averages this many prior trading days' volume; None = VOLUME_LOOKBACK_DAYS.
+    # Bond futures: 2 - they roll once a quarter, sharply and one way, so a 5-day average
+    # only crosses ~4 sessions after the daily volume does (ZN Nov 2025: volume crossed on
+    # 11-25, 3 days before first notice; the 5-day average only on 12-01, when the front
+    # traded 35k against 1.16m), leaving v.0 in a dying contract.
+    volume_lookback_days: int | None = None
     # Keep only outrights whose raw symbol matches (drops non-trading twins, serial months).
     ticker_regex: str | None = None
     # Currency value of a 1.00 move in the quoted price, per contract (daily cycle pnl /
@@ -173,6 +183,8 @@ class FuturesRoot:
 
 
 _CME, _EUREX, _ICE = "GLBX.MDP3", "XEUR.EOBI", "IFLL.IMPACT"
+_FRONT_TWO = 1  # volume_extra_candidates for bond futures: v.0 is one of the front two
+_BOND_LOOKBACK = 2  # volume_lookback_days for bond futures (see FuturesRoot)
 # Point values verified 2026-09-28 against the exchanges' own contract specs:
 #   SR3 $2,500 x IMM index ($25/bp) - cmegroup.com .../three-month-sofr.contractSpecs.html
 #   SR1, ZQ $4,167 x index ($41.67/bp) - .../one-month-sofr and .../30-day-federal-fund specs
@@ -198,19 +210,41 @@ FUTURES_ROOTS: dict[str, FuturesRoot] = {
         FuturesRoot("ZQ", _CME, "ZQ.FUT", "30-Day Fed Funds", "STIR",
                    expiry_months=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12), point_value=4167.0, currency="USD"),
         # ---- Bonds: US Treasuries (CBOT, via GLBX.MDP3)
-        FuturesRoot("ZT", _CME, "ZT.FUT", "US 2Y Note", "Bonds", point_value=2000.0, currency="USD"),
-        FuturesRoot("ZF", _CME, "ZF.FUT", "US 5Y Note", "Bonds", point_value=1000.0, currency="USD"),
-        FuturesRoot("ZN", _CME, "ZN.FUT", "US 10Y Note", "Bonds", point_value=1000.0, currency="USD"),
-        FuturesRoot("TN", _CME, "TN.FUT", "US Ultra 10Y Note", "Bonds", point_value=1000.0, currency="USD"),
-        FuturesRoot("ZB", _CME, "ZB.FUT", "US Classic Bond", "Bonds", point_value=1000.0, currency="USD"),
-        FuturesRoot("UB", _CME, "UB.FUT", "US Ultra Bond", "Bonds", point_value=1000.0, currency="USD"),
+        FuturesRoot("ZT", _CME, "ZT.FUT", "US 2Y Note", "Bonds", point_value=2000.0, currency="USD",
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
+        FuturesRoot("ZF", _CME, "ZF.FUT", "US 5Y Note", "Bonds", point_value=1000.0, currency="USD",
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
+        FuturesRoot("ZN", _CME, "ZN.FUT", "US 10Y Note", "Bonds", point_value=1000.0, currency="USD",
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
+        FuturesRoot("TN", _CME, "TN.FUT", "US Ultra 10Y Note", "Bonds", point_value=1000.0, currency="USD",
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
+        FuturesRoot("ZB", _CME, "ZB.FUT", "US Classic Bond", "Bonds", point_value=1000.0, currency="USD",
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
+        FuturesRoot("UB", _CME, "UB.FUT", "US Ultra Bond", "Bonds", point_value=1000.0, currency="USD",
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
         # ---- Bonds: Eurex (XEUR.EOBI only has data from 2025-03-10)
-        FuturesRoot("FGBL", _EUREX, "FGBL.FUT", "Euro-Bund", "Bonds", point_value=1000.0, currency="EUR"),
-        FuturesRoot("FGBM", _EUREX, "FGBM.FUT", "Euro-Bobl", "Bonds", point_value=1000.0, currency="EUR"),
-        FuturesRoot("FGBS", _EUREX, "FGBS.FUT", "Euro-Schatz", "Bonds", point_value=1000.0, currency="EUR"),
-        FuturesRoot("FBTP", _EUREX, "FBTP.FUT", "Euro-BTP", "Bonds", point_value=1000.0, currency="EUR"),
+        FuturesRoot("FGBL", _EUREX, "FGBL.FUT", "Euro-Bund", "Bonds", point_value=1000.0, currency="EUR",
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
+        FuturesRoot("FGBM", _EUREX, "FGBM.FUT", "Euro-Bobl", "Bonds", point_value=1000.0, currency="EUR",
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
+        FuturesRoot("FGBS", _EUREX, "FGBS.FUT", "Euro-Schatz", "Bonds", point_value=1000.0, currency="EUR",
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
+        FuturesRoot("FBTP", _EUREX, "FBTP.FUT", "Euro-BTP", "Bonds", point_value=1000.0, currency="EUR",
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
         # ---- Bonds: ICE Futures Europe (data from 2018-12-23)
-        FuturesRoot("R", _ICE, "R.FUT", "UK Long Gilt", "Bonds", ticker_regex=_ICE_QUARTERLY),
+        FuturesRoot("R", _ICE, "R.FUT", "UK Long Gilt", "Bonds", ticker_regex=_ICE_QUARTERLY,
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
     )
 }
 

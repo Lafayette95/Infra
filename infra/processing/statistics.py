@@ -1,4 +1,5 @@
-"""Turn raw Databento `statistics` rows into daily settlement price / open interest.
+"""Turn raw Databento `statistics` rows into daily settlement price / open interest
+(and, for futures, cleared volume).
 
 Long format in (one row per stat_type update), one row per (trading day, contract) out.
 Futures functions key by ``ticker``; options functions key by
@@ -16,9 +17,14 @@ from infra.trading_calendar import trading_day
 
 _SETTLEMENT = int(dbn.StatType.SETTLEMENT_PRICE)
 _OPEN_INTEREST = int(dbn.StatType.OPEN_INTEREST)
+# The exchange's official daily volume per contract: blocks, EFPs and the outright legs of
+# spread trades included, so it runs above summed outright 1-minute bars (1.2-4x on ZQ,
+# 2026-09). ``ts_ref`` is the trading day it measures; published ~02:00 UTC the next day,
+# final ~14:00 UTC (verified 2026-10-01). The input to ``.v.N`` ranking (CLAUDE.md 5).
+_CLEARED_VOLUME = int(dbn.StatType.CLEARED_VOLUME)
 _EPOCH = pd.Timestamp("1970-01-01")
 
-DAILY_COLUMNS = ["timestamp", "ticker", "settlement_price", "open_interest"]
+DAILY_COLUMNS = ["timestamp", "ticker", "settlement_price", "open_interest", "volume"]
 DAILY_KEYS = ["timestamp", "ticker"]
 
 DAILY_OPTIONS_COLUMNS = [
@@ -49,23 +55,27 @@ def resolve_trading_day(raw: pd.DataFrame, dataset: str) -> pd.Series:
     return ts_ref.fillna(fallback)
 
 
-def _pivot_last_per_group(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
-    """Settlement price and open interest, each the LAST update within its group (in
-    ``ts_recv`` order) - the final value wins over any preliminary one. A group with
-    only one of the two still produces a row (the other column is NaN/NA)."""
+def _pivot_last_per_group(df: pd.DataFrame, group_cols: list[str], *, volume: bool = False) -> pd.DataFrame:
+    """Settlement price and open interest (and cleared volume if ``volume``), each the
+    LAST update within its group (in ``ts_recv`` order) - the final value wins over any
+    preliminary one. A group with only some of them still produces a row (the others
+    NaN/NA)."""
     settle = df[df["stat_type"] == _SETTLEMENT].groupby(group_cols)["price"].last().rename("settlement_price")
     oi = df[df["stat_type"] == _OPEN_INTEREST].groupby(group_cols)["quantity"].last().rename("open_interest")
-    return pd.concat([settle, oi], axis=1, sort=True)
+    parts = [settle, oi]
+    if volume:
+        parts.append(df[df["stat_type"] == _CLEARED_VOLUME].groupby(group_cols)["quantity"].last().rename("volume"))
+    return pd.concat(parts, axis=1, sort=True)
 
 
-def _prepare(raw: pd.DataFrame, dataset: str) -> pd.DataFrame:
-    """Shared prep: reset index, keep only settlement/OI rows, tag each with its
+def _prepare(raw: pd.DataFrame, dataset: str, stat_types=(_SETTLEMENT, _OPEN_INTEREST)) -> pd.DataFrame:
+    """Shared prep: reset index, keep only ``stat_types`` rows, tag each with its
     trading day, sort chronologically. Returns an empty (0-row, unfiltered-shape) frame
     when there's nothing to keep - callers check ``.empty`` themselves."""
     if raw.empty:
         return raw
     df = raw.reset_index() if raw.index.name == "ts_recv" else raw.copy()
-    df = df[df["stat_type"].isin([_SETTLEMENT, _OPEN_INTEREST])]
+    df = df[df["stat_type"].isin(list(stat_types))]
     if df.empty:
         return df
     df["_day"] = resolve_trading_day(df, dataset)
@@ -74,12 +84,13 @@ def _prepare(raw: pd.DataFrame, dataset: str) -> pd.DataFrame:
 
 def clean_daily_statistics(raw: pd.DataFrame, ticker: str, dataset: str) -> pd.DataFrame:
     """Raw ``statistics`` rows for ONE absolute FUTURES contract -> one row per trading day."""
-    df = _prepare(raw, dataset)
+    df = _prepare(raw, dataset, (_SETTLEMENT, _OPEN_INTEREST, _CLEARED_VOLUME))
     if df.empty:
         return empty_daily()
-    out = _pivot_last_per_group(df, ["_day"]).reset_index(names="timestamp")
+    out = _pivot_last_per_group(df, ["_day"], volume=True).reset_index(names="timestamp")
     out["ticker"] = ticker
     out["open_interest"] = out["open_interest"].astype("Int64")
+    out["volume"] = out["volume"].astype("Int64")
     return out[DAILY_COLUMNS].sort_values(DAILY_KEYS).reset_index(drop=True)
 
 
@@ -108,6 +119,7 @@ def empty_daily() -> pd.DataFrame:
         "ticker": pd.Series(dtype="str"),
         "settlement_price": pd.Series(dtype="float64"),
         "open_interest": pd.Series(dtype="Int64"),
+        "volume": pd.Series(dtype="Int64"),
     })[DAILY_COLUMNS]
 
 
@@ -132,10 +144,11 @@ def encode_daily(df: pd.DataFrame) -> pd.DataFrame:
     (e.g. an OI update with no settlement yet), and ``scale_prices`` (CLAUDE.md 6b)
     assumes no NaN, so the ×10000 scaling is done directly here instead.
     """
-    out = df[DAILY_COLUMNS].copy()
+    out = df.reindex(columns=DAILY_COLUMNS)  # a frame without ``volume`` encodes it as null
     out["timestamp"] = pd.to_datetime(out["timestamp"]).astype("datetime64[ms]")
     out["settlement_price"] = (out["settlement_price"] * 10_000).round().astype("Int32")
     out["open_interest"] = out["open_interest"].astype("Int32")
+    out["volume"] = out["volume"].astype("Int32")
     return out
 
 

@@ -56,6 +56,19 @@ def build_filter(
     return expr
 
 
+def _dataset(root: Path) -> ds.Dataset:
+    """The store as one dataset whose schema is the UNION of every file's - pyarrow
+    otherwise takes the first file's schema, so a column added to a store later (e.g.
+    the daily statistics' ``volume``) would silently vanish from reads whenever an
+    older file happened to come first. Missing columns read as null."""
+    dataset = ds.dataset(root, format="parquet", partitioning="hive")
+    unified = pa.unify_schemas([dataset.schema, *(f.physical_schema for f in dataset.get_fragments())],
+                               promote_options="permissive")
+    if unified.equals(dataset.schema):
+        return dataset
+    return ds.dataset(root, format="parquet", partitioning="hive", schema=unified)
+
+
 def read_partitioned(
     root: Path,
     *,
@@ -71,7 +84,7 @@ def read_partitioned(
     """
     if not has_data(root):
         return None
-    dataset = ds.dataset(root, format="parquet", partitioning="hive")
+    dataset = _dataset(root)
     table = dataset.to_table(
         columns=columns,
         filter=build_filter(start=start, end=end, equals_in=equals_in),

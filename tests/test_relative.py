@@ -10,7 +10,7 @@ from infra.pipeline import contracts as contracts_pipe
 from infra.pipeline import relative as rel
 from infra.processing.definitions import normalize_futures_definitions
 from infra.relative.rolls import calendar_mapping, day_index, volume_mapping
-from infra.relative.series import apply_mapping, daily_volume
+from infra.relative.series import apply_mapping, volume_pivot
 from infra.relative.symbology import RelativeSpec, parse_relative
 
 D = pd.Timestamp
@@ -88,8 +88,6 @@ def test_apply_mapping_selects_contract_per_day():
     m = calendar_mapping(_contracts(), day_index("2025-03-17", "2025-03-21"), max_rank=0)
     out = apply_mapping(bars, m, 0, "SR3.c.0", dataset="GLBX.MDP3")
     assert out["contract"].tolist() == ["SRZ4", "SRH5"] and set(out["ticker"]) == {"SR3.c.0"}
-    # 10:00 UTC is 05:00 CT (CDT) - well before CME's 16:00 CT close, so still "today"
-    assert daily_volume(bars, dataset="GLBX.MDP3").loc[D("2025-03-17"), "SRZ4"] == 1
 
 
 def test_apply_mapping_uses_trading_day_not_utc_day():
@@ -103,8 +101,29 @@ def test_apply_mapping_uses_trading_day_not_utc_day():
     m = calendar_mapping(_contracts(), day_index("2025-03-17", "2025-03-21"), max_rank=0)
     out = apply_mapping(bars, m, 0, "SR3.c.0", dataset="GLBX.MDP3")
     assert out["contract"].tolist() == ["SRH5"]  # kept: this bar's trading day is Mar 19
-    vol = daily_volume(bars, dataset="GLBX.MDP3")
-    assert D("2025-03-18") not in vol.index and vol.loc[D("2025-03-19"), "SRH5"] == 7
+
+
+def test_volume_pivot_uses_the_daily_rows_own_trading_day_and_skips_unpublished():
+    daily = pd.DataFrame({"timestamp": pd.to_datetime(["2025-03-17", "2025-03-17", "2025-03-18"]),
+                          "ticker": pd.Categorical(["SRZ4", "SRH5", "SRZ4"]),
+                          "settlement_price": 96.0, "open_interest": pd.array([1, 2, 3], dtype="Int64"),
+                          "volume": pd.array([100, 7, None], dtype="Int64")})
+    vol = volume_pivot(daily)
+    assert vol.loc[D("2025-03-17"), "SRZ4"] == 100 and vol.loc[D("2025-03-17"), "SRH5"] == 7
+    assert D("2025-03-18") not in vol.index  # no volume published yet: not a zero
+
+
+def test_bond_roots_rank_volume_among_the_front_two_only():
+    from infra.config import FUTURES_ROOTS
+    contracts = pd.DataFrame({"root": "ZN", "ticker": ["ZNZ5", "ZNH6", "ZNM6", "ZNU6"], "instrument_id": [1, 2, 3, 4],
+                              "expiry": pd.to_datetime(["2025-12-19", "2026-03-20", "2026-06-18", "2026-09-21"]),
+                              "activation": pd.NaT})
+    windows, _ = rel.needed_contract_windows([RelativeSpec("ZN", "v", 0)], FUTURES_ROOTS["ZN"], contracts,
+                                             "2025-11-01", "2025-11-10")
+    assert set(windows) == {"ZNZ5", "ZNH6"}
+    windows, _ = rel.needed_contract_windows([RelativeSpec("SR3", "v", 0)], FUTURES_ROOTS["SR3"], _contracts(),
+                                             "2025-03-10", "2025-03-11")
+    assert len(windows) == 3  # STIR keeps the default pool (front + 3; only 3 quarterlies exist here)
 
 
 # ------------------------------------------------------------------ end to end
@@ -208,3 +227,53 @@ def test_volume_mapping_lookback_smooths_a_single_thin_day():
     assert "SRH5" in naive[0].tolist() and naive[0].tolist().count("SRZ4") < len(dates)
     # the 5-day rolling average never lets that single thin day flip the front contract
     assert smoothed[0].tolist() == ["SRZ4"] * len(dates)
+
+
+def test_volume_ranked_series_fetches_bars_only_for_the_picked_contract(tmp_path, monkeypatch):
+    """v.0 ranks on daily cleared volume (daily statistics for the candidates), then
+    fetches 1-minute bars ONLY for the contract it picks - never for the whole pool."""
+    paths = dict(contracts_file=tmp_path / "contracts.parquet", defs_coverage_file=tmp_path / "defs_cov.parquet",
+                 coverage_file=tmp_path / "cov.parquet", root_dir=tmp_path / "Futures",
+                 daily_root=tmp_path / "Daily", daily_coverage_file=tmp_path / "daily_cov.parquet")
+    stat_calls, bar_calls = [], []
+
+    def fake_defs(dataset, parents, day, **_):
+        c = _contracts()
+        return pd.DataFrame({"raw_symbol": c["ticker"], "instrument_class": "F", "instrument_id": c["instrument_id"],
+                             "expiration": pd.to_datetime(c["expiry"], utc=True), "activation": pd.NaT})
+
+    def fake_stats(dataset, symbol, start, end, **_):
+        stat_calls.append(symbol)
+        days = list(pd.date_range(start, end, freq="D", inclusive="left"))
+        return pd.DataFrame({"ts_recv": pd.to_datetime([d + pd.Timedelta(hours=20) for d in days], utc=True),
+                             "ts_ref": pd.to_datetime(days, utc=True), "stat_type": 6, "price": None,
+                             "quantity": 500 if symbol == "SRH5" else 50})
+
+    def fake_bars(dataset, symbol, start, end, **_):
+        bar_calls.append(symbol)
+        idx = pd.DatetimeIndex([start.tz_localize("UTC") + pd.Timedelta(days=d, hours=10)
+                                for d in range((end - start).days)], name="ts_event")
+        base = np.full(len(idx), 95.0)
+        return pd.DataFrame({"open": base, "high": base, "low": base, "close": base,
+                             "volume": 1, "symbol": symbol, "instrument_id": 1}, index=idx)
+
+    monkeypatch.setattr(api, "fetch_definitions", fake_defs)
+    monkeypatch.setattr(api, "fetch_statistics", fake_stats)
+    monkeypatch.setattr(api, "fetch_futures_ohlcv", fake_bars)
+    monkeypatch.setattr(contracts_pipe, "snapshot_days", lambda s, e, step=30: [D("2025-03-01")])
+
+    df = rel.load_relative_futures([RelativeSpec("SR3", "v", 0)], "2025-03-12", "2025-03-15", **paths)
+    assert set(df["contract"]) == {"SRH5"}
+    assert set(bar_calls) == {"SRH5"}  # the out-traded front never costs a bar
+    assert {"SRZ4", "SRH5"} <= set(stat_calls)  # the pool's volume came from daily statistics
+    n = (len(stat_calls), len(bar_calls))
+    rel.load_relative_futures([RelativeSpec("SR3", "v", 0)], "2025-03-12", "2025-03-15", **paths)
+    assert (len(stat_calls), len(bar_calls)) == n  # identical -> no spend
+    plan_paths = {k: v for k, v in paths.items() if k != "root_dir"}
+    assert rel.plan_relative_update([RelativeSpec("SR3", "v", 0)], "2025-03-12", "2025-03-15", **plan_paths) == {}
+
+
+def test_bond_roots_roll_on_a_two_day_volume_average():
+    from infra.config import FUTURES_ROOTS
+    from infra.pipeline.relative import volume_lookback_days
+    assert volume_lookback_days(FUTURES_ROOTS["ZN"]) == 2 and volume_lookback_days(FUTURES_ROOTS["SR3"]) == 5

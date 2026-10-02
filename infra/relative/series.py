@@ -1,4 +1,4 @@
-"""Turn stored absolute bars into a relative series using a roll mapping."""
+"""Turn stored absolute rows into a relative series using a roll mapping."""
 from __future__ import annotations
 
 import pandas as pd
@@ -6,16 +6,16 @@ import pandas as pd
 from infra.trading_calendar import trading_day
 
 
-def daily_volume(bars: pd.DataFrame, dataset: str) -> pd.DataFrame:
-    """TRADING-day x ticker volume pivot from absolute bars (input to ``volume_mapping``).
-
-    ``dataset`` selects the exchange's trading-day boundary (infra.trading_calendar,
-    CLAUDE.md section 6e) - required, not defaulted, so a caller can never silently
-    fall back to the wrong exchange's session hours.
-    """
-    day = trading_day(pd.DatetimeIndex(bars["timestamp"]), dataset)
-    flat = bars.assign(ticker=bars["ticker"].astype(str), day=day)
-    return flat.groupby(["day", "ticker"])["volume"].sum().unstack("ticker")
+def volume_pivot(daily_rows: pd.DataFrame) -> pd.DataFrame:
+    """TRADING-day x ticker volume pivot (input to ``volume_mapping``) from daily
+    statistics rows, whose ``timestamp`` already IS the trading day (CLAUDE.md 8) and
+    whose ``volume`` is the exchange's cleared volume. Days without a published volume
+    are left out, so ``volume_mapping`` carries the last known ones forward."""
+    if daily_rows.empty or "volume" not in daily_rows:
+        return pd.DataFrame(dtype="float64")
+    rows = daily_rows.dropna(subset=["volume"])
+    flat = rows.assign(ticker=rows["ticker"].astype(str), volume=rows["volume"].astype("float64"))
+    return flat.pivot_table(index="timestamp", columns="ticker", values="volume", aggfunc="last")
 
 
 def apply_mapping(bars: pd.DataFrame, mapping: pd.DataFrame, rank: int, label: str, dataset: str) -> pd.DataFrame:

@@ -434,6 +434,7 @@ def _settle(paths, rows) -> None:
     df = pd.DataFrame(rows, columns=["ticker", "timestamp", "settlement_price"])
     df["timestamp"] = pd.to_datetime(df["timestamp"]).astype("datetime64[ms]")
     df["open_interest"] = pd.array([None] * len(df), dtype="Int64")
+    df["volume"] = pd.array([None] * len(df), dtype="Int64")
     parquet_store.write_partitioned(stats.encode_daily(df[stats.DAILY_COLUMNS]),
                                     paths.daily_futures_dir, stats.DAILY_KEYS)
 

@@ -49,7 +49,8 @@ def read_daily_from_disk(
     )
     if raw is None or raw.empty:
         return stats.decode_daily(stats.empty_daily())
-    df = stats.decode_daily(raw[stats.DAILY_COLUMNS]).sort_values(stats.DAILY_KEYS)
+    # reindex: a store written before a column existed (``volume``) reads it as all-null
+    df = stats.decode_daily(raw.reindex(columns=stats.DAILY_COLUMNS)).sort_values(stats.DAILY_KEYS)
     if adjusted:
         # resolved at CALL time (not bound as a default), so tests can point the module
         # default at a temp dir (tests/conftest.py) and never read the real log

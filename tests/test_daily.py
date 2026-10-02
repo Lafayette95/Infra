@@ -283,3 +283,17 @@ def test_a_fetch_that_sees_only_the_next_days_OI_never_wipes_the_previous_settle
     df = dl.read_daily_from_disk(["SR3Z6"], D("2026-09-21"), D("2026-09-26"), root=root).set_index("timestamp")
     assert df.loc[D("2026-09-23"), "settlement_price"] == pytest.approx(95.23)  # NOT wiped
     assert df.loc[D("2026-09-23"), "open_interest"] == 1024                      # and the OI filled in
+
+
+def test_cleared_volume_is_the_final_update_on_its_own_trading_day():
+    """CME publishes day D's cleared volume ~02:00 UTC on D+1, then again (final) ~14:00
+    UTC - both with ts_ref = D (verified on ZQV6, 2026-09). The later one wins, on D."""
+    from infra.processing.statistics import clean_daily_statistics
+    raw = pd.DataFrame({
+        "ts_recv": pd.to_datetime(["2026-09-02 02:24", "2026-09-02 14:07"], utc=True),
+        "ts_ref": pd.to_datetime(["2026-09-01", "2026-09-01"], utc=True),
+        "stat_type": [6, 6], "price": [None, None], "quantity": [132000, 132953],
+    })
+    out = clean_daily_statistics(raw, "ZQV6", "GLBX.MDP3")
+    assert out["timestamp"].tolist() == [pd.Timestamp("2026-09-01")]
+    assert out["volume"].tolist() == [132953] and out["settlement_price"].isna().all()

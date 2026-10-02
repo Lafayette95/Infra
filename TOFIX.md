@@ -456,6 +456,33 @@ after §14. §15 refers to the macro-release section by number, so both referenc
 now read 14a. They weren't changed in place because that text is another session's
 uncommitted work (user decision 2026-10-01: commit theirs first, then fix the references
 in a separate commit).
+
+---
+
+## Daily statistics requests are slow over long ranges, and the relative loaders fetch one contract at a time
+
+**Found:** 2026-10-01, back-filling cleared volume (CLAUDE.md 5, 8) into the daily store.
+**Where:** `infra.pipeline.daily.fetch_and_store_daily`, called per contract by `infra.pipeline.relative.volume_ranked_mapping` and `load_relative_daily`.
+**Status:** open, not fixed.
+
+**The issue:** a single-contract `statistics` request over ~15 months took ~230s of
+Databento server time (SR3Z6, 2026-10-01; storing it took 0.1s). The cost is tiny
+(~$0.000003 per contract-day); the wait is the problem. A `.v.N` series fetches its
+candidate pool's statistics one contract at a time, so its FIRST request over a long
+window can take minutes per contract. Later requests are instant: Rule 2.1 caches every
+fetched range.
+
+**Why not fixed now:** it only bites the first load of a long, never-fetched window, and
+the daily cycle's own px step already fetches concurrently (`infra.cycle.px`). The one-off
+back-fill worked around it with one request per batch of up to 40 contracts, split by
+symbol afterwards (session scratch script, not kept).
+
+**Options:** (a) batch the pool's contracts into one `get_range` (symbols list) and split
+by `symbol`, as the back-fill did. That's the most effective, but needs a per-symbol
+coverage split, since contracts' gaps differ. (b) Fetch the pool concurrently, as
+`infra.cycle.px` does (network-only `fetch_daily_raw` in threads, then sequential
+`store_daily_raw`). (c) Both.
+
 ---
 
 ## Calendar / auctions: remaining gaps
