@@ -73,6 +73,10 @@ BMK_ROOT = DATABASE_ROOT / "Bmk"
 # Full dated snapshots of the database, one per cycle run day (``_vintages/YYYY-MM-DD``) -
 # the baseline each run's "no revisions" check compares against.
 VINTAGE_ROOT = DATABASE_ROOT / "_vintages"
+# Only the newest vintages are kept (by count, not calendar days - the cycle skips
+# weekends): today's and the one before, which is all the revision check ever compares
+# against. Older ones are deleted after each successful backup (user decision 2026-09-30).
+VINTAGES_KEPT = 2
 # Sidecar log of every value the pipeline TOUCHED (a bad print NA'd or rolled, ...): the
 # data stores keep exactly what the vendor delivered; readers overlay this at read time.
 # infra.storage.adjustment_store, CLAUDE.md section 12.

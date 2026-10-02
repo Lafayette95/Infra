@@ -2,21 +2,48 @@
 cycle (``_vintages/YYYY-MM-DD``, dated by the day the run happened, not by the data it
 covers). The next run's "no revisions" checks diff against the latest one before it.
 
-A plain copy is deliberate: the database is small (~2MB at introduction) and a copy can
-never be mutated by a later write. Hard-linking would be cheaper on disk but relies on
-every writer replacing files atomically rather than editing them in place - true today,
-not something to silently depend on.
+Each file is a copy-on-write CLONE (APFS ``clonefile``), not a byte copy: instant and
+free on disk until the live file changes (the database grew from ~3 MB to ~26 MB with the
+raw inflation stores on 2026-09-30, most of it unchanged day to day). Chosen over hard
+links: a clone is a genuinely separate file, so it stays correct even if some writer ever
+edits a file in place, where a hard-linked vintage would silently change with it (every
+writer here replaces files atomically today - a clone doesn't need to rely on that). Off
+APFS (another OS or volume) it falls back to a plain copy.
+
+Only the newest ``VINTAGES_KEPT`` vintages are kept (``prune``).
 """
 from __future__ import annotations
 
+import ctypes
+import os
 import shutil
 from pathlib import Path
 
 import pandas as pd
 
+from infra.config import VINTAGES_KEPT
 from infra.cycle.paths import CyclePaths
 
 _FORMAT = "%Y-%m-%d"
+
+
+def _load_clonefile():
+    try:
+        fn = ctypes.CDLL(None, use_errno=True).clonefile  # macOS libSystem
+    except (OSError, AttributeError):
+        return None
+    fn.argtypes, fn.restype = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32], ctypes.c_int
+    return fn
+
+
+_CLONEFILE = _load_clonefile()
+
+
+def clone_file(src, dst, *, follow_symlinks: bool = True):
+    """``shutil.copy2`` drop-in: an APFS clone (metadata included) when possible, else a copy."""
+    if _CLONEFILE is not None and _CLONEFILE(os.fsencode(src), os.fsencode(dst), 0) == 0:
+        return dst
+    return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
 
 
 def vintage_dir(run_day: pd.Timestamp, paths: CyclePaths) -> Path:
@@ -42,7 +69,7 @@ def snapshot(run_day: pd.Timestamp, paths: CyclePaths) -> Path:
         skip |= {n for n in names if (here / n) == vint}
         return skip
 
-    shutil.copytree(root, partial, ignore=ignore)
+    shutil.copytree(root, partial, ignore=ignore, copy_function=clone_file)
     if dst.exists():
         shutil.rmtree(dst)
     partial.rename(dst)
@@ -59,6 +86,18 @@ def list_vintages(paths: CyclePaths) -> list[pd.Timestamp]:
         except ValueError:
             continue  # .partial leftovers, stray files
     return sorted(days)
+
+
+def prune(paths: CyclePaths, keep: int = VINTAGES_KEPT, *, protect=None) -> list[pd.Timestamp]:
+    """Delete all but the newest ``keep`` vintages - never ``protect`` (the one a run just
+    wrote, which a backfill dated in the past would otherwise delete at once); returns the
+    days deleted."""
+    days = list_vintages(paths)
+    dropped = [d for d in (days[:-keep] if keep > 0 else days)
+               if protect is None or d != pd.Timestamp(protect).normalize()]
+    for day in dropped:
+        shutil.rmtree(vintage_dir(day, paths))
+    return dropped
 
 
 def latest_before(run_day: pd.Timestamp, paths: CyclePaths) -> Path | None:

@@ -761,3 +761,19 @@ def test_every_difference_is_a_revision_classified_by_kind(tmp_path):
     diffs = compare_to_vintage(tmp_path / "new", tmp_path / "old", keys, D("2026-09-01"), D("2026-09-30"))
     got = {(t, c): k for t, c, k in zip(diffs["ticker"], diffs["column"], diffs["kind"])}
     assert got == {("A", "oi"): "filled", ("A", "px"): "changed", ("B", "oi"): "retracted"}
+
+
+def test_only_the_newest_vintages_are_kept_and_each_is_an_independent_copy(tmp_path):
+    paths = CyclePaths.under(tmp_path)
+    live = paths.database_root / "store" / "x.parquet"
+    live.parent.mkdir(parents=True)
+    for i, day in enumerate(["2025-01-08", "2025-01-09", "2025-01-10"]):
+        live.write_text(f"v{i}")  # edited IN PLACE: a clone (unlike a hard link) must not follow
+        vintage.snapshot(D(day), paths)
+        vintage.prune(paths, protect=day)
+    assert vintage.list_vintages(paths) == [D("2025-01-09"), D("2025-01-10")]
+    assert (vintage.vintage_dir(D("2025-01-09"), paths) / "store" / "x.parquet").read_text() == "v1"
+    # a backfill dated before the kept ones keeps its own vintage (on top of the newest two)
+    vintage.snapshot(D("2025-01-02"), paths)
+    assert vintage.prune(paths, protect="2025-01-02") == []
+    assert vintage.list_vintages(paths) == [D("2025-01-02"), D("2025-01-09"), D("2025-01-10")]

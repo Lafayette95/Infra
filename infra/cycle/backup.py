@@ -12,7 +12,9 @@ from infra.cycle.paths import CyclePaths
 
 def backup_daily_vintage(run_day, *, paths: CyclePaths | None = None) -> dict:
     paths = paths or CyclePaths.default()
-    return {"vintage": vintage.snapshot(pd.Timestamp(run_day).normalize(), paths)}
+    run_day = pd.Timestamp(run_day).normalize()
+    dst = vintage.snapshot(run_day, paths)
+    return {"vintage": dst, "pruned": vintage.prune(paths, protect=run_day)}
 
 
 def _files(root) -> set:
