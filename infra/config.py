@@ -14,14 +14,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # ---------------------------------------------------------------- database paths
 DATABASE_ROOT = Path(os.environ.get("INFRA_DATABASE_ROOT", "~/Database")).expanduser()
+# Reference data: what instruments exist and their fixed characteristics, not prices
+# (CLAUDE.md 18) - the futures contracts table, option-chain definitions, the Treasury
+# securities / on-the-run map / delivery baskets.
+REFERENCE_ROOT = DATABASE_ROOT / "Reference"
 OHLCV_ROOT = DATABASE_ROOT / "ohlcv-1m"
 FUTURES_DIR = OHLCV_ROOT / "Futures"
 OPTIONS_DIR = OHLCV_ROOT / "Options"
 COVERAGE_DIR = OHLCV_ROOT / "_coverage"  # which (key, date range) were already queried
-DEFINITIONS_DIR = DATABASE_ROOT / "definitions"  # cached `definition` schema pulls
+# Cached option-chain `definition` snapshots, one file per parent and day (Rule 2.3).
+DEFINITIONS_DIR = REFERENCE_ROOT / "Options" / "Definitions"
 
 FUTURES_COVERAGE_FILE = COVERAGE_DIR / "futures.parquet"
-FUTURES_DEFS_COVERAGE_FILE = COVERAGE_DIR / "futures_definitions.parquet"
+# Which futures `definition` snapshots were already pulled (they build the contracts table).
+FUTURES_DEFS_COVERAGE_FILE = REFERENCE_ROOT / "_coverage" / "futures_definitions.parquet"
 OPTIONS_COVERAGE_FILE = COVERAGE_DIR / "options.parquet"
 
 # Top-of-book QUOTES sampled every minute (Databento ``bbo-1m``) - a sibling of ohlcv-1m,
@@ -42,7 +48,7 @@ BBO_1S_FUTURES_DIR = BBO_1S_ROOT / "Futures"
 BBO_1S_FUTURES_COVERAGE_FILE = BBO_1S_ROOT / "_coverage" / "futures.parquet"
 
 # Master table of absolute futures contracts (root, ticker, expiry, ...).
-FUTURES_CONTRACTS_FILE = DEFINITIONS_DIR / "Futures" / "contracts.parquet"
+FUTURES_CONTRACTS_FILE = REFERENCE_ROOT / "Futures" / "contracts.parquet"
 
 # Daily settlement price / open interest - deliberately a SEPARATE root from ohlcv-1m
 # (different cadence, different pipeline shape; see infra/pipeline/daily.py and
@@ -100,9 +106,6 @@ VINTAGES_KEPT = 2
 # data stores keep exactly what the vendor delivered; readers overlay this at read time.
 # infra.storage.adjustment_store, CLAUDE.md section 12.
 ADJUSTMENTS_DIR = DATABASE_ROOT / "_adjustments"
-# Reference data (the daily cycle's ``ref`` step, first): what instruments exist and their
-# fixed characteristics - not prices. CLAUDE.md section 18.
-REFERENCE_ROOT = DATABASE_ROOT / "Reference"
 TREASURY_REF_DIR = REFERENCE_ROOT / "Treasuries"
 # One row per CUSIP: its static characteristics, derived from the raw auctions store
 # (TSY_AUCTIONS_DIR) - no amounts: those grow with reopenings and live, point in time,

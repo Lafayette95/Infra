@@ -486,16 +486,6 @@ coverage split, since contracts' gaps differ. (b) Fetch the pool concurrently, a
     going forward (`known_from`).
 ---
 
-## Reference: futures contract definitions should move under `Reference`
-
-**Found:** 2026-10-01, creating `~/Database/Reference` (CLAUDE.md 18).
-**Where:** `~/Database/definitions/Futures/contracts.parquet` (`infra.config.FUTURES_CONTRACTS_FILE`, `infra.pipeline.contracts`).
-**Status:** open, deferred (user decision 2026-10-01).
-
-**The issue:** the futures contracts table is reference data (which contracts exist, their expiries), the same kind of data as the new Treasury reference store, but it lives in its own top-level `definitions/` folder. **Why not now:** moving it touches every caller of `FUTURES_CONTRACTS_FILE`, the definition-snapshot coverage file and the daily cycle's paths, for no functional gain yet. **To do:** move the store and coverage under `Reference/Futures`, update config and `CyclePaths`, and migrate the files once.
-
----
-
 ## Bonds: FedInvest price history before 2016 not fetched yet
 
 **Found:** 2026-10-01, planning per-CUSIP Treasury prices (CLAUDE.md 18).
