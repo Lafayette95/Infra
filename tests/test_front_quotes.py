@@ -70,3 +70,12 @@ def test_long_quote_windows_are_cut_into_weekly_pieces():
                              pd.Timedelta(days=7))
     assert pieces == [(D("2015-01-01"), D("2015-01-08")), (D("2015-01-08"), D("2015-01-15")),
                       (D("2015-01-15"), D("2015-01-20")), (D("2015-03-01"), D("2015-03-03"))]
+
+
+def test_a_contract_is_never_front_before_it_lists():
+    from infra.relative.rolls import drop_unlisted
+    m = _mapping([("TNH6", "2015-12-01", "2016-03-01")])
+    contracts = pd.DataFrame({"ticker": ["TNH6"], "activation": [D("2015-12-18")]})
+    out = drop_unlisted(m, contracts)[0]
+    assert out[:D("2015-12-17")].isna().all() and (out[D("2015-12-18"):] == "TNH6").all()
+    assert quote_windows(drop_unlisted(m, contracts))["TNH6"] == [(D("2015-12-18"), D("2016-03-02"))]

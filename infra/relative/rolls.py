@@ -137,3 +137,18 @@ def around_switch_windows(
         out.append((new, day - pad, day))
         out.append((old, day, day + pad))
     return out
+
+
+def drop_unlisted(mapping: pd.DataFrame, contracts: pd.DataFrame) -> pd.DataFrame:
+    """``mapping`` with every day before its assigned contract's LISTING (``activation``)
+    set to None: neither ranking rule checks listing, so before a root's first listing
+    the earliest-expiring contract is picked anyway (TN, listed 2016-01: TNH6 was 'front'
+    for all of 2015). ``contracts`` must hold one row per ticker (one decade's window)."""
+    listed = dict(zip(contracts["ticker"].astype(str), pd.to_datetime(contracts["activation"]).dt.normalize()))
+    out = mapping.copy()
+    days = out.index.to_numpy(dtype="datetime64[ns]")
+    for col in out.columns:
+        act = out[col].map(lambda t: listed.get(t, pd.NaT) if t is not None else pd.NaT)
+        early = act.notna().to_numpy() & (days < pd.to_datetime(act).to_numpy(dtype="datetime64[ns]"))
+        out.loc[early, col] = None
+    return out

@@ -35,7 +35,7 @@ from infra.coverage.intervals import Interval, merge_intervals, split_intervals,
 from infra.pipeline import bbo
 from infra.pipeline import contracts as contracts_pipe
 from infra.pipeline.relative import volume_ranked_mapping
-from infra.relative.rolls import around_switch_windows, contract_runs
+from infra.relative.rolls import around_switch_windows, contract_runs, drop_unlisted
 from infra.relative.symbology import RelativeSpec
 
 log = logging.getLogger(__name__)
@@ -66,9 +66,10 @@ def front_mapping(
         coverage_file=defs_coverage, max_cost_usd=max_cost_usd, client=client)
     contracts = contracts[(contracts["expiry"] >= start - _CONTRACT_HORIZON)
                           & (contracts["expiry"] <= end + _CONTRACT_HORIZON)]
-    return volume_ranked_mapping(
+    mapping = volume_ranked_mapping(
         [RelativeSpec(root, "v", 0)], cfg, contracts, start, end, fetch_missing=fetch_missing,
         daily_root=daily_root, daily_coverage_file=daily_coverage, max_cost_usd=max_cost_usd, client=client)
+    return drop_unlisted(mapping, contracts)  # never "front" before it lists (TN, 2016)
 
 
 def quote_windows(mapping: pd.DataFrame, *, pad=ROLL_PAD) -> dict[str, list[Interval]]:
@@ -212,8 +213,10 @@ def backfill_front_quotes(
     out = {}
     jobs = {}
     for r in roots:
-        mapping = volume_ranked_mapping(spec[r], cfgs[r], contracts_for(r), start, end, fetch_missing=False,
-                                        daily_root=daily_root, daily_coverage_file=daily_coverage)
+        listed = contracts_for(r)
+        mapping = drop_unlisted(volume_ranked_mapping(spec[r], cfgs[r], listed, start, end, fetch_missing=False,
+                                                      daily_root=daily_root, daily_coverage_file=daily_coverage),
+                                listed)
         gaps = {}
         for ticker, intervals in quote_windows(mapping, pad=pad).items():
             g = [x for a, b in intervals for x in bbo.plan_bbo_update(ticker, a, b, coverage_file=bbo_coverage)]
