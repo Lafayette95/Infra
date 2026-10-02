@@ -69,6 +69,9 @@ WIRP_INTRADAY_GRID = "15min"
 # Ad-hoc 1-SECOND WIRP for small event windows (infra.pipeline.wirp.store_wirp_1s) - its
 # own store, never the 15-minute one (whose backfill replaces whole days).
 WIRP_1S_DIR = DERIVED_ROOT / "WIRP_1s"
+# Benchmark swap closes snapped from DTCC trades (SWAP_CLOSES; CLAUDE.md 16) - one row per
+# (snap instant, close, currency, tenor, method).
+SWAP_CLOSES_DIR = DERIVED_ROOT / "SwapCloses"
 BMK_ROOT = DATABASE_ROOT / "Bmk"
 # Full dated snapshots of the database, one per cycle run day (``_vintages/YYYY-MM-DD``) -
 # the baseline each run's "no revisions" check compares against.
@@ -304,6 +307,179 @@ TRADING_HOURS: dict[str, TradingSession] = {
 }
 
 
+# ------------------------------------------------------------------ swap curves (DTCC)
+# Which DTCC trades are a currency's plain OIS par swaps (CLAUDE.md 16), verified against
+# the RATES files 2026-09-16..30: the product is identified by ``UPI FISN`` plus the
+# floating index in ``UPI Underlier Name`` (``Product name`` is always empty).
+@dataclass(frozen=True)
+class SwapCurveSpec:
+    fisn: str  # UPI FISN of the product
+    underlier: str  # substring of ``UPI Underlier Name`` naming the floating index
+    spot_lag_days: int  # business days from trade to the standard effective date
+    tenors: tuple[int, ...]  # whole-year par tenors snapped
+    fixed_frequencies: tuple[str, ...] = ("YEAR", "EXPI")  # annual; EXPI = one payment (<=1y)
+
+
+SWAP_CURVES: dict[str, SwapCurveSpec] = {
+    "USD": SwapCurveSpec("NA/Swap OIS USD", "SOFR", 2, (1, 2, 3, 5, 7, 10, 15, 20, 30)),
+    "EUR": SwapCurveSpec("NA/Swap OIS EUR", "EuroSTR", 2, (1, 2, 3, 5, 7, 10, 15, 20, 30)),
+    "GBP": SwapCurveSpec("NA/Swap OIS GBP", "SONIA", 0, (1, 2, 3, 5, 7, 10, 15, 20, 30)),
+}
+# Spot-start tolerance: the effective date may land up to this many calendar days after
+# trade + spot lag (holidays, which plain business days ignore); maturity may miss
+# effective + N years by this many days (date rolling) and still count as tenor N.
+SWAP_SPOT_TOLERANCE_DAYS = 2
+SWAP_TENOR_TOLERANCE_DAYS = 4
+# Off-market trades: a fixed coupon set by agreement (often round, e.g. 3.50%), with or
+# without a reported upfront fee, can sit 70-170bp from the market (found 2026-10-01 in the
+# first backfill: 2.50% at 30y against 4.19%, eight 1.83% prints at 5y against 3.57%).
+# Those with a reported fee are dropped outright; the rest by distance from a reference:
+# the median of same-tenor trades within +-SWAP_OFF_MARKET_WINDOW_HOURS (at least 3), else
+# the day's same-tenor median (at least 3), else the neighbouring tenors' day medians,
+# interpolated - with a wider limit for that last, coarser reference.
+SWAP_OFF_MARKET_WINDOW_HOURS = 2.0
+# Platforms whose prints are not a market price. "BILT" (bilateral, off-platform) is
+# where large off-market coupons cluster - e.g. ~$23bn of 1y at round 3.30-3.49% against
+# a 3.75% market (2026-03-30), big enough to BECOME the local median and beat the filter
+# below. Measured over March 2026 against the on-platform median of the same tenor
+# within +-1h (USD): BILT median 2.0bp off, 41% beyond 5bp, 7% beyond 20bp; every
+# electronic platform (TWSF, BBSF, BMTF, TREU, ...) 0.1-0.3bp median, ~0% beyond 5bp;
+# off-platform XOFF 0.3bp, kept.
+SWAP_EXCLUDED_PLATFORMS: tuple[str, ...] = ("BILT",)
+SWAP_OFF_MARKET_BP = 25.0
+# Measured 2025-03..06 (USD, 26,039 prints): good prints sit up to 29.5bp from their
+# neighbouring tenors' interpolated day medians (99.9th pct 23.7bp) - curve shape, so this
+# coarse reference catches garbage (382%, 0%), not a lone print 15-20bp off.
+SWAP_OFF_MARKET_CURVE_BP = 30.0
+# A day's closes apply the corrections and cancellations published in the following
+# files up to this many days later (99% of cancellations arrive within 33 days, 95%
+# within a day; corrections arriving later are mostly fixes to much older trades -
+# September 2026). The cycle should recompute at least this far back.
+SWAP_CORRECTION_DAYS = 10
+
+
+# ------------------------------------------------------------- swap benchmark closes
+# The benchmark "closes" swap curves are snapped at from DTCC trades (CLAUDE.md section 16).
+# Written in the venue's LOCAL time with its IANA zone - the one form that means the same
+# thing across both DST regimes (London and New York switch on different dates) - and
+# converted to a UTC instant per day the moment code reads it
+# (infra.trading_calendar.snap_instants); everything downstream sees UTC only (CLAUDE.md 7).
+@dataclass(frozen=True)
+class SwapCloseWeighting:
+    """How much each trade counts toward a snap: inverse of its expected squared error vs
+    the snap's true rate, in bp^2 -
+
+        var = trade_noise^2 + drift^2 * |dt| + (hedge_error * futures_move)^2
+
+    ``dt`` = hours between the trade and the snap; ``futures_move`` = bp the hedge
+    future(s) moved over that time (adjusted method only - the pure method has no hedge
+    term). ``drift`` is what's left unhedged: the whole rate move for a pure snap, only the
+    swap-vs-futures spread move for an adjusted one - so the same formula weights steeply
+    by time in the first and gently in the second.
+    """
+    trade_noise_bp: float  # same-moment dispersion between prints
+    pure_drift_bp_per_sqrt_hour: float  # rate drift, unhedged
+    adjusted_drift_bp_per_sqrt_hour: float  # swap-vs-futures spread drift, after the hedge
+    hedge_error: float  # relative error of the hedge ratio (0.1 = 10%)
+    # A print further from the snap's first estimate than this many times the larger of
+    # the window's robust spread and its own expected error (sqrt of ``variance``) is
+    # dropped - an off-market or mis-reported trade.
+    outlier_k: float = 4.0
+
+    def variance(self, dt_hours, futures_move_bp=0.0, *, adjusted: bool):
+        drift = self.adjusted_drift_bp_per_sqrt_hour if adjusted else self.pure_drift_bp_per_sqrt_hour
+        hedge = self.hedge_error * futures_move_bp if adjusted else 0.0
+        return self.trade_noise_bp ** 2 + drift ** 2 * abs(dt_hours) + hedge ** 2
+
+    def weight(self, dt_hours, futures_move_bp=0.0, *, adjusted: bool):
+        return 1.0 / self.variance(dt_hours, futures_move_bp, adjusted=adjusted)
+
+
+@dataclass(frozen=True)
+class SwapCloseSpec:
+    """One benchmark close. ``local_time`` in ``timezone`` (config is the only non-UTC
+    place besides the dashboard); ``matches`` says what the snap exists to compare with.
+
+    Pure: trades within +-``pure_half_window_min`` of the snap, widened to
+    +-``pure_fallback_half_window_min`` when fewer than ``pure_min_trades`` fall inside.
+    Futures-adjusted: trades within +-``adjusted_half_window_min``, each moved to the snap
+    by its hedge future's move."""
+    local_time: str  # "HH:MM" in ``timezone``
+    timezone: str  # IANA zone
+    currencies: tuple[str, ...]  # swap currencies snapped at this close
+    matches: str
+    source: str  # where the reference time was verified
+    # Calibrated 2026-10-01 (held-out test, see SWAP_CLOSE_WEIGHTING): pure accuracy is
+    # flat from +-5 to +-60 min (MAE 0.32-0.34bp), so the window only buys coverage - +-15
+    # found prints on 76% of snaps, +-30 on 91%, +-45 on 96%; adjusted error is flat from
+    # +-45 to +-120 with +-90 lowest overall (RMSE 0.528bp).
+    pure_half_window_min: int = 30
+    pure_fallback_half_window_min: int = 60
+    pure_min_trades: int = 3
+    adjusted_half_window_min: int = 90
+
+
+# CALIBRATED 2026-10-01 on 185,045 USD par trades (2024-09-30..2026-09-30):
+# * variance model from 2.4m same-tenor trade pairs <= 3h apart (E[d^2] vs the gap):
+#   noise 0.27bp (1-7y) / 0.39bp (10-30y) - the adjusted fit's intercept, the clean one;
+#   unhedged drift 2.36 / 2.11 bp/sqrt(h) over gaps <= 30 min (the pure windows' range;
+#   the pure curve is CONCAVE - steep in the first 15-30 min, flatter after); swap-vs-
+#   futures drift 0.18 / 0.25 bp/sqrt(h); hedge error 0.115 / 0.141 (30y alone 0.195).
+#   One all-tenor set is used: tenor differences are moderate and, below, irrelevant.
+# * held-out test (3,923 snaps with prints within +-2 min of the snap as the truth): the
+#   weights barely move the weighted median (current vs measured within ~0.01bp), and
+#   outlier_k is irrelevant (2.5..6 or none, within 0.005bp - the upstream off-market
+#   filters do that work; 4 kept as a safety net). The adjusted method beats the pure one
+#   by ~1/3 (MAE 0.214 vs 0.322bp, p95 0.67 vs 1.0bp, like-for-like), near the truth's
+#   own noise floor. Windows: see SwapCloseSpec.
+SWAP_CLOSE_WEIGHTING = SwapCloseWeighting(trade_noise_bp=0.35, pure_drift_bp_per_sqrt_hour=2.2,
+                                          adjusted_drift_bp_per_sqrt_hour=0.22, hedge_error=0.13)
+
+# Futures-adjusted closes: each print is moved to the snap by its hedge future's move,
+# rate_at_snap = rate + ratio x (mid at snap - mid at the print), ``ratio`` in bp of yield
+# per point of price. The hedge is the root's ``.v.0`` contract (CLAUDE.md 5; bonds roll
+# on a 2-day volume average) quoted by ``bbo-1m`` mids; ``ratio`` is the regression of its
+# daily settlement changes (same contract both days) on the matching CMT par yield's, over
+# the prior SWAP_HEDGE_RATIO_DAYS business days - known before the day it's used. Checked
+# 2026-10-01 over 2024-09..2026-09: R2 0.90 (ZT) - 0.95 (ZN), ratios -58.6 (ZT) .. -6.0 (UB)
+# bp/pt, in line with the contracts' DV01s.
+# Tenor -> hedge root, by the root's cheapest-to-deliver maturity. 1-3y use ZT until SR3
+# quotes exist (an SR3-strip hedge is the better short end). USD only: Bund (Eurex, quotes
+# not stored) and gilt (ICE, disabled) futures aren't available as hedges yet.
+SWAP_HEDGES: dict[str, dict[int, str]] = {
+    "USD": {1: "ZT", 2: "ZT", 3: "ZT", 5: "ZF", 7: "ZN", 10: "TN", 15: "ZB", 20: "ZB", 30: "UB"},
+}
+SWAP_HEDGE_CMT: dict[str, str] = {"ZT": "US_BOND_2y", "ZF": "US_BOND_5y", "ZN": "US_BOND_7y",
+                                  "TN": "US_BOND_10y", "ZB": "US_BOND_20y", "UB": "US_BOND_30y"}
+SWAP_HEDGE_RATIO_DAYS = 60
+
+SWAP_CLOSES: dict[str, SwapCloseSpec] = {
+    # CME settles SR3 (13:59-14:00 CT) and Treasury futures (13:59:30-14:00 CT) on the
+    # last minute(s) before 14:00 Chicago = 15:00 New York.
+    "NY1500": SwapCloseSpec(
+        "15:00", "America/New_York", ("USD",), "CME SR3 / Treasury futures settlements",
+        source="https://cmegroupclientsite.atlassian.net/wiki/display/EPICSANDBOX/Treasuries (verified 2026-10-01)",
+    ),
+    # Treasury par yield curve (CMT): indicative bid-side quotes the NY Fed collects at or
+    # near 3:30pm; matched by FedInvest END OF DAY prices to ~0.5bp (verified 2026-10-01).
+    "NY1530": SwapCloseSpec(
+        "15:30", "America/New_York", ("USD",), "Treasury CMT par curve",
+        source="https://home.treasury.gov/policy-issues/financing-the-government/interest-rate-statistics",
+    ),
+    # Late US close, no official counterpart; DTCC USD prints thin out after 16:30.
+    "NY1600": SwapCloseSpec(
+        "16:00", "America/New_York", ("USD",), "US late close (no official benchmark)",
+        source="DTCC print density, 2026-09-16..30",
+    ),
+    # Gilts: Tradeweb FTSE Gilt Closing Prices sample 16:14-16:16 London (the BoE yield
+    # curves' input since 2017-07-24); ICE Long Gilt futures settle 16:13-16:15 London.
+    # Believed (unverified) to also match Eurex Bund settlement, 17:15 Frankfurt.
+    "LDN1615": SwapCloseSpec(
+        "16:15", "Europe/London", ("USD", "EUR", "GBP"), "Gilt closing prices / BoE curves / Long Gilt futures",
+        source="https://www.ice.com/publicdocs/futures/Designated_Settlement_Periods_Volume_Thresholds.pdf; "
+               "Tradeweb FTSE Gilt Closing Prices calculation guide (verified 2026-10-01)",
+    ),
+}
 
 # ------------------------------------------------------------------ daily cycle
 # Operational parameters of the scheduled daily cycle (infra/cycle, CLAUDE.md section 12).

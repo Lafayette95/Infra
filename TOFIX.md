@@ -501,6 +501,15 @@ coverage split, since contracts' gaps differ. (b) Fetch the pool concurrently, a
     going forward (`known_from`).
 ---
 
+## Swap closes: the adjusted method starts ~3 months after the archive
+
+**Found:** 2026-10-01, first two-year backfill of futures-adjusted swap closes (CLAUDE.md 16).
+**Where:** `infra.pipeline.swap_hedge.build_hedge_book` (hedge ratio = 60 business days of settlement changes).
+**Status:** open, not fixed.
+
+**The issue:** the bond-futures daily settlements only go back to 2024-09-30, the start of the DTCC archive, so the 60-day hedge-ratio regression has a full window only from about December 2024. The adjusted closes therefore miss about 45 early days that the pure ones have. **Fix:** fetch the bond `v.0` contracts' daily statistics for ~3 months before 2024-09-30 (cents; `statistics` is slow per request, see the entry above on slow statistics requests) and rerun `scripts/backfill_swap_closes.py`.
+---
+
 ## Tails: history harvest unfinished; failure analysis pending
 
 **Found:** 2026-10-01. **Where:** `scripts/backfill_auction_tails.py`, `infra/processing/auction_tails.py`.

@@ -4,7 +4,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from infra.config import FUTURES_ROOTS, TRADING_HOURS
+from infra.config import FUTURES_ROOTS, SWAP_CLOSE_WEIGHTING, SWAP_CLOSES, TRADING_HOURS
 from infra.trading_calendar import snap_instants, trading_day
 
 D = pd.Timestamp
@@ -89,3 +89,20 @@ def test_a_snap_inside_a_spring_forward_gap_raises():
     with pytest.raises(Exception):
         snap_instants(["2026-03-08"], "02:30", "America/New_York")
 
+
+@pytest.mark.parametrize("name", list(SWAP_CLOSES))
+def test_every_configured_close_converts(name):
+    spec = SWAP_CLOSES[name]
+    instants = snap_instants(pd.date_range("2026-01-01", "2026-12-31"), spec.local_time, spec.timezone)
+    assert instants.notna().all() and spec.pure_half_window_min < spec.pure_fallback_half_window_min
+    assert spec.pure_fallback_half_window_min <= spec.adjusted_half_window_min
+
+
+def test_weighting_falls_with_time_and_far_less_once_hedged():
+    w = SWAP_CLOSE_WEIGHTING
+    assert w.weight(0, adjusted=False) == w.weight(0, adjusted=True) == 1 / w.trade_noise_bp ** 2
+    pure_ratio = w.weight(1.0, adjusted=False) / w.weight(0, adjusted=False)
+    adjusted_ratio = w.weight(1.0, 0.0, adjusted=True) / w.weight(0, adjusted=True)
+    assert pure_ratio < adjusted_ratio < 1
+    assert w.weight(1.0, 3.0, adjusted=True) < w.weight(1.0, 0.0, adjusted=True)  # big hedge move, less trust
+    assert w.weight(-0.5, adjusted=False) == w.weight(0.5, adjusted=False)  # before or after the snap alike
