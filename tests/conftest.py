@@ -69,6 +69,15 @@ def _no_cpi_weights_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_dtcc_network(monkeypatch):
+    """The raw step archives DTCC's daily swap-trade reports (infra.pipeline.dtcc.FETCH);
+    no test may reach DTCC. By default DTCC has published nothing; DTCC tests pass their
+    own fake ``fetch`` explicitly."""
+    monkeypatch.setattr("infra.pipeline.dtcc.FETCH", lambda kind, day: None)
+    monkeypatch.setattr("infra.pipeline.dtcc.PAUSE_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _no_reference_network(monkeypatch):
     """The raw step refreshes the release calendar (FRED release dates, NAR), Treasury
     auctions (Fiscal Data) and auction tails (the Wayback Machine) - no test may reach

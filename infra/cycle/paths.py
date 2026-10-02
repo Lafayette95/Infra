@@ -35,6 +35,7 @@ class CyclePaths:
     bulk_catalog_dir: Path
     cpi_weights_dir: Path
     cpi_weights_coverage: Path
+    dtcc_dir: Path
 
     @classmethod
     def default(cls) -> CyclePaths:
@@ -63,6 +64,7 @@ class CyclePaths:
             bulk_catalog_dir=config.BULK_CATALOG_DIR,
             cpi_weights_dir=config.CPI_WEIGHTS_DIR,
             cpi_weights_coverage=config.CPI_WEIGHTS_COVERAGE_FILE,
+            dtcc_dir=config.DTCC_DIR,
         )
 
     @classmethod

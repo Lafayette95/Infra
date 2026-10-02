@@ -26,6 +26,7 @@ from infra.cycle.network import wait_for_network  # noqa: E402
 from infra.cycle.px import plan_daily_px_data  # noqa: E402
 from infra.cycle.px_bonds import plan_daily_bond_px  # noqa: E402
 from infra.cycle.raw_bulk import plan_daily_bulk  # noqa: E402
+from infra.cycle.raw_dtcc import plan_daily_dtcc  # noqa: E402
 from infra.pipeline.cpi_weights import plan_weights_update  # noqa: E402
 from infra.cycle.raw_reference import TAILS_PER_RUN  # noqa: E402
 from infra.cycle.raw_releases import plan_daily_releases  # noqa: E402
@@ -75,6 +76,9 @@ def dry_run(start, end, force_refetch: bool) -> int:
         print(f"bulk        {key:22s} {seen}; downloaded if a newer file is published  free")
     for year in plan_weights_update(end):
         print(f"cpi_weights {year:<22d} due, not on disk  free (bls)")
+    for kind, days in plan_daily_dtcc(start, end).items():
+        if days:
+            print(f"dtcc        {kind:22s} {len(days)} day(s) not archived, {days[0].date()} -> {days[-1].date()}  free")
     print(f"{len(plan)} contracts to fetch; estimated total ${total:.4f}")
     return 0
 

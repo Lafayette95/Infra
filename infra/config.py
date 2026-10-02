@@ -118,6 +118,14 @@ BULK_CATALOG_DIR = RAW_DATA_ROOT / "_catalog"
 CPI_WEIGHTS_DIR = RAW_DATA_ROOT / "CPIWeights"
 CPI_WEIGHTS_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "cpi_weights.parquet"
 CPI_WEIGHTS_FIRST_YEAR = 1987
+# DTCC public price dissemination (CFTC Part 43 swap trades): each day's CUMULATIVE report
+# zip, archived byte-for-byte - infra/pipeline/dtcc.py. DTCC itself keeps only a rolling ~2
+# years (first file still published when the archive started: 2024-09-30, verified
+# 2026-10-01), so a day not archived within that window is lost for good.
+DTCC_DIR = RAW_DATA_ROOT / "DTCC"
+DTCC_REPORTS = ("RATES",)  # CFTC cumulative report kinds archived (also: CREDITS, FOREX, ...)
+DTCC_FIRST_DAY = "2024-09-30"  # never request earlier days: DTCC no longer has them
+DTCC_RETENTION_DAYS = 700  # look back this far for unarchived days (inside DTCC's ~730)
 
 # ------------------------------------------------------------------ API settings
 SCHEMA_OHLCV = "ohlcv-1m"
