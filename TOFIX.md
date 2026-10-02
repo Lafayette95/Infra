@@ -444,21 +444,6 @@ pair each area with CPI-U/CPI-W, and area names need mapping to `cu.area` codes.
 
 ---
 
-## Docs: CLAUDE.md §15 still calls the macro-release section "section 14"
-
-**Found:** 2026-10-01. **Where:** root `CLAUDE.md` §15 (Full-Granularity US Inflation
-Data): "like section 14" and "ride the section-14 release pipeline".
-**Status:** open. Waiting until the inflation session has committed its own §15.
-
-**The issue:** the nowcast session added "Macro Releases & Nowcasting" as §14, colliding
-with the committed §14 "Intraday Data and Intraday WIRP". It was renamed §14a and placed
-after §14. §15 refers to the macro-release section by number, so both references should
-now read 14a. They weren't changed in place because that text is another session's
-uncommitted work (user decision 2026-10-01: commit theirs first, then fix the references
-in a separate commit).
-
----
-
 ## Daily statistics requests are slow over long ranges, and the relative loaders fetch one contract at a time
 
 **Found:** 2026-10-01, back-filling cleared volume (CLAUDE.md 5, 8) into the daily store.
