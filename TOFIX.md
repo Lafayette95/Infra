@@ -673,3 +673,96 @@ day's vintage would have been lost.
 
 **The issue:** the Treasury reference data starts with the auctions store's first auction (1979-10-31); these bonds were issued earlier, so they're unknown to it. **Options:** leave it (they matured in 2008-09 and never appear in a daily window); or add a tiny static list of pre-1979 securities if the reference table ever needs to reach back that far.
 
+
+---
+
+## CTA: calibration rests on one published snapshot; no performance-based calibration yet
+
+**Found:** 2026-10-02 (`infra/models/cta/CLAUDE.md` section 5).
+**Where:** `infra.models.cta.config.CTA_MODELS["ubs2022_cal"]`, `infra/models/cta/compare.py`.
+**Status:** open - the main next step for the CTA model.
+
+**The issue:** UBS's note gives no EWMA speeds and no response function, so `ubs2022` uses
+published defaults (Baz et al. 2015) and `ubs2022_cal` picks speeds and a response gain to
+match UBS's own 2022-09-02 rates snapshot (16 numbers, 2 parameters, ONE date). That
+reproduces UBS's model, not real CTAs, and could be a coincidence of that date.
+**Options, best first:** (a) calibrate on REALISED CTA performance: build the model's
+portfolio P&L (sum of position(t-1) x return(t), vol targeted) and choose parameters
+maximising its out-of-sample correlation with a CTA index's returns (UBS: its proxy has 64%
+correlation with BarclayHedge's index and 76% with SG's). Free series: the SG CTA / SG
+Trend indices (daily; free download from SG's prime services index page historically -
+verify access), BarclayHedge CTA index (monthly, free with registration), HFRX Systematic
+Diversified (daily, HFR, registration), AQR's "Time Series Momentum: Factors, Monthly" data
+set (free, decades of history), and fully free daily ETF prices of replicators - DBMF
+(replicates the SG CTA index, from 2019), KMLM (MLM trend index, published rules), CTA.
+**Caveat:** our universe is rates futures only; an index return also carries equities, FX
+and commodities, so either fetch those futures (Databento cost) or regress the index on
+our rates P&L plus free proxies of the other sleeves and calibrate on the rates part.
+(b) more UBS snapshots (the note promises monthly updates) - more dates, same model.
+(c) a clearer scan of pp. 24 and 40 (Fig. 75, 107, 108) adds the other US contracts' t-2w
+and t+2w values to `paper.py`.
+
+---
+
+## CTA: top-down positioning (regress CTA performance on asset returns) - tabled
+
+**Found:** 2026-10-02 (user idea, tabled by the user).
+**Where:** would sit next to `infra/models/cta` (a second model on the same `base.Model` pattern).
+**Status:** tabled.
+
+**The idea:** a CTA index's daily return is (approximately) sum_i exposure_i(t-1) x
+return_i(t), so regressing it on asset returns over a rolling window gives the exposures
+top-down (Sharpe 1992 style analysis; Fung & Hsieh 2001 for trend followers; DBMF's
+"dynamic beta" replication is exactly this, and DBMF publishes its futures holdings daily -
+a free, ready-made top-down estimate). **Problems:** many correlated assets vs few
+observations (needs ridge/LASSO or sign constraints), exposures move faster than any
+rolling window (needs exponential weights or a Kalman filter), index returns are net of
+fees and some are lagged/smoothed. **The useful combination:** keep the bottom-up model's
+SHAPE (which assets, which sign, how saturated) and let the top-down regression estimate
+only a few SCALE factors - one per asset class, beta_class(t) x bottom-up position - in a
+Kalman filter on the index return. Few parameters, well identified, and the scale is exactly
+the missing "size footprint" (AUM x leverage per class) that turns our [-1, 1] positions
+into contracts and flows in % of ADV.
+
+---
+
+## CTA: no scheduled fit/predict, no stored outputs, no live input
+
+**Found:** 2026-10-02.
+**Where:** `infra/models/cta`; `infra/cycle` (may not import `infra/models`, `tests/test_architecture.py`).
+**Status:** open - design decision needed.
+
+**The issue:** the model is built for a scheduled fit (daily/weekly) and a light predict
+(daily, or intraday on a daily fit), but nothing runs it on a schedule, keeps fitted
+state, or stores outputs, and models may not write storage. **Options:** (a) a separate
+Prefect flow outside `infra/cycle` (e.g. `infra/models/cta/jobs.py` + a script), after the
+daily cycle, writing to a `Derived/CTA` store through `infra.storage` - needs the
+"models never write storage" rule relaxed for a job layer; (b) move the CTA's computation
+below the models layer (`infra/analytics/cta`, like WIRP) so the `derived` step can run
+it - but it is a model with fitted state, which is what `infra/models` is for; (c) keep
+it on demand. Fitted state is plain dataclasses/pandas (picklable). **Live input:** an
+intraday back-adjusted price needs the front contract's latest bbo-1m/ohlcv-1m price
+minus its last settlement, added to the continuous series' last value - not written yet.
+
+---
+
+## CTA: universe and unit gaps against UBS's model
+
+**Found:** 2026-10-02.
+**Where:** `infra.models.cta.config.CTA_UNIVERSES`, `infra/models/cta/inputs.py`.
+**Status:** open, by data availability.
+
+* **Rates only, and few markets:** UBS runs ~100 markets (bonds, STIR, equities, FX,
+  credit, commodities); we have US bond futures (from 2014-12), Eurex Schatz/Bobl/Bund/BTP
+  (from 2025-07 only: no signal history to fit an ECDF, so their signals start late), no
+  Buxl, OAT, JGB, CGB, KTB, ACGB, no Long Gilt (ICE disabled in the cycle). STIR: SR3 only
+  from 2025-03, so UBS's money-market results (ED4 etc.) aren't comparable yet.
+  The portfolio vol scaling is therefore estimated on a much smaller portfolio than UBS's.
+* **Price vs yield space:** UBS sizes rates in $DV01 with yield-bp vols; we size on futures
+  price vol. The ratio is the contract's duration, which drifts slowly (CTD switches), so
+  normalised positions differ a little; converting needs bond futures DV01 (the CTD model,
+  "Bond futures have no DV01" above).
+* **Fit-sample length:** our ECDF and position scale use history from 2015; UBS's use ~10-30
+  years, so "extreme" means extreme relative to a shorter, mostly low-vol history.
+* **Monte Carlo simplifications** (as UBS): assets simulated independently, constant
+  forecast vol, normalisation and portfolio scaling held over the horizon.

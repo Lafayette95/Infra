@@ -1,14 +1,34 @@
-# infra/models - Nowcasting (additive to the root CLAUDE.md)
+# infra/models - Models: Nowcasting, Inflation, CTA (additive to the root CLAUDE.md)
 
 Everything in the root `CLAUDE.md` still applies (conda env, modularity, one-way
 dependencies, point-in-time `as_of`, `TOFIX.md`, UTC). This file only adds what is
 specific to the models sub-project.
 
+## 0. How a model is built: prepare -> fit -> predict (all models, from 2026-10-02)
+*   **Each model is a class following `infra.models.base.Model`** (user decision
+    2026-10-02), sklearn style:
+    1.  `prepare(raw)`: inputs -> the model's aligned, cleaned, standardised form. Pure, no
+        fitting. The SAME call prepares the fit sample and new data.
+    2.  `fit(prepared, as_of)`: estimate the slow parameters from data up to `as_of` only,
+        keep them plus the state `predict` continues from; returns `self` (fitted attributes
+        end in `_`). The heavy step, meant to run on a schedule (daily/weekly).
+    3.  `predict(prepared)`: the light step on new data only, parameters held fixed -
+        possibly at another granularity (an intraday price on a daily fit).
+*   **Parameters live in a config registry** (a spec dataclass per parametrisation, toggled
+    by name, e.g. `CTA_MODELS`), apart from the code; **inputs are abstract**: reading stored
+    data is a separate `inputs` module per model.
+*   **The nowcast predates this** (functions `estimate` = fit, `nowcast`/`news` = predict,
+    `panel.py` = prepare). It maps onto the pattern; it was not refactored.
+*   **Scheduling is open:** the daily cycle may not import `infra/models`, so a scheduled
+    fit/predict needs its own runner (`TOFIX.md`, "CTA: no scheduled fit/predict").
+
 ## 1. Scope and layering
 *   **`infra/models` is a consumer layer, like `infra/analytics`**: pure computation on data
-    the pipeline already stored. It never calls an API and never writes storage. The only
-    module that reads storage is `infra/models/nowcast/nowcast.py`, and it reads through
-    `infra.pipeline.releases.read_releases_from_disk`.
+    the pipeline already stored. It never calls an API and never writes storage. Modules
+    that read storage: `infra/models/nowcast/nowcast.py` (through
+    `infra.pipeline.releases.read_releases_from_disk`) and `infra/models/cta/inputs.py`
+    (through `infra.pipeline.relative_daily.load_relative_daily(fetch_missing=False)` and
+    `infra.pipeline.daily.read_daily_from_disk`).
 *   **Dependencies point one way.** `infra/api`, `processing`, `pipeline`, `cycle` and
     `storage` never import `infra.models`. Only `infra/dashboard` may, from above. This is
     enforced by `tests/test_architecture.py`.
@@ -325,3 +345,8 @@ specific to the models sub-project.
 *   **Its own sub-project, `infra/models/inflation/`, with its own `CLAUDE.md`** (CPI / PPI
     / PCE component trees, their vintages and weights). Read that file before touching
     inflation work.
+
+## 9. CTA positioning
+*   **Its own sub-project, `infra/models/cta/`, with its own `CLAUDE.md`**: a bottom-up
+    replica of a trend-following CTA (UBS Q-Series 2022), the first model built on the
+    `base.Model` pattern. Read that file before touching it.

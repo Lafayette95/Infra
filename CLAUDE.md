@@ -282,3 +282,19 @@ Stored/queried tickers are ABSOLUTE (Databento `raw_symbol`); relative tickers e
 *   **Layer 3, `lifecycle_decay`** (`infra/analytics/specialness.py` pure, `infra/pipeline/specialness.py` reads): a bond's specialness on day d = its LIFECYCLE profile mu(tenor, on/off-the-run rank, phase) + (today's observed - mu today) x 2^(-business days / half-life); the term value averages it over calendar days. Observed = the NY Fed lending fee above the minimum fee (section 19), par-weighted, 0 when a tracked bond wasn't borrowed (assumes the Fed held it - true for nearly every coupon issue it rolls at auction). Phase: rank 0 = share of its on-the-run life elapsed (issue date to its successor's: known once announced, else the tenor's median cycle); rank 1 = business days since its successor's issue; rank 2-5 one value each; untracked bonds have profile 0 but keep their decaying observation. Along the term the rank changes on the successor's issue date, so known events move the expectation. Profile and half-life are estimated from the 5 calendar years BEFORE `as_of`'s year (cached per year; point in time). **Estimated 2026 (from 2021-2025):** half-life 2.7 business days; 10y / 20y specialness peaks early in the on-the-run life (16 / 59bp at 10-25% elapsed) and is gone well before the next new issue (reopenings add supply); 2y / 5y peak late (14 / 10bp) and keep a short tail once 1-old (2y day 0: 17bp); 3y, 7y and 30y stay near zero. **Validated out of sample 2014-2026** (weekly, every bond within one issue of on the run, 8,445 forecasts per horizon): unbiased (-0.3bp at 1 month, +0.04bp at 3 months; "zero" is biased -2.5bp overall, -9.6bp on the on-the-run 10y), lowest RMSE of zero / today-held-flat / profile-only (1 month: 12.4 vs 14.0 / 27.7 / 12.9bp), realised moves ~0.85-0.9 per unit forecast, R2 ~0.18. Holding today's fee flat is by far the worst (RMSE double). Mean absolute error favours "zero" (specialness is usually 0 with large spikes), but carry is LINEAR in specialness, so unbiasedness is the criterion.
 *   **Only matters for some contracts:** basket bonds are rarely special (2016-2026 share of bond-days > 5bp: TN 5.8% - the new 10y is deliverable into it -, TWE 2.4%, ZF 1.4%, the rest < 1%).
 *   **History:** SR1 settlements from its launch, 2018-05-07 (backfilled 2026-10-02 through the cycle's own px path, 97 contracts, 20,609 rows, $0.056); before that layer 1 can't price. The backfill's bad-print pass flagged 5 SR1 prints - all genuine moves (2020-03-03 emergency cut, 2020-03-09/10, 2022-02-10 CPI); those treatments were removed, and the rule was extended so it no longer flags them (section 12).
+
+## 21. CTA Positioning Model (`infra/models/cta`, own `infra/models/cta/CLAUDE.md`)
+*   **A model sub-project (section 3a): bottom-up CTA trend-following positions** (UBS
+    Q-Series 2022 methodology), in [-1, 1] units: signal, position, past changes, Monte
+    Carlo expected flows, spot reaction functions. Built 2026-10-02.
+*   **Every model now follows `infra.models.base.Model`: `prepare` -> `fit` -> `predict`**
+    (`infra/models/CLAUDE.md` section 0). Parameters are named specs in a registry
+    (`infra.models.cta.config.CTA_MODELS`, `CTA_UNIVERSES`), toggled by name.
+*   **Data used: stored daily futures settlements, disk only.** `infra/models/cta/inputs.py`
+    reads relative tickers (`ZN.v.0`) through `infra.pipeline.relative_daily` with
+    `fetch_missing=False` and back-adjusts them with the new pure, generic
+    `infra.processing.continuous` (each day's change on the contract held that day, the same
+    change bmk's pnl uses). US bond futures are on disk from 2014-12; Eurex from 2025-07.
+*   **No storage, no cycle step yet.** Outputs are computed on demand (`scripts/run_cta.py`);
+    the daily cycle can't import `infra/models`, so scheduling is open (`TOFIX.md`).
+
