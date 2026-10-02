@@ -129,9 +129,9 @@ TREASURY_OTR_TENORS: dict[str, tuple[str, str]] = {
 }
 TREASURY_OTR_DEPTH = 5
 TREASURY_OTR_CONVENTIONS = ("issue", "auction")
-# Where the Treasury history (OTR map, per-CUSIP prices) starts; FedInvest has 2008-09-02
-# on - earlier days: TOFIX.md.
-TREASURY_PRICES_START = "2016-01-04"
+# Where the Treasury history (OTR map, per-CUSIP prices) starts: FedInvest's first day
+# (nothing before 2008-09-02; verified 2026-10-01). Backfilled to here 2026-10-02.
+TREASURY_PRICES_START = "2008-09-02"
 TREASURY_OTR_DEFAULT_CONVENTION = "issue"
 # Treasury futures delivery baskets with per-contract conversion factors
 # (Reference/Treasuries/FuturesBaskets, keys timestamp / root / contract / cusip). From

@@ -486,25 +486,6 @@ coverage split, since contracts' gaps differ. (b) Fetch the pool concurrently, a
     going forward (`known_from`).
 ---
 
-## Bonds: FedInvest price history before 2016 not fetched yet
-
-**Found:** 2026-10-01, planning per-CUSIP Treasury prices (CLAUDE.md 18).
-**Status:** open, deferred (user decision 2026-10-01: start from 2016).
-
-**The issue:** FedInvest's daily END OF DAY prices go back to 2008-09-02 (verified; nothing before), but the first backfill starts in 2016 to match the CMT store. **To do:** backfill 2008-09-02..2015-12-31, about 1,850 business days at 2 requests each (form + submit), ~45 min, free.
-
----
-
-## Swap closes: the adjusted method starts ~3 months after the archive
-
-**Found:** 2026-10-01, first two-year backfill of futures-adjusted swap closes (CLAUDE.md 16).
-**Where:** `infra.pipeline.swap_hedge.build_hedge_book` (hedge ratio = 60 business days of settlement changes).
-**Status:** open, not fixed.
-
-**The issue:** the bond-futures daily settlements only go back to 2024-09-30, the start of the DTCC archive, so the 60-day hedge-ratio regression has a full window only from about December 2024. The adjusted closes therefore miss about 45 early days that the pure ones have. **Fix:** fetch the bond `v.0` contracts' daily statistics for ~3 months before 2024-09-30 (cents; `statistics` is slow per request, see the entry above on slow statistics requests) and rerun `scripts/backfill_swap_closes.py`.
-
----
-
 ## Reference: bills are not in the on/off-the-run map
 
 **Found:** 2026-10-01, building the Treasury OTR map (CLAUDE.md 18).
@@ -576,3 +557,13 @@ day's vintage would have been lost.
 **Status:** open, deferred (user decision 2026-10-02: hold `derived` until the intraday data is scheduled).
 
 **The issue:** both are computed by hand today, so their stores only extend when someone runs them. `Derived/OTRYields` stops at the last `build_otr_yields()` and `Derived/SwapCloses` at 2026-09-30. **Why not now:** the futures-adjusted swap closes need each day's bond-futures `bbo-1m` quotes for the `.v.0` contracts. That's a daily intraday fetch, which belongs with scheduling the intraday cycle (`infra/cycle/intraday.py`, still run by hand). Wiring only half now would leave the adjusted closes silently stale. **To do, together:** (1) schedule the intraday fetch, including bond-futures `bbo-1m` for `SWAP_HEDGES` roots' `.v.0` (a few cents a day); (2) add OTR yields and swap closes (pure + adjusted, recomputing the last `SWAP_CORRECTION_DAYS` for late corrections) to `DERIVED_METRICS`, with presence / sanity / revision checks; (3) the OTR yields' check vs CMT (within a few bp, outside auction-to-issue days).
+
+---
+
+## Bonds: FedInvest has no END OF DAY prices on 2014-09-12 and 2014-11-21
+
+**Found:** 2026-10-02, backfilling Treasury prices 2008-09..2015-12 (CLAUDE.md 18).
+**Where:** `Daily/TreasuryPrices`; `infra.pipeline.treasury_prices.store_prices_day`.
+**Status:** open, by design for now.
+
+**The issue:** on those two days FedInvest's page lists every security (362 and 369 rows) with the ~1pm BUY/SELL prices but END OF DAY all zero, so the pipeline (correctly) doesn't store them as complete days and leaves them uncovered. Every other business day 2008-09-02..2026-09-30 is stored or a holiday. **Why not fixed:** substituting the 1pm price would silently mix a different time of day into a 3:30pm-consistent series. **Options:** (a) leave the gaps (current); (b) store those days with `price_eod` NaN and `price_buy`/`price_sell` filled, marked, and cover them; (c) fill END OF DAY from the 1pm price plus the day's CMT move. The cycle's 30-day gap lookback never re-asks them; only a manual backfill over 2014 would.
