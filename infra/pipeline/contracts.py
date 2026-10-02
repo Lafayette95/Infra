@@ -65,7 +65,17 @@ def ensure_contracts(
             raw = api.fetch_definitions(
                 cfg.dataset, [cfg.parent], day, max_cost_usd=max_cost_usd, client=client
             )
-            contract_store.write_contracts(contracts_file, normalize_futures_definitions(raw, cfg.root, cfg.ticker_regex))
-            coverage_store.record_covered(coverage_file, f"defs:{cfg.root}", [(day, day + _ONE_DAY)])
-            log.info("%s definitions snapshot %s saved", cfg.root, day.date())
+            store_definitions_snapshot(cfg, day, raw, contracts_file=contracts_file, coverage_file=coverage_file)
     return contract_store.read_contracts(contracts_file, cfg.root)
+
+
+def store_definitions_snapshot(
+    cfg: FuturesRoot, day: pd.Timestamp, raw: pd.DataFrame, *,
+    contracts_file: Path = FUTURES_CONTRACTS_FILE, coverage_file: Path = FUTURES_DEFS_COVERAGE_FILE,
+) -> None:
+    """FILES ONLY: merge one fetched snapshot into the contracts table and record it
+    covered. Read-modify-writes shared files - never run two concurrently (callers may
+    fetch snapshots in parallel, as infra.pipeline.front_quotes does)."""
+    contract_store.write_contracts(contracts_file, normalize_futures_definitions(raw, cfg.root, cfg.ticker_regex))
+    coverage_store.record_covered(coverage_file, f"defs:{cfg.root}", [(day, day + _ONE_DAY)])
+    log.info("%s definitions snapshot %s saved", cfg.root, day.date())

@@ -66,6 +66,53 @@ def plan_bbo_update(
     return find_missing_ranges(requested, coverage_store.read_covered(coverage_file, ticker))
 
 
+# (range_start, query_end, covered_end, raw records) per queried range
+Fetched = list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.DataFrame]]
+
+
+def fetch_bbo_raw(
+    ticker: str,
+    ranges: list[Interval],
+    *,
+    dataset: str,
+    max_cost_usd: float = MAX_COST_USD,
+    client=None,
+    schema: str = SCHEMA_BBO_1M,
+) -> Fetched:
+    """NETWORK ONLY: the API's records for ``ranges`` (each clamped to the schema's
+    queryable end); touches no files, so callers may run many concurrently."""
+    out: Fetched = []
+    for range_start, range_end in ranges:
+        query_end, covered_end = bounded_by_availability(dataset, range_end, client, schema=schema)
+        if query_end <= range_start:
+            continue  # nothing queryable yet - not covered, retried later
+        raw = api.fetch_futures_bbo(dataset, ticker, range_start, query_end, max_cost_usd=max_cost_usd,
+                                    client=client, schema=schema)
+        out.append((range_start, query_end, covered_end, raw))
+    return out
+
+
+def store_bbo_raw(
+    ticker: str,
+    fetched: Fetched,
+    *,
+    root: Path = BBO_FUTURES_DIR,
+    coverage_file: Path = BBO_FUTURES_COVERAGE_FILE,
+    schema: str = SCHEMA_BBO_1M,
+) -> int:
+    """FILES ONLY: clean, save and record coverage (only fully published days) for what
+    ``fetch_bbo_raw`` returned. Never run two concurrently."""
+    rows = 0
+    for range_start, query_end, covered_end, raw in fetched:
+        clean = tf.clean_futures_bbo(raw)
+        parquet_store.write_partitioned(tf.encode_futures_bbo(clean), root, tf.BBO_KEYS)
+        if covered_end > range_start:
+            coverage_store.record_covered(coverage_file, ticker, [(range_start, covered_end)])
+        rows += len(clean)
+        log.info("%s %s %s->%s: %d rows saved", schema, ticker, range_start.date(), query_end, len(clean))
+    return rows
+
+
 def fetch_and_store_bbo(
     ticker: str,
     ranges: list[Interval],
@@ -77,22 +124,9 @@ def fetch_and_store_bbo(
     client=None,
     schema: str = SCHEMA_BBO_1M,
 ) -> int:
-    """Query the API for ``ranges``, save, record coverage (only fully published days -
-    see infra.pipeline.futures.fetch_and_store_futures). Returns rows saved."""
-    rows = 0
-    for range_start, range_end in ranges:
-        query_end, covered_end = bounded_by_availability(dataset, range_end, client, schema=schema)
-        if query_end <= range_start:
-            continue
-        raw = api.fetch_futures_bbo(dataset, ticker, range_start, query_end, max_cost_usd=max_cost_usd,
-                                    client=client, schema=schema)
-        clean = tf.clean_futures_bbo(raw)
-        parquet_store.write_partitioned(tf.encode_futures_bbo(clean), root, tf.BBO_KEYS)
-        if covered_end > range_start:
-            coverage_store.record_covered(coverage_file, ticker, [(range_start, covered_end)])
-        rows += len(clean)
-        log.info("%s %s %s->%s: %d rows saved", schema, ticker, range_start.date(), query_end, len(clean))
-    return rows
+    """``store_bbo_raw(fetch_bbo_raw(...))`` - query, save, record coverage. Rows saved."""
+    fetched = fetch_bbo_raw(ticker, ranges, dataset=dataset, max_cost_usd=max_cost_usd, client=client, schema=schema)
+    return store_bbo_raw(ticker, fetched, root=root, coverage_file=coverage_file, schema=schema)
 
 
 def load_bbo(

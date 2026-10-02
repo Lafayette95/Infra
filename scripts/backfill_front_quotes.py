@@ -1,8 +1,9 @@
 """Staged bbo-1m backfill of a root's front contract (volume roll rule, <root>.v.0), plus
 the other front-two contract only around each roll - infra/pipeline/front_quotes.py.
 
-Run one stage at a time to watch the cost. --dry-run fetches only the cheap planning
-inputs (definitions, daily cleared volume; ~$0.05/year for 6 roots) and PRICES the
+All roots run at once: each phase (definitions, daily volume, quotes) fetches in
+parallel and stores sequentially. Run one stage at a time to watch the cost.
+--dry-run fetches only the cheap planning inputs (definitions, daily cleared volume; ~$0.05/year for 6 roots) and PRICES the
 quotes without buying them.
 
     PY=/opt/homebrew/Caskroom/miniconda/base/envs/infra-env/bin/python
@@ -34,26 +35,32 @@ def main() -> int:
     parser.add_argument("--end", required=True, help="UTC day, exclusive")
     parser.add_argument("--pad-bdays", type=int, default=5, help="business days of the other contract around a roll")
     parser.add_argument("--max-cost", type=float, default=MAX_COST_USD, help="USD guardrail per request")
+    parser.add_argument("--workers", type=int, default=fq.FETCH_WORKERS, help="concurrent API requests")
     parser.add_argument("--dry-run", action="store_true", help="plan + price the quotes; buy nothing but the planning inputs")
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s %(message)s")
     wait_for_network()
     client, pad = api.get_client(), pd.offsets.BDay(args.pad_bdays)
-    total_est, total_rows, failed = 0.0, 0, {}
-    for root in args.roots:
-        mapping, gaps = fq.plan_front_quotes(root, args.start, args.end, pad=pad, max_cost_usd=args.max_cost, client=client)
-        rolls = ", ".join(f"{d:%m-%d} {a}->{b}" for d, a, b in roll_switches(mapping, 0))
-        est = fq.price_front_quotes(root, gaps, client=client)
-        total_est += est
-        print(f"{root}: rolls [{rolls}] | {sum(len(v) for v in gaps.values())} window(s) over "
-              f"{len(gaps)} contract(s), est. ${est:.3f}")
-        if not args.dry_run and gaps:
-            rows, errors = fq.fetch_front_quotes(root, gaps, max_cost_usd=args.max_cost, client=client)
-            total_rows += rows
-            failed.update({f"{root} {t}": e for t, e in errors.items()})
-            print(f"   stored {rows:,} quotes" + (f", errors: {errors}" if errors else ""))
-    print(f"TOTAL est. ${total_est:.3f}" + ("" if args.dry_run else f" | stored {total_rows:,} quotes | "
-                                                                 f"errors: {failed or 'none'}"))
+
+    def report(root, info):
+        rolls = ", ".join(f"{d:%Y-%m-%d} {a}->{b}" for d, a, b in roll_switches(info["mapping"], 0))
+        print(f"{root}: rolls [{rolls}] | {len(info['gaps'])} contract(s), est. ${info['est_usd']:.3f}"
+              + ("" if args.dry_run else f" | stored {info['rows']:,} quotes"), flush=True)
+
+    res = fq.backfill_front_quotes(args.roots, args.start, args.end, pad=pad, dry_run=args.dry_run,
+                                   workers=args.workers, max_cost_usd=args.max_cost, client=client,
+                                   on_root=None if args.dry_run else report)
+    roots = res["roots"]
+    if args.dry_run:
+        for root, info in roots.items():
+            report(root, info)
+    for root, info in roots.items():  # roots with nothing to fetch never trigger on_root
+        if not args.dry_run and not info["gaps"]:
+            report(root, info)
+    failed = res["errors"]
+    print(f"TOTAL est. ${sum(i['est_usd'] for i in roots.values()):.3f}"
+          + ("" if args.dry_run else f" | stored {sum(i['rows'] for i in roots.values()):,} quotes")
+          + f" | errors: {failed or 'none'}", flush=True)
     return 1 if failed else 0
 
 

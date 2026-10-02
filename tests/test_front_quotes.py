@@ -37,3 +37,28 @@ def test_the_other_contract_is_held_only_around_each_roll():
     assert w["ZNM5"] == [(D("2015-02-27") - pad, D("2015-05-28") + pad)]  # incoming early, outgoing late
     assert w["ZNU5"] == [(D("2015-05-28") - pad, D("2015-07-01"))]  # clipped to the mapping's end
     assert len(around_switch_windows(m, pad=pad)) == 4
+
+
+def test_fetches_run_in_parallel_but_every_store_happens_on_the_calling_thread():
+    import threading
+    import time
+
+    from infra.pipeline.front_quotes import _parallel
+    main, stored, fetch_threads = threading.get_ident(), [], set()
+
+    def fetch(key, job):
+        fetch_threads.add(threading.get_ident())
+        time.sleep(0.2)
+        if key == "bad":
+            raise ConnectionError("504 gateway timeout")
+        return job * 10
+
+    def store(key, job, result):
+        assert threading.get_ident() == main  # shared files: never written concurrently
+        stored.append((key, result))
+
+    t0 = time.monotonic()
+    errors = _parallel({"a": 1, "b": 2, "c": 3, "bad": 4}, fetch, store, workers=4)
+    assert time.monotonic() - t0 < 0.6  # 4 x 0.2s fetches overlapped, not serial
+    assert sorted(stored) == [("a", 10), ("b", 20), ("c", 30)] and len(fetch_threads) > 1
+    assert errors == {"bad": "ConnectionError: 504 gateway timeout"}  # collected, the rest still stored
