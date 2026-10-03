@@ -62,8 +62,13 @@ class WalkForwardResult:
 
 def refit_dates(index: pd.DatetimeIndex, start, end, refit: str | int) -> list[pd.Timestamp]:
     """Refit dates in ``[start, end]``: a pandas frequency (``"W-FRI"``, ``"ME"``) snapped
-    back to the last row on or before each date, or an int = every N rows. ``start`` is
-    always the first refit (there must be a fit before the first prediction)."""
+    back to the last row on or before each target, or an int = every N rows. ``start`` is
+    always the first refit (there must be a fit before the first prediction).
+
+    A target AFTER the last row of ``index`` is not due yet: its data isn't in, and
+    snapping it back (a not-yet-loaded Friday to Thursday) would differ from what a later
+    run sees once Friday arrives - the incremental (append) run and a full rebuild must pick
+    the same dates. A target on a genuine holiday is snapped back once a later row exists."""
     start, end = pd.Timestamp(start), pd.Timestamp(end)
     rows = index[(index >= start.normalize()) & (index <= end)]
     if rows.empty:
@@ -71,7 +76,8 @@ def refit_dates(index: pd.DatetimeIndex, start, end, refit: str | int) -> list[p
     if isinstance(refit, int):
         dates = list(rows[::refit])
     else:
-        targets = pd.date_range(start, end, freq=refit)
+        last = index.max()
+        targets = [t for t in pd.date_range(start, end, freq=refit) if t <= last]
         pos = index.searchsorted(targets, side="right") - 1
         dates = [index[p] for p in pos if p >= 0 and index[p] >= rows[0]]
     dates = sorted(set([rows[0]] + dates))

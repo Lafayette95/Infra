@@ -130,6 +130,10 @@ class RegimeSpec:
     stay: float = 0.95                         # initial probability of staying in a regime
     sticky: float = 0.0                        # pseudo-counts of staying (Dirichlet prior on the
                                                # transition diagonal): forces persistent regimes
+    # refits start EM from the previous fit (faster; regimes stay near the previous optimum -
+    # continuity) or cold, n_init k-means starts every time (each fit depends on its window
+    # only: path-INDEPENDENT, so a rebuild from any start date reproduces it)
+    warm_start: bool = True
     seed: int = 0
     # rule
     rule: str = "threshold"

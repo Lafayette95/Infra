@@ -934,7 +934,9 @@ class KalmanRegression(Regression):
             r = float(np.exp(res.x))
             q = ratio * r
         else:
-            res = optimize.minimize(nll, np.log([1e-4 * var_y, 0.5 * var_y]), method="Nelder-Mead",
+            warm = getattr(self, "_warm_qr", None)
+            start = np.log(warm) if warm is not None else np.log([1e-4 * var_y, 0.5 * var_y])
+            res = optimize.minimize(nll, start, method="Nelder-Mead",
                                     options={"xatol": 1e-4, "fatol": 1e-6, "maxiter": 2000})
             q, r = np.exp(res.x)
         pred, innov, fvar, betas, bT, PT = kalman_filter(Z, y, b0, P0, q, r)
@@ -946,11 +948,23 @@ class KalmanRegression(Regression):
         beta[keep] = bT[keep] / sd
         if CONST in names:
             beta[names.index(CONST)] = bT[names.index(CONST)] - (bT[keep] / sd) @ mu
-        st = {"q": float(q), "r": float(r), "signal_to_noise": float(q / r), "loglik": float(ll)}
+        st = {"q": float(q), "r": float(r), "signal_to_noise": float(q / r), "loglik": float(ll),
+              "warm_start": float(getattr(self, "_warm_qr", None) is not None),
+              "mle_evaluations": float(getattr(res, "nfev", np.nan))}
         extra = {"kalman": pd.Series({"q": float(q), "r": float(r)}),
                  "kalman_scale": pd.DataFrame({"mu": mu, "sd": sd}, index=[names[j] for j in keep]),
                  "state_beta": pd.Series(bT, index=names), "state_P": pd.DataFrame(PT, index=names, columns=names)}
         return Estimate(beta=beta, cov=None, df_resid=None, stats=st, extra=extra)
+
+    def warm_start_from(self, previous) -> None:
+        """Start the next fit's (q, r) search from ``previous``'s estimate (a walk-forward or
+        an appended weekly refit): the maximum likelihood is the same, found in a fraction
+        of the evaluations. Differences against a cold search stay at the optimiser's
+        tolerance."""
+        if isinstance(previous, KalmanRegression) and previous.is_fitted:
+            st = previous.fitted_.stats
+            if np.isfinite(st.get("q", np.nan)) and np.isfinite(st.get("r", np.nan)) and st["q"] > 0 and st["r"] > 0:
+                self._warm_qr = np.array([st["q"], st["r"]])
 
     def _Z(self, F: pd.DataFrame) -> np.ndarray:
         kf = self._kf

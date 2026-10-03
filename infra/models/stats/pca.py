@@ -52,11 +52,14 @@ class PCAFit:
     noise_var: float = 0.0       # per-entry noise (scaled space) for projecting rows with gaps
 
 
-def project_observed(Z: np.ndarray, L: np.ndarray, prior_var: np.ndarray, noise_var: float) -> np.ndarray:
+def project_observed(Z: np.ndarray, L: np.ndarray, prior_var: np.ndarray, noise_var) -> np.ndarray:
     """Scores of centred rows ``Z`` (n x p, NaN = not observed) on loadings ``L`` (p x k,
     or n x p x k per row). Complete rows: the classical projection ``Z L``. Rows with gaps:
     the posterior mean of the scores given the OBSERVED entries, with prior f ~ N(0,
-    diag(prior_var)) (each PC's own variance) and noise ``noise_var`` per entry:
+    diag(prior_var)) (each PC's own variance; k, or n x k per row) and noise ``noise_var``
+    per entry (a scalar, or n per row) - every row is projected on its own, never with
+    anything averaged over the batch, so a row's output can't depend on which other rows
+    are predicted with it:
     ``(L_o' L_o + noise_var diag(1/prior_var))^-1 L_o' z_o``. Plain least squares on the
     observed entries is ill-conditioned when they barely identify a factor - found
     2026-10-03: on US-only days, a US/DE/UK PCA's cross-country factor came out at ~100
@@ -69,10 +72,12 @@ def project_observed(Z: np.ndarray, L: np.ndarray, prior_var: np.ndarray, noise_
     obs = np.isfinite(Z)
     full = obs.all(axis=1)
     out[full] = np.einsum("ni,nik->nk", Z[full], L[full]) if per_row else Z[full] @ L
-    ridge = noise_var / np.clip(np.asarray(prior_var, dtype="float64"), 1e-300, None)
+    prior = np.broadcast_to(np.asarray(prior_var, dtype="float64"), (n, k))
+    noise = np.broadcast_to(np.asarray(noise_var, dtype="float64"), (n,))
     for i in np.flatnonzero(~full & obs.any(axis=1)):
         o = obs[i]
         Lo = (L[i] if per_row else L)[o]
+        ridge = noise[i] / np.clip(prior[i], 1e-300, None)
         out[i] = np.linalg.solve(Lo.T @ Lo + np.diag(ridge), Lo.T @ Z[i, o])
     return out
 

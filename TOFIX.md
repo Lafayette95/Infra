@@ -842,20 +842,18 @@ UB, medians in 32nds: positive carry model 11.8 vs observed 4.6; negative carry 
 **Update 2026-10-03:** two causes found and built as options (`idio_maturity_corr`, `level_betas` / `joint_pca`, all default off), closing about a quarter of the gap (0.350 -> 0.334) but costing UB (0.177 -> 0.192) - see `infra/models/basis/CLAUDE.md` 3f. Still open: the rest of the gap; label noise ruled out. Original entry: ZB's CTD/runner-up spread changes have a z-score sd of 0.63 under M2 (ideal 1): ~2.5x too much predicted variance, and M2 puts a median 61% on the realised CTD vs M1's 93%. Ruled out: fat tails (`spread_df`), mark noise (`idio_noise_removal` - FedInvest marks barely reverse). Removing the idiosyncratic part entirely recovers half the gap (0.319). **Options:** (1) shrink the idiosyncratic covariance toward a structured target (e.g. by maturity distance) instead of a free diagonal; (2) estimate the horizon covariance over a calmer / regime-matched window (the 500-day EWMA spans 2020-22's dislocations); (3) model the spread of each bond to the CTD rather than to the basket mean (the pair that decides). A root-specific scale would fit the sample and should be avoided.
 
 
-## Stats: not scheduled; walk-forward runs are by hand
+## Stats: model runs have no scheduler yet
 
-**Found:** 2026-10-03, building `infra/models/stats`.
-**Where:** `infra/models/walk_forward.py`, `scripts/run_walk_forward.py`, `infra/storage/model_runs.py`.
-**Status:** open.
+**Found:** 2026-10-03. **Where:** `scripts/model_run.py`, `infra/models/runs.py`.
+**Status:** open (the jobs exist; nothing triggers them).
 
-**The issue:** use case (a) (root CLAUDE.md 3) runs only when someone runs the script; no
-scheduled weekly refit stores its params, so a "live" strategy reading the latest fit has
-nothing refreshed for it. Same gap as "CTA: no scheduled fit/predict": the daily cycle may
-not import `infra/models`. A saved run is also replaced WHOLE on re-run (no incremental
-append of the newest refit). **Options:** a separate models runner (its own Prefect flow /
-launchd job after the daily cycle) that, per registered run, fits at the new refit date
-and APPENDS one params frame + the new predictions to `ModelRuns/<name>`; registry of
-runs as config (spec name + series + refit rule).
+**The issue:** the operating model (root CLAUDE.md 3b: weekly fit-append, daily
+predict-append, periodic rebuild) is implemented and tested, but no scheduler runs it, so
+a strategy reading a run sees whatever was last run by hand. The daily cycle may not import
+`infra/models` (and must not fail on a model). **Options:** a separate Prefect flow (or
+launchd job) after the daily cycle that runs `model_run.py run <name>` for every run folder
+with a `meta.json`, and `rebuild` on a calendar (monthly), alerting when a reconciliation is
+not identical; same gap as "CTA: no scheduled fit/predict".
 
 ## Stats: `release:` series are indexed by observation period, and one snapshot per read
 
@@ -880,10 +878,11 @@ vintage), built from `infra.processing.releases` (`timestamp` = publication day)
 
 **The issue:** ~1s per fit on 1,300 daily rows (the MLE runs the filter a few hundred
 times); the dashboard's "diagnostics" box with Kalman refits monthly over 5 years took
-~35s. Weekly walk-forwards over many years take minutes. **Options:** vectorise the
-filter for a scalar observation (it is already O(k^2) per step - the loop is the cost);
-warm-start the MLE from the previous refit's (q, r); or only estimate (q, r) on a slower
-schedule and re-filter at each refit.
+~35s. Weekly walk-forwards over many years take minutes. Partly done 2026-10-03: refits
+warm-start the MLE from the previous fit's (q, r) (55 vs 90 likelihood evaluations, same
+result to 1e-5), and under the weekly fit-append schedule (root CLAUDE.md 3b) a fit is one
+per week. **Remaining options:** vectorise the filter for a scalar observation; only
+estimate (q, r) on a slower schedule and re-filter at each refit.
 
 ## Stats: hockey-stick knot inference is grid-limited and its F p-value is naive
 

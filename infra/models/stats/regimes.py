@@ -190,8 +190,24 @@ class HMMRegimes(RegimeModel):
         self._warm: HMMRegimes | None = None
 
     def warm_start_from(self, previous):
-        if isinstance(previous, HMMRegimes) and previous.is_fitted:
+        if self.spec.warm_start and isinstance(previous, HMMRegimes) and previous.is_fitted:
             self._warm = previous
+
+    def restore_path(self, prepared: pd.DataFrame) -> "HMMRegimes":
+        """Recompute the fit's own filtered / predicted / smoothed path over its fit sample
+        from the stored parameters (a model rebuilt by ``from_params`` has none). Exact: the
+        fit's path IS a forward-backward pass with these parameters on these rows. Needed to
+        align the next refit's labels (and to warm-start it) in append mode."""
+        self.check_fitted()
+        f = self.fitted_
+        sample, _ = self.fit_sample(prepared, f.as_of)
+        F = self.feature_frame(prepared[cutoff_mask(prepared.index, f.as_of)]).loc[sample.index]
+        F = F[F.notna().any(axis=1)]
+        p = f.params
+        fb = hmm.forward_backward(hmm.gaussian_loglik(F.to_numpy(dtype="float64"), p.means, p.covs), p.P, p.pi0)
+        f.sample_index, f.filtered, f.predicted, f.smoothed = F.index, fb.filtered, fb.predicted, fb.smoothed
+        f.sample = sample
+        return self
 
     def fit(self, prepared: pd.DataFrame, as_of=None) -> "HMMRegimes":
         sample, as_of = self.fit_sample(prepared, as_of)
@@ -407,6 +423,26 @@ class RuleRegimes(RegimeModel):
 
     def params(self):
         return pd.DataFrame([{"section": "meta", "row": "as_of", "col": self.fitted_.as_of.isoformat(), "value": np.nan}])
+
+    @classmethod
+    def from_params(cls, params: pd.DataFrame, spec=None, **overrides) -> "RuleRegimes":
+        """A rule has no fitted parameters: only the fit date. (A ``probabilities=`` frame is
+        data, not a parameter - pass it again; it can't be rebuilt from params.)"""
+        m = cls(spec, **overrides)
+        meta = params[(params["section"] == "meta") & (params["row"] == "as_of")]
+        m.fitted_ = HMMFit(as_of=pd.Timestamp(meta["col"].iloc[0]), params=None, filt_last=None,
+                           sample_index=pd.DatetimeIndex([]), filtered=np.zeros((0, m.n_regimes)),
+                           predicted=np.zeros((0, m.n_regimes)), smoothed=np.zeros((0, m.n_regimes)),
+                           feature_names=[], stats={}, sample=None)
+        return m
+
+    def restore_path(self, prepared):
+        sample, _ = self.fit_sample(prepared, self.fitted_.as_of)
+        p = self._probs(sample)
+        f = self.fitted_
+        f.sample_index, f.filtered, f.smoothed, f.sample = sample.index, p, p, sample
+        f.predicted = np.vstack([np.full((1, p.shape[1]), np.nan), p[:-1]]) if len(p) else p
+        return self
 
 
 REGIME_CLASSES = {"hmm": HMMRegimes, "rule": RuleRegimes}

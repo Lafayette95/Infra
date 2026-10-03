@@ -24,8 +24,9 @@ specific to the models sub-project.
     (optional) exports the fit as a tidy `section, row, col, value` frame.
 *   **The nowcast predates this** (functions `estimate` = fit, `nowcast`/`news` = predict,
     `panel.py` = prepare). It maps onto the pattern; it was not refactored.
-*   **Scheduling is open:** the daily cycle may not import `infra/models`, so a scheduled
-    fit/predict needs its own runner (`TOFIX.md`, "CTA: no scheduled fit/predict").
+*   **Operating model:** section 0b (weekly fit-append, daily predict-append, periodic
+    rebuild + reconciliation). **Scheduling is open:** the daily cycle may not import
+    `infra/models`, so the jobs need their own runner (`TOFIX.md`).
 
 ## 0a. The two use cases every model must serve (user requirement, 2026-10-03)
 The SAME classes, specs and parameters serve both; never a second implementation for one
@@ -48,6 +49,91 @@ of them.
     parameters, a fit date, and see the fit and its out-of-sample behaviour (the `/models`
     page for the statistical models, `infra/models/stats/CLAUDE.md` 2). The page builds
     the same spec objects a walk-forward uses.
+
+## 0b. Operating a model: weekly fit-append, daily predict-append, periodic rebuild (user decision 2026-10-03)
+The operating model for EVERY model (root CLAUDE.md 3b states it; this is the full
+specification). Use case (a) of 0a, run live.
+
+*   **A run** = `infra.models.runs.RunConfig`: kind (`regression` | `pca` | `regime_pca`;
+    new families register here), spec name + overrides, input series (`regime_series` for
+    regime models), first refit date `start`, refit rule (`W-FRI`, `ME`, or every N rows),
+    `history_start` (the first day ever read - preparation always starts here). Stored as
+    `Database/Derived/ModelRuns/<run>/meta.json`, with `params.parquet` (one block per fit
+    date, `fit_as_of`) and `predictions.parquet` (one row per timestamp, `fit_as_of` = the
+    fit behind it).
+*   **The three jobs** (`scripts/model_run.py`):
+    1.  `run` = the daily job: predict the new rows, append any due fit, then re-predict
+        the rows after a fit it just appended - so the run is walk-forward-consistent
+        whenever the job ends. (`fit` / `predict` do one half each.)
+    2.  Fit-append: `runs.fit_due` fits each due refit date after the last stored (or
+        failed) one, in order, warm-started / aligned from the previous fit rebuilt from its
+        params. A failed fit is recorded in `meta.json` and not retried (the walk-forward
+        skips it too).
+    3.  `rebuild [--promote]`: the full walk-forward into `<run>/_rebuild/` and a
+        reconciliation report against the stored run; `--promote` archives the stored run
+        to `<run>/_archive/<timestamp>/` and replaces it. A new run's history is built this
+        way (one pass), not by a first `run` fitting hundreds of dates.
+*   **The invariant: incremental == full walk-forward, exactly.** Then a rebuild's
+    differences are DATA REVISIONS or BUGS, never noise. `runs.reconcile` reports fit dates
+    on one side only, per params section the largest difference and the FIRST fit date that
+    differs (a regime chain diverging after a revision shows as one date and everything
+    after it), and per prediction column the largest difference and the first differing
+    row. Tests: `tests/test_model_runs.py` (OLS, Kalman, PCA, regime PCA; daily schedule
+    and a catch-up schedule that skips days); real data 2026-10-03: a US-curve regime PCA
+    backfilled to 2026-08-31, run on 5 scattered days to 2026-09-30, reconciled identical
+    with a fresh rebuild.
+*   **Rules that keep the invariant (each found or pinned 2026-10-03):**
+    *   **A refit target is due only once data exists on/after it**
+        (`walk_forward.refit_dates`): otherwise a not-yet-loaded Friday would be snapped to
+        Thursday, and a later rebuild (seeing Friday) would disagree. A genuine holiday is
+        snapped back once a later row exists.
+    *   **Which fit a row uses:** the latest fit dated strictly BEFORE it. The daily predict
+        recomputes from the earliest of: the last fit (so a revised day this week shows up
+        as a "changed" row - logged), the last stored row, and the first stored row whose
+        fit is no longer the right one (a catch-up run appends several fits after
+        predicting those days with the old one - found when only the last new fit's rows
+        were being redone).
+    *   **Row-local outputs:** a row's output depends only on its own data, the history
+        before it, and its fit - never on statistics of the batch it was predicted in (the
+        regime PCA's projection of rows with gaps once used a prior averaged over the batch;
+        `tests/test_model_runs.py::test_regime_pca_rows_with_gaps_do_not_depend_on_the_batch`).
+    *   **Preparation from the fixed history start**, every time: diffs, EWM z-scores
+        (unbounded memory) and resampling must give the same values as in the full run.
+    *   **The previous fit is rebuilt exactly** from its params (`from_params`; regime
+        models also `restore_path`, which recomputes the fit's own regime path from its
+        params: needed to align the next fit's regime labels and to warm-start it).
+*   **Per model: what the weekly fit and the daily predict carry.**
+
+    | Model | Fit (weekly) | Predict (daily) | Across refits |
+    |---|---|---|---|
+    | OLS/WLS, Huber, quantile, TLS, logit/probit, hockey, ridge with fixed alpha | window only | stateless: params + the row | independent |
+    | ridge/lasso/elastic net with alpha by CV, stepwise | window only | stateless | independent, but discrete choices (alpha grid point, selected regressors) can JUMP after a tiny revision |
+    | Kalman regression | MLE of (q, r) on the window, warm-started from the previous fit's (q, r): 55 vs 90 likelihood evaluations, same result to 1e-5 | STATEFUL: filters forward from the fit's final state; the daily job re-filters the few rows since the fit (deterministic - no daily state stored) | optimiser start only (tolerance-level) |
+    | PCA (plain / weighted / missing-data) | window only | stateless projection | sign alignment only (score signs, never residuals) |
+    | HMM regimes, regime PCA | EM, warm-started from the previous fit (`RegimeSpec.warm_start`) | STATEFUL: forward filter from the fit's final filtered probability; re-filtered daily from the fit, like Kalman | PATH-DEPENDENT (below) |
+    | CTA | its own `walk_forward` (recursive state) | - | not on this machinery yet |
+
+*   **Markov / HMM state, the two kinds:**
+    *   *Within predict* (today's probability depends on yesterday's): no state is stored
+        day to day - the fit holds the filter state at its date, and each daily job
+        re-filters the rows since. Deterministic, so it reconciles exactly.
+    *   *Across fits*: a warm-started EM fit depends on the previous fit (its starting
+        point, and the label alignment), so the fits form a CHAIN. A rebuild reproduces it
+        exactly only by replaying the chain from the same first refit on the same data (it
+        does: same `start`). A data revision can move one fit into a different local
+        optimum, and that propagates to every later fit - which is what the periodic
+        rebuild is for: the report gives the first fit where the chain diverged.
+        `RegimeSpec.warm_start=False` makes every fit cold (k-means multi-start: each fit
+        depends on its window only, PATH-INDEPENDENT; ~2s per weekly fit, so affordable on
+        this schedule), at the cost of regime CONTINUITY (a cold fit can land in a different
+        local optimum than last week's, so the regime definition can hop). Default: warm.
+    *   In-sample (smoothed) probabilities are re-estimated by every fit - the past regime
+        weights a fit uses can change from one week to the next; that is estimation, not
+        look-ahead. Out of sample only predicted / filtered probabilities are ever used.
+*   **Adding a model to this machinery:** it must have `prepare`, `fit(prepared, as_of)`,
+    `params()`, `from_params`, and `predict(prepared, start=, end=)` returning row-local
+    outputs; optional `warm_start_from` / `align_to` / `restore_path`; then a `RunConfig`
+    kind, and the incremental-equals-rebuild test in `tests/test_model_runs.py`.
 
 ## 1. Scope and layering
 *   **`infra/models` is a consumer layer, like `infra/analytics`**: pure computation on data

@@ -139,6 +139,13 @@ class RegimePCA(StatModel):
         if isinstance(previous, RegimePCA) and previous.is_fitted:
             self.regime.warm_start_from(previous.regime)
 
+    def restore_path(self, prepared: pd.DataFrame) -> "RegimePCA":
+        """After ``from_params``: recompute the regime model's in-sample path (see
+        ``HMMRegimes.restore_path``) so a following refit can align to / warm-start from it."""
+        r_part, _ = self._split(prepared)
+        self.regime.restore_path(r_part)
+        return self
+
     # ------------------------------------------------------------------ fit
     def fit(self, prepared: pd.DataFrame, as_of=None) -> "RegimePCA":
         sp = self.spec
@@ -229,8 +236,8 @@ class RegimePCA(StatModel):
         Xc = X - m
         if mode == "robust":
             Bm = f.B
-            bv = np.einsum("ib,nij,jb->nb", Bm, C, Bm).mean(axis=0) if len(C) else np.ones(Bm.shape[1])
-            noise = float(np.mean(np.diagonal(C, axis1=1, axis2=2))) * 1e-3 if len(C) else 0.0
+            bv = np.einsum("ib,nij,jb->nb", Bm, C, Bm)                       # per row
+            noise = np.mean(np.diagonal(C, axis1=1, axis2=2), axis=1) * 1e-3    # per row
             scores = project_observed(Xc, Bm, bv, noise)
             recon_c = scores @ Bm.T
             M = np.eye(len(Bm)) - Bm @ Bm.T
@@ -240,10 +247,10 @@ class RegimePCA(StatModel):
             vals, vecs = np.clip(vals[:, ::-1], 0, None), vecs[:, :, ::-1]
             Lt = vecs[:, :, :f.k]
             Lt = Lt * np.where(np.einsum("nik,ik->nk", Lt, f.L0) < 0, -1.0, 1.0)[:, None, :]
-            # rows with gaps: per-row prior = that row's blended eigenvalues (mean over rows is
-            # used for the ridge - project_observed takes one prior vector)
-            prior = vals[:, :f.k].mean(axis=0) if len(vals) else np.ones(f.k)
-            noise = float(vals[:, f.k:].mean()) if len(vals) and vals.shape[1] > f.k else 0.0
+            # rows with gaps: prior = that row's own blended eigenvalues, noise = its mean
+            # discarded eigenvalue (row-local: never averaged over the batch)
+            prior = vals[:, :f.k]
+            noise = vals[:, f.k:].mean(axis=1) if vals.shape[1] > f.k else np.zeros(len(vals))
             scores = project_observed(Xc, Lt, prior, noise)
             recon_c = np.einsum("nk,nik->ni", scores, Lt)
             var = np.einsum("nij,nj->ni", vecs[:, :, f.k:] ** 2, vals[:, f.k:])
@@ -386,7 +393,7 @@ class RegimePCA(StatModel):
         sub = params[params["section"].str.startswith("regime.")]
         sub = sub.assign(section=sub["section"].str.slice(len("regime.")))
         rspec = m.regime.spec
-        m.regime = REGIME_CLASSES[rspec.method].from_params(sub, rspec) if rspec.method == "hmm" else m.regime
+        m.regime = REGIME_CLASSES[rspec.method].from_params(sub, rspec)
         meta = params[params["section"] == "meta"]
         cols = meta[meta["row"] == "column"].sort_values("value")["col"].tolist()
         k = int(meta.loc[meta["row"] == "k", "value"].iloc[0])

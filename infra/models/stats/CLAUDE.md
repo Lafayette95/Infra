@@ -46,6 +46,11 @@ the models MEAN and HOW to use them. Built 2026-10-03.
     page's compute is `models_callbacks.run_model` (plain Python, tested headless). Same
     classes and specs as (a), so what you see is exactly what a backtest would use.
 
+*   **Operated live** per `infra/models/CLAUDE.md` 0b: `scripts/model_run.py create` a
+    run, `rebuild --promote` its history, then `run` daily (predict-append + weekly
+    fit-append), `rebuild` periodically to reconcile. `KalmanRegression` warm-starts its
+    (q, r) search from the previous refit; HMM regimes their EM.
+
 ## 3. Preparation (`infra/models/prep.py`, shared by every model)
 *   String steps like the nowcast's transforms: `resample:W-FRI[:how]`, `log`, `diff[:n]`,
     `pct`, `logdiff`, `lag[:n]`, `mult:k`, `add:k`, `neg`, `ffill[:n]`, `ewm_z:hl` -
