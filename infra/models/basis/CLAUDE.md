@@ -411,6 +411,34 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     **ZB is partly dilution** (idiosyncratic noise over a 50-bond basket: idio x0 recovers
     about half the gap to M1) - not yet fixed.
 
+### 3g. Calendar effects: the in-study event study (add-on MS, step 1, 2026-10-03)
+*   **Built:** `infra/analytics/event_study.py` (pure) + `infra/pipeline/event_study.py`
+    (reads FedInvest END OF DAY yields, the auctions store, the on/off-the-run map). Richness
+    = each note / bond's yield RESIDUAL to a cubic regression spline fitted per day across
+    1-30y (knots 2/3/5/7/10/15/20/25y, one trimming pass; median |residual| 0.74bp, sd
+    2.05bp over 869k bond-days 2016-2026). Profiles in the EVENT-PROFILE interface's shape
+    (`EVENT_PROFILE_COLUMNS`: event_type, tenor, rel_day, mean / median / sd, n) - the
+    first provider; the project-wide event study will be a second one.
+*   **Findings, 2016-2026** (mean residual change, + = cheapened, business days; t-stats):
+    | Event (bond measured) | 2y | 3y | 5y | 7y | 10y | 20y | 30y |
+    |---|---|---|---|---|---|---|---|
+    | Auction, on-the-run, -6d -> +5d | +1.03 (7.5) | +0.50 (6.5) | +0.69 (9.4) | +0.16 (2.6) | +0.18 (2.0) | +0.31 (4.1) | +0.16 (2.5) |
+    | Outgoing on-the-run, -1d -> +40d of successor's issue | +0.58 (5.0) | +0.43 (5.4) | +0.92 (10.2) | +0.33 (4.3) | -0.42 (-2.4) | +0.45 (1.4) | +0.58 (4.8) |
+    | New issue, issue day -> +60d | +1.17 (8.2) | +0.93 (7.7) | +1.51 (12.6) | +0.49 (5.1) | +1.43 (7.2) | +1.39 (4.9) | +0.05 (0.6) |
+    | Reopened bond, -1d -> +20d of the reopening auction | | | | | +0.63 (6.0) | +0.28 (2.1) | +0.06 (1.2) |
+
+    Readings: (1) a NEW issue starts rich and cheapens 1-1.5bp over its first ~3 months
+    (not the 30y); (2) the outgoing on-the-run cheapens ~0.5-0.9bp over the weeks after
+    its successor's issue, having already cheapened ~0.5-0.9bp over the 20 days BEFORE it;
+    (3) auction concession is mostly AFTER the auction, not into it (-5d..-1d: 0.0-0.25bp),
+    largest at 2y / 5y; (4) 10y reopenings cheapen the reopened bond +0.6bp over 20 days.
+    The 10y outgoing-roll sign (-0.4bp) is the exception, n = 42, unexplained. Sizes matter
+    where CTD gaps are small: 1.4bp on a new 10y is ~0.12 points, ~4/32 of TN futures.
+*   **Not yet:** the specialness side-by-side (to net what funding's lifecycle layer
+    already puts in carry, so the same richness isn't counted twice), and the add-on
+    itself (expected residual drift applied to each affected deliverable's forward yield
+    to delivery, + the profile's dispersion as extra variance).
+
 ## 4. The models
 *   **M0 (`DeterministicBasis`)**: no fitting. Per contract: CTD, delivery day, fair futures,
     the CTD's net basis / implied repo / funding, the OBSERVED option value (fair - market,
