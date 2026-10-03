@@ -16,18 +16,55 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     conversion factors (root `CLAUDE.md` 18), FedInvest cash prices and yields per CUSIP
     (18), the futures snap at 15:30 New York (23), funding model v1 (20), the CMT par curve
     (13) and the auction-derived reference table (18).
-*   **A ladder of models, simplest first** (user decision 2026-10-02), each a spec in
-    `config.BASIS_MODELS` and a class in `model.TIERS`, all scored on the same bench
-    (section 6):
+*   **The structure (user decisions 2026-10-02; reshaped the same day - see below):** PRICING
+    TIERS of increasing realism (M0-M3), SWITCHABLE ADD-ONS (T, IV, MS) any suitable tier can
+    carry, and a separate EXPLANATORY layer on top of whatever a tier leaves unexplained. Each tier /
+    add-on combination is a spec in `config.BASIS_MODELS` (a class in `model.TIERS`, flags
+    on `BasisSpec`), all scored on the same bench (section 6).
+
+    **Pricing tiers** (what moves, and how the short chooses):
 
     | Tier | Adds | Answers | Status |
     |---|---|---|---|
     | **M0 deterministic** | forward CTD = lowest implied futures price over bonds x {first, last} delivery day; option value 0 | carry-only fair value, baseline futures DV01 | built |
     | **M1 one factor** | one normal level shock to every deliverable's forward yield; quality option by simulation; Margrabe/Bachelier two-bond check | the 6%-crossing switch value, first CTD probabilities | built |
-    | **M2 macro + basket spreads** | level + a PCA on the basket's SPREADS at the horizon; predecessor backfill for young bonds; EXPECTED NEW ISSUES entering the basket | relative moves that decide the CTD; per-bond probabilities; new-issue CTDs | built |
-    | **+ timing (`M2T`)** | the wild card (Bermudan, event-dependent window variance) and the end-of-month switch, added to any simulation tier | the timing options - UB's value | built (taken from M4 ahead of M3, user decision) |
-    | M3 funding & microstructure | funding as a front-end factor (stochastic timing); specialness linked to idiosyncratic moves; calendar effects; calibrated fat tails | carry-driven timing, squeezes, supply | planned |
-    | M4 market-implied | implied-vol scaling; a futures-richness term (the basis-trade premium) | fair value vs market | planned |
+    | **M2 basket factors** | level + a PCA on the basket's SPREADS at the horizon; predecessor backfill for young bonds; EXPECTED NEW ISSUES entering the basket; optionally FAT-TAILED spreads (`spread_df`, spec `M2t`: Student-t, one mixing draw per path) | relative moves that decide the CTD; per-bond probabilities; new-issue CTDs | built (fat tails moved here from M3, user decision 2026-10-02: the spread distribution's SHAPE belongs with M2's spread model) |
+    | M3 stochastic funding & timing | the general-collateral funding rate as a front-end FACTOR (SR1-implied path + shocks), so carry moves on each path for the whole basket and the early/late delivery choice is made PER PATH from that path's carry | carry-driven timing - every contract, most in regime shifts (the 2022-24 negative-carry years) | planned - next tier. Macro and common to all bonds; deliberately NOT bundled with the bond-specific microstructure (add-on MS), so each is testable and attributable on its own |
+
+    **Add-ons** (spec flags; T and IV attach to M1, M2, M3; MS to M2, M3; M0 has no simulation to attach to):
+
+    | Add-on | Flag | What | Status |
+    |---|---|---|---|
+    | **T - timing options** | `timing_options` (spec `M2T`) | the wild card (Bermudan over the intention days, per-window variance with FOMC / quarter-end / month-end multipliers - the DEFAULT) and the end-of-month switch (futures frozen after the last trading day); the quality simulation then stops at the last trading day | built. With M3, T must read M3's PER-PATH delivery decision instead of the deterministic first/last choice (one window, no EOM under negative carry) - a design point inside M3 |
+    | IV - implied vol | (planned) | rescales the factor vols in `fit` from Treasury-futures options (CBOT options on ZT/ZF/ZN/ZB/UB, on GLBX): the level from at-the-money implied vol, possibly the curve factors from options across tenors | planned. Needs a PAID Databento fetch (verify the option roots' symbology as for `SR3.OPT`, dry-run the cost for 2019-2026 with near-the-money strikes only - Rule 2.3, user approval). Plumbing exists: the daily options pipeline and Black-76 in `infra/analytics`. Caveat: the options are American - Black-76 approximates them (fine near the money, short-dated) |
+    | MS - microstructure | (planned) | the bond-specific side, modelled JOINTLY because it's one phenomenon seen twice - an on-the-run bond is rich partly BECAUSE it's special, and both switch at the same dates: (1) SPECIALNESS linked to idiosyncratic moves (measured on the NY Fed lending fees, not assumed - not the other assistant's "2bp per 1bp"); (2) CALENDAR effects - timed, directional spread moves around known dates: auction concessions (cheapening into an auction or reopening, richening after), reopening supply (a lasting cheapening at settlement), a successor issue settling (the 1-old losing its on-the-run premium), month-end index extension (new issues entering the indices). Each applied as an expected drift of the affected bond's forward yield to delivery (+ extra variance where the event adds dispersion), NET of what funding's specialness lifecycle already puts in carry (or the same richness is counted twice) | planned. Attaches to M2 or M3 (needs M2's per-bond idiosyncratic structure; not M0/M1). Matters most where recent issues sit in the basket: TN, ZN, ZT, UB. Sizes are small (fractions of a bp to a few bp of yield) but comparable to CTD/runner-up gaps (ZN median 0.26/32). **Future-proofing (user decision 2026-10-02): the calendar effects are read through an EVENT-PROFILE interface** - expected spread path and extra variance by event type x tenor x days from the event - whose first provider is MS's own in-study event study (FedInvest yields from 2008, auction / reopening dates from the auctions store, successor dates from the OTR map); a later full-fledged, project-wide event study becomes a second provider that MS reads instead, with no change to MS |
+
+    **The explanatory layer: the basis SPREAD model** (planned) - NOT a pricing tier. What a
+    tier leaves unexplained (observed minus model option value) is, in rate terms, the
+    CTD's implied repo minus funding v1:
+
+        implied repo - v1 funding ~ TERM premium (left out by the rolling-overnight choice;
+          DVP 8-30d measured +3.4bp) + haircut / margin capital cost + balance-sheet charges
+          (quarter-ends) + demand-driven RICHNESS (asset managers long futures)
+
+    - i.e. the HEDGE FUNDS' HARVEST spread in the basis trade. A purely STATISTICAL richness
+    term (fit a curve to the residual, e.g. decaying into delivery) would add nothing - the
+    residual IS the premium - so this layer EXPLAINS it instead: regress the spread on
+    funding and positioning variables, report it as its own component (option value ->
+    spread -> residual), never fold it into the fair value (that would make fair = market
+    by construction). Candidate drivers: SOFR p75 - median (already INSIDE funding v1, so
+    its coefficient TESTS v1: ~0 = v1 prices the client spread right, > 0 = hedge funds'
+    cost moves more than 1:1 with it), SOFR p99 - p75 (funding-tail stress), the DVP term
+    premium (OFR term buckets minus the futures-implied path), quarter-end proximity,
+    positioning (CFTC's free weekly Traders in Financial Futures: asset managers' and
+    leveraged funds' Treasury-futures positions - a small new free pipeline source), reserves
+    (the Fed's H.4.1 on FRED). Its use: a "fair spread" given funding conditions (deviations
+    = a signal), the decomposition of the basis, and a validation of the funding model.
+    Needs: the M2T (ideally M3) residuals, so the spread is measured AFTER the option values;
+    the CFTC source. (This replaces the earlier "M4 market-implied" tier: its timing options
+    became add-on T, implied vol add-on IV, and its "futures-richness term" this layer. The
+    earlier M3 "funding & microstructure" was split the same day: stochastic funding stayed M3,
+    specialness + calendar effects became add-on MS, general fat tails moved to M2.)
 
     The curve-building sub-project (fitted curve, spread to spline) is NOT a prerequisite
     (user decision 2026-10-02): the basket's own spread PCA defines the relative moves; a
@@ -71,6 +108,7 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     Kept from it: carry drives the timing option; fat-tailed idiosyncratic moves; the
     user's own point that constant repo biases the quality option (a squeezed bond earns
     special carry); splitting general collateral from specialness (= funding v1).
+*   **Everything is per 100 face.** Prices, conversion factors, implied futures, net basis and the futures DV01 (points per bp) are per 100 face, so a contract's notional (ZT and Z3N are $200k, the others $100k) never affects the CTD or the probabilities - only money per contract (ZT's 0.019 = ~$38/bp per contract; the bmk step's `FuturesRoot.point_value` already carries it).
 *   **Delivery day:** first or last business day of the delivery window, whichever gives
     the lower implied futures price (the sign of carry): positive carry -> last, negative
     -> first. Windows from the CME rules (`infra.analytics.futures_basis.delivery_window`):
@@ -218,7 +256,54 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     track tail x vol (within-UB regression slope -0.41, R^2 0.13; observed peaked in 2023 at
     12/32 when CFs rose, a SMALLER tail). Reading: a timing option (UB-dominant) PLUS a
     futures-richness premium that fades into delivery (convergence forces it out) - the
-    latter also pushes ZB/ZF/ZN/ZT negative. That's the M4 richness term (`TOFIX.md`).
+    latter also pushes ZB/ZF/ZN/ZT negative. That premium is what the explanatory spread layer (section 1) is for (`TOFIX.md`).
+
+### 3f. What decides calibration: the spreads' SIZE vs their SHAPE (2026-10-02)
+*   **The realised CTD must follow the realised delivery TIMING.** Scoring every contract at
+    its last trading day was wrong whenever carry was negative: the shorts deliver at the
+    START of the delivery month, and for ZT - whose last trading day is the month's END -
+    the bond cheapest a month later was beside the point. On 2024-05-01 for ZTM4, M0 correctly
+    ranked the 0.75% note (implied 101.48) over the 4.625% (101.72): CME's conversion factor
+    rounds a ZT bond's term DOWN to whole months, which favoured the 0.75% 31-March maturity
+    over the 15-March one; carry was negative (funding 5.37%), so delivery was early June.
+    Every 2022-2025 ZT "miss" was this. Fixed (`validate.realised_ctd`): M0 on the delivery
+    month's FIRST INTENTION day decides; if early (negative carry) its CTD is the realised
+    one, else the last trading day's. 78 of 186 contracts 2019-2026 were early deliveries;
+    23 realised CTDs changed (ZT 16, ZB 3, UB 2, ZN 2); **ZT's M0 hit rate went 44% -> 82%**.
+*   **Corrected scores** (Brier, all horizons pooled; lower = better):
+
+    | Root | M0 | M1 | M2 |
+    |---|---|---|---|
+    | TN | 0.066 | 0.063 | **0.059** |
+    | UB | 0.306 | **0.162** | 0.169 |
+    | ZB | 0.404 | **0.296** | 0.349 |
+    | ZF | 0.002 | 0.001 | 0.002 |
+    | ZN | 0.397 | 0.311 | **0.303** |
+    | ZT | 0.358 | **0.317** | 0.368 |
+
+    M2 scored WORSE than M1 on ZB and ZT, which first looked like overstated relative
+    variance.
+*   **It isn't the size - M2's spread variance is about right, M1's far too small.** For
+    sampled days, the CTD / runner-up implied-futures spread's change to the decision day,
+    realised vs predicted (32nds):
+
+    | Root | realised sd | M1 predicted (median) | M2 predicted (median) | M2 z-score sd (ideal 1) |
+    |---|---|---|---|---|
+    | UB | 7.85 | 3.56 | 5.73 | 0.91 |
+    | ZB | 6.56 | 2.42 | 6.17 | 0.63 |
+    | ZN | 2.75 | 1.05 | 1.71 | 0.92 |
+    | ZT | 1.51 | 0.43 | 1.07 | 1.32 |
+
+    (M1's z-scores blow up when two bonds have similar DV01/CF and its predicted sd ~ 0.)
+*   **It's the SHAPE:** (1) no drift - the mean z-score is ~0 (-0.24..+0.16), forwards aren't
+    biased; (2) FAT TAILS - excess kurtosis 2.6-5.2: the spread usually barely moves (the
+    runner-up overtakes in only 16-18% of cases) and occasionally jumps, so a normal with the
+    RIGHT variance over-weights moderate moves and predicts too many switches - M1's too-
+    small variance accidentally fits the quiet body; (3) DILUTION in big baskets - on ZB, M2
+    puts a median 61% on the realised CTD (M1 93%) and 11% on bonds outside the top two: each
+    of 50 bonds carries its own normal noise, leaking probability to bonds that never win.
+*   **Fix tried: Student-t spreads** (`BasisSpec.spread_df`, spec `M2t`; section 4).
+    Results: section 7.
 
 ## 4. The models
 *   **M0 (`DeterministicBasis`)**: no fitting. Per contract: CTD, delivery day, fair futures,
@@ -241,7 +326,10 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     M1 so the two differ only by the relative structure) and the SPREADS s_i with covariance
     estimated AT the horizon (overlapping h-day changes, slow EWMA lambda 0.99, 500-day
     window, horizon capped at a third of it), top 3 principal components + a diagonal
-    idiosyncratic remainder (floor 1% of each bond's variance). Young bonds take their
+    idiosyncratic remainder (floor 1% of each bond's variance). Optionally FAT-TAILED
+    (`spread_df`, spec `M2t`): the spread part (factors + idio) is multivariate Student-t, ONE
+    mixing draw per path shared by the basket (a quiet vs a jump regime), variance kept equal
+    to the normal's; the level stays normal. Young bonds take their
     PREDECESSOR's changes (previous original issue of the same type and term; a constant
     spread drops out of changes - the user's chosen backfill), then the nearest-maturity
     basket bond's. Diagnostics per contract: variance shares (level / spread factors /
@@ -296,8 +384,10 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
 *   **The SOFR path stopped at the SR1 strip's last month** and a 2019 last trading day's
     delivery 2 days past it crashed the realised-CTD pass -> flat extrapolation past the last
     priced day (`infra.analytics.sofr_curve.SofrPath.compounded`).
-*   **The realised CTD is a market fact, the same for every tier** -> computed once (M0 at the
-    last trading day) and reused (`--realised`); `run_basis.py --scores-from` scores saved
+*   **The realised CTD followed the wrong timing** (scored at the last trading day even when
+    carry made the shorts deliver early) -> decided on the first intention day when early
+    (3f); ZT's hit rate 44% -> 82%. It is a market fact, the same for every tier -> computed
+    once and reused (`--realised`); `run_basis.py --scores-from` scores saved
     predictions (a bench crash no longer costs a 40-minute run).
 *   **Smaller:** a day with no deliverable priced crashed M2's fit (guarded); pandas `attrs`
     carrying the level history broke `concat` (cleared on outputs); the 3-month calendar
@@ -332,10 +422,20 @@ Regression benchmarks (3b): CTD implied repo +13 to +20bp over SOFR in 2019-20; 
     (0.38-0.48 -> 0.26-0.32); ZT unchanged (a parallel shift never re-ranks ZT); model option
     value ~0 except ZB (median 0.28/32) - yields sat far below the 6% notional. DV01 slope
     1.00-1.06.
-*   **M2, M2T**: (pending the 2019-2026 runs)
+*   **Scores above use the FIRST realised-CTD definition**; corrected scores (and the
+    size-vs-shape diagnosis) are in 3f - the M0 hit rates for ZT in particular were 44-46%
+    before the fix, 82% after.
+*   **M2**: corrected Brier best on TN and ZN, worse than M1 on ZB/ZT (3f: right variance,
+    wrong shape); DV01 slope 0.99-1.06; the new-issue probability exceeded 10% on 13% of ZT
+    days and 5% of ZN days; model option value median ZB 2.6/32 (observed -0.45).
+*   **M2t, M2T**: (pending)
 
 ## 8. Open (root `TOFIX.md`, "Basis: ...")
-Futures richness and UB's residual; the cash bid/mid guess; only front contracts have a 15:30
+Next steps in order: M2t / M2T results; M3 (stochastic funding & timing); add-on MS
+(specialness + calendar effects, behind the event-profile interface); the spread layer (needs
+the CFTC positioning source); add-on IV (needs the paid options fetch). Combinations are
+tested on the bench separately and together (e.g. M3 + T + MS). Known
+issues: futures richness and UB's residual; the cash bid/mid guess; only front contracts have a 15:30
 quote; the expected-issue generator ignores holidays; the wild-card window's remaining
 caveats (constants calibrated on 2019-2026, unscheduled events, the halt, futures as the
 cash proxy); wiring the futures DV01 into the cycle's bmk step.

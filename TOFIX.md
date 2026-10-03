@@ -777,9 +777,9 @@ minus its last settlement, added to the continuous series' last value - not writ
 
 **Found:** 2026-10-02, the basis models' 2019-2026 bench (`infra/models/basis/CLAUDE.md` 5).
 **Where:** `infra/models/basis`; observed option value = fair (M0) - market futures at 15:30.
-**Status:** open - the M3/M4 tiers' job.
+**Status:** open - the explanatory spread layer's job (`infra/models/basis/CLAUDE.md` 1), with M2T/M3 for the option side.
 
-**The issue:** (1) the observed option value is NEGATIVE on 58-87% of days for ZB, ZF, ZN, ZT (medians -0.4 to -0.7/32): the futures are RICH against our funding, the basis-trade premium documented for 2019-20 (CTD implied repo +13 to +20bp over SOFR) - a pure delivery-option model can't produce a negative value, so the model needs a futures-richness term (M4) or a funding calibrated to implied repo. (2) UB's observed value has a median of ~6/32 while M1 explains ~0 of it (yields far below the 6% notional, so parallel moves rarely switch). Candidates, in the order the tiers can test them: relative moves among the long bonds (M2), the end-of-month and wild-card options (M4), a cash bid/mid bias on old long bonds (`cash_mid_frac`; their posted spread is 1-2/32).
+**The issue:** (1) the observed option value is NEGATIVE on 58-87% of days for ZB, ZF, ZN, ZT (medians -0.4 to -0.7/32): the futures are RICH against our funding, the basis-trade premium documented for 2019-20 (CTD implied repo +13 to +20bp over SOFR) - a pure delivery-option model can't produce a negative value. Plan (2026-10-02): an EXPLANATORY spread layer - regress the CTD's implied repo minus funding v1 on funding and positioning drivers (SOFR p75 - median, which also tests v1; SOFR p99 - p75; the DVP term premium; quarter-ends; CFTC positioning; reserves) - not a statistical richness term fitted to the residual, which would add nothing. (2) UB's observed value has a median of ~6/32 while M1 explains ~0 of it (yields far below the 6% notional, so parallel moves rarely switch). Candidates: relative moves among the long bonds (M2), the end-of-month and wild-card options (add-on T - built 2026-10-02: the wild card alone gives UB 10.5/32 vs 12.3 observed in the final month), a cash bid/mid bias on old long bonds (`cash_mid_frac`; their posted spread is 1-2/32).
 
 ---
 
@@ -818,3 +818,14 @@ minus its last settlement, added to the continuous series' last value - not writ
 
 **Fixed:** each wild-card window has its own variance: the root's ORDINARY-day share of daily variance in 15:00 -> 19:00 New York (ZT 4.0% ... UB 6.7%) x a multiplier for FOMC days (1.7-6.3x by root), quarter-ends (2.0-2.8x) and month-ends (1.3-3.1x), measured 2019-2026 (`BasisSpec.wildcard_window`; day kinds `infra.analytics.delivery_timing.window_kinds`). Found moot: the LAST intention day's later deadline (20:00 Chicago = 21:00 New York, 1.5-1.75x the variance of a 19:00 window) - that day falls after the last trading day, when the futures price is already frozen, so it belongs to the end-of-month period, not to a wild-card window.
 **Remaining:** (1) the shares and multipliers are constants calibrated on 2019-2026, so a backtest before 2026 uses later data in a parameter (a mild look-ahead); re-measuring them point in time needs the intraday quotes at fit time. (2) Other after-close events aren't tagged (e.g. ZN's largest window move, +29.5/32 on 2025-04-02, the tariff announcement) - the release calendar (CLAUDE.md 17) could add scheduled ones; unscheduled ones can't be anticipated. (3) The window spans CME's 17:00-18:00 New York halt (futures don't trade, cash thinly does), and futures moves stand in for the CTD's cash moves - both secondary.
+
+---
+
+## Swap closes: the futures-adjusted hedge ratio could use the basis model's futures DV01
+
+**Found:** 2026-10-02 (user question), after the basis model's futures DV01 was validated (`infra/models/basis/CLAUDE.md` 7: slope 0.97-1.00, R^2 >= 0.977).
+**Where:** `infra.pipeline.swap_hedge` / `infra.processing.swap_hedge` (`SWAP_HEDGES`, `SWAP_HEDGE_CMT`).
+**Status:** open - a candidate improvement, untested.
+
+**The idea:** the hedge ratio (swap-rate bp per futures point) is a 60-business-day regression of futures settlement changes on the CMT par yield, which bundles two legs: futures point -> the CTD's yield (exactly 1 / the model's futures DV01, point in time, adjusting at once at rolls and CTD switches where a 60-day regression lags) and the CTD's yield -> the swap tenor (a curve beta the DV01 doesn't know - e.g. 1-3y swaps hedged with ZT). **Candidate:** ratio = (curve beta of the swap tenor on the CTD's yield, regressed) x (1 / model futures DV01). **Test:** the swap closes' held-out test (adjusted MAE 0.21bp today, CLAUDE.md 16); switch only if it wins.
+

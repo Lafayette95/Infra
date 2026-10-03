@@ -54,19 +54,42 @@ def option_value_bench(contracts: pd.DataFrame) -> pd.DataFrame:
 
 
 def realised_ctd(contracts: pd.DataFrame, name: str = "M0") -> pd.DataFrame:
-    """The realised CTD of each contract seen in ``contracts`` that has traded out: M0's
-    CTD on its last trading day (all listed contracts, no futures price needed) - a fact
-    about the market, the same for every tier, so computed once and reused."""
-    out, last_day = [], pd.Timestamp(contracts["day"].max())
-    for ltd, g in contracts.groupby("last_trading"):
+    """The realised CTD of each contract seen in ``contracts`` that has traded out - where
+    the shorts actually delivered, by M0 on the day that decides it:
+    1. on the delivery month's FIRST INTENTION day (2 business days before its first
+       business day), M0 picks early vs late delivery by carry; if EARLY (negative carry),
+       its CTD is the realised one - the shorts deliver that week;
+    2. otherwise M0's CTD on the LAST TRADING day.
+    Scoring every contract at its last trading day (the first version) was wrong whenever
+    carry was negative: for ZT, whose last trading day is the delivery month's END, every
+    2022-2025 contract "missed" - the low-coupon note was correctly the early-June CTD, and
+    the bond cheapest a month later was beside the point. A fact about the market, the same
+    for every tier, so computed once and reused."""
+    from infra.analytics.futures_basis import delivery_window
+    from infra.analytics.sofr_curve import business_days
+    last_day = pd.Timestamp(contracts["day"].max())
+    meta = contracts.drop_duplicates("contract")[["contract", "root", "last_trading"]].copy()
+    bd = business_days(pd.Timestamp(contracts["day"].min()) - pd.Timedelta(days=30), last_day + pd.Timedelta(days=200))
+    meta["first_intention"] = [
+        bd[bd < delivery_window(r, pd.Timestamp(ltd).replace(day=1), bd)["first_delivery"]][-2]
+        for r, ltd in zip(meta["root"], meta["last_trading"])]
+    out = {}
+    for fid, g in meta.groupby("first_intention"):
+        if pd.Timestamp(fid) > last_day:
+            continue
+        res = run(name, fid, fid, contracts="all")["contracts"]
+        if len(res):
+            for _, r in res[res["contract"].isin(set(g["contract"])) & (res["delivery_kind"] == "first")].iterrows():
+                out[r["contract"]] = (r["ctd"], "first", pd.Timestamp(fid))
+    for ltd, g in meta[~meta["contract"].isin(out)].groupby("last_trading"):
         if pd.Timestamp(ltd) > last_day:
-            continue  # not traded out yet: no realised CTD
+            continue
         res = run(name, ltd, ltd, contracts="all")["contracts"]
         if len(res):
-            res = res[res["contract"].isin(set(g["contract"]))]
-            out.append(res[["contract", "ctd", "delivery_kind"]].rename(columns={"ctd": "realised_ctd",
-                                                                                 "delivery_kind": "realised_kind"}))
-    return pd.concat(out, ignore_index=True) if out else pd.DataFrame(columns=["contract", "realised_ctd"])
+            for _, r in res[res["contract"].isin(set(g["contract"]))].iterrows():
+                out[r["contract"]] = (r["ctd"], r["delivery_kind"], pd.Timestamp(ltd))
+    return pd.DataFrame([(k, *v) for k, v in out.items()],
+                        columns=["contract", "realised_ctd", "realised_kind", "decided_on"])
 
 
 def resolve_expected_issues(cusips: pd.Series, securities: pd.DataFrame) -> pd.Series:

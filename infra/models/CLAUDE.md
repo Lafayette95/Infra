@@ -353,7 +353,8 @@ specific to the models sub-project.
 
 ## 10. Treasury futures basis
 *   **Its own sub-project, `infra/models/basis/`, with its own `CLAUDE.md`**: the delivery-option
-    / cheapest-to-deliver model ladder (M0 deterministic ... M4 market-implied) and its
+    / cheapest-to-deliver models (pricing tiers M0 ... M3, add-ons T, IV and MS, an
+    explanatory basis-spread layer) and its
     validation bench. Its pure maths lives BELOW the models (`infra/analytics/futures_basis.py`)
     so the daily cycle can use the futures DV01 without importing `infra/models`. Read that
     file before touching it.

@@ -261,3 +261,15 @@ def test_wild_card_windows_can_differ_and_events_add_value():
     assert wildcard_value(0.6, [1.0, 2.0, 1.0]) > flat  # a high-variance (event) window adds value
     kinds = window_kinds(pd.to_datetime(["2026-03-18", "2026-03-31", "2026-04-30", "2026-04-15"]), [D("2026-03-18")])
     assert kinds == ["fomc", "quarter_end", "month_end", "ordinary"]
+
+
+def test_fat_tailed_spreads_keep_the_variance_and_add_kurtosis():
+    from scipy.stats import kurtosis
+    fm = fit_factor_model(_panel("rw"), 20)
+    z = np.zeros(200_000)  # no level: look at the spread part alone
+    normal = simulate_shocks(fm, 20, z, np.random.default_rng(5))
+    fat = simulate_shocks(fm, 20, z, np.random.default_rng(5), spread_df=6.0)
+    assert fat.var(axis=0) == pytest.approx(normal.var(axis=0), rel=0.05)
+    assert kurtosis(fat[:, 0]) > 2.0 and abs(kurtosis(normal[:, 0])) < 0.2
+    with pytest.raises(ValueError):
+        simulate_shocks(fm, 20, z[:10], np.random.default_rng(5), spread_df=2.0)

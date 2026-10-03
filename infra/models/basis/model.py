@@ -349,7 +349,7 @@ class FactorBasis(OneFactorBasis):
             return None
         idx = [fm.cusips.index(x) for x in g["cusip"]]
         rng = np.random.default_rng(self.spec.seed + 1)
-        shocks = simulate_shocks(fm, n_bd, z, rng)
+        shocks = simulate_shocks(fm, n_bd, z, rng, spread_df=self.spec.spread_df, idio_scale=self.spec.idio_scale)
         return shocks[:, idx]
 
     def _pair_sd(self, c, g: pd.DataFrame, fdv: np.ndarray, i: int, j: int, n_bd: int) -> float:

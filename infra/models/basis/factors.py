@@ -101,15 +101,27 @@ def fit_factor_model(dy: pd.DataFrame, horizon_bd: int, *, k: int = 3, lam_slow:
     return FactorModel(tuple(dy.columns), h, phi, psi, sigma_level, explained, ratio, backfilled or {})
 
 
-def simulate_shocks(model: FactorModel, horizon_bd: int, z_level: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+def simulate_shocks(model: FactorModel, horizon_bd: int, z_level: np.ndarray, rng: np.random.Generator,
+                    spread_df: float | None = None, idio_scale: float = 1.0) -> np.ndarray:
     """(paths x bonds) yield shocks (bp) at delivery: the level from ``z_level`` (standard
     normals shared with the caller, so tiers use the same level draws) x sigma x
     sqrt(horizon), plus spread factors and idiosyncratic noise at the model's own horizon -
-    all antithetic with the level."""
+    all antithetic with the level. ``spread_df``: if set, the spread part (factors + idio)
+    is multivariate Student-t with that many degrees of freedom - ONE mixing draw per path,
+    shared by the whole basket (a quiet regime vs a jump regime), scaled so the variance is
+    exactly the normal's. Measured 2026-10-02: CTD/runner-up spread changes have excess
+    kurtosis 2.6-5.2 (a t with ~6 df has 3), and a normal with the RIGHT variance
+    over-predicts moderate moves, hence too many switches."""
     paths = z_level.size
     half = paths // 2
     zs = rng.standard_normal((half, model.phi.shape[1]))
     ze = rng.standard_normal((half, len(model.cusips)))
     zs, ze = np.vstack([zs, -zs]), np.vstack([ze, -ze])
+    spread = zs @ model.phi.T + ze * np.sqrt(model.psi * idio_scale)[None, :]  # idio_scale: a variance multiplier
+    if spread_df is not None:
+        if spread_df <= 2:
+            raise ValueError("spread_df must exceed 2 (finite variance)")
+        w = (spread_df - 2) / rng.chisquare(spread_df, half)  # E[w] = 1: variance kept
+        spread = spread * np.sqrt(np.concatenate([w, w]))[:, None]
     level = model.sigma_level * np.sqrt(max(horizon_bd, 0)) * z_level
-    return level[:, None] + zs @ model.phi.T + ze * np.sqrt(model.psi)[None, :]
+    return level[:, None] + spread

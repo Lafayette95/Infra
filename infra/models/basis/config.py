@@ -1,8 +1,12 @@
 """Basis model parameters (infra/models/basis/CLAUDE.md) - specs kept apart from the code so
 several tiers / variants sit side by side and are toggled by name (``BASIS_MODELS``).
 
-The ladder (user decisions 2026-10-02): M0 deterministic -> M1 one factor -> M2 macro +
-basket-spread PCA -> M3 funding & microstructure -> M4 market-implied. Only M0 exists.
+The structure (user decisions 2026-10-02; infra/models/basis/CLAUDE.md 1): pricing tiers
+M0 deterministic -> M1 one factor -> M2 basket factors (optionally fat-tailed spreads) ->
+M3 stochastic funding & timing (planned); switchable add-ons - T timing options
+(``timing_options``, built), IV implied vol (planned), MS microstructure: specialness +
+calendar effects read through an event-profile interface (planned); and a separate
+explanatory spread layer (planned). Built specs: M0, M1, M2, M2t, M2T.
 """
 from __future__ import annotations
 
@@ -12,7 +16,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class BasisSpec:
     name: str
-    tier: str  # "M0" .. "M4": which model class runs it (infra.models.basis.model.TIERS)
+    tier: str  # "M0" .. "M3": which model class runs it (infra.models.basis.model.TIERS)
     description: str = ""
     # Cash is FedInvest's END OF DAY, a BID price; move it toward mid by this fraction of
     # half the posted buy/sell spread (the posted spread is a convention, not the market's:
@@ -45,6 +49,12 @@ class BasisSpec:
     # day's own 15:00 -> next 15:00 move as the daily variance); day kinds exclusive in the
     # order fomc > quarter_end > month_end > ordinary. ``wildcard_var_share`` is the
     # fallback for a root not listed (the all-days share 2024-2026, 6.3%).
+    # M2+: the spread part's distribution - None = normal; a number = Student-t with that
+    # many degrees of freedom, one mixing draw per path (factors.simulate_shocks).
+    spread_df: float | None = None
+    # M2+: multiplier on the idiosyncratic spread VARIANCE (1 = as estimated). Under test
+    # 2026-10-02: FedInvest's noisy marks for old off-the-runs may inflate it.
+    idio_scale: float = 1.0
     timing_options: bool = False
     wildcard_var_share: float = 0.063
     wildcard_window: tuple[tuple[str, float, float, float, float], ...] = (
@@ -62,4 +72,5 @@ BASIS_MODELS: dict[str, BasisSpec] = {
     "M2": BasisSpec("M2", "M2", "basket factor model: level + PCA on the basket's spreads + idiosyncratic, "
                                 "predecessor backfill for young bonds; correlated shocks at the M0 delivery day"),
     "M2T": BasisSpec("M2T", "M2", "M2 + the timing options (wild card and end-of-month switch)", timing_options=True),
+    "M2t": BasisSpec("M2t", "M2", "M2 with fat-tailed spreads (Student-t, 6 df, one mixing draw per path)", spread_df=6.0),
 }
