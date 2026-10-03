@@ -833,16 +833,6 @@ UB, medians in 32nds: positive carry model 11.8 vs observed 4.6; negative carry 
 
 ---
 
-## Options pipeline (SR3): instrument ids are reused - statistics can belong to a previous owner
-
-**Found:** 2026-10-03, computing ZN at-the-money vols (fixed for the ZN IV options the same day, `infra/pipeline/futures_options_iv.py`).
-**Where:** `infra/pipeline/daily_options.py` / `infra/pipeline/options.py` (`load_daily_options`, `load_options`) - the SR3 options pipeline.
-**Status:** open for SR3 - fixed for the ZN IV options.
-
-CME REUSES instrument ids (557 of 38,633 ZN option ids had more than one definition over 2019-2026; ids are shared across all of Globex). A statistics request for an id over days before the option was LISTED returns the id's PREVIOUS owner's numbers, which then land under the option's key: ZN puts listed weeks later showed "settlements" of 114.0, 39.7, 0.0003 (vols 0.4%..450%). Fixed for the ZN IV path: each definition carries a validity window (first snapshot it appears in .. min(expiry, the snapshot after its last appearance)); `infra.processing.statistics.clean_daily_option_statistics` drops statistics outside it when the windows are supplied; selection honours it; 28,726 bad rows (12.6% of `Daily/Options`, all ZN) were purged (`purge_outside_windows`). **The SR3 path** takes ids from ONE snapshot (`definitions_day`) and fetches a range around it, so a range reaching before a strike's listing (or after its expiry, if the id was reassigned) has the same exposure. **Fix:** give `load_daily_options` the same windows (the definition's own `activation`/`expiration` fields would be exact - `normalize_definitions` drops them today), then purge SR3 rows outside them.
-
----
-
 ## Basis: M2 overstates the CTD-pair spread variance on ZB
 
 **Found:** 2026-10-02/03 (`infra/models/basis/CLAUDE.md` 3f).

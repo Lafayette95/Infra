@@ -26,6 +26,14 @@ def normalize_definitions(raw: pd.DataFrame) -> pd.DataFrame:
         "expiry": pd.to_datetime(df["expiration"], utc=True)
         .dt.tz_localize(None).dt.normalize().astype("datetime64[ms]"),
     })
+    if "activation" in df.columns:
+        # the instrument's own life, [listing day, expiry]: CME REUSES instrument ids, so a
+        # statistic for this id outside it belongs to another instrument (found 2026-10-03
+        # on ZN options; infra.processing.statistics.clean_daily_option_statistics drops
+        # rows outside the window). Snapshots cached before this have no window - nothing
+        # dropped, the old behaviour (SR3's two were checked clean, TOFIX history).
+        out["valid_from"] = _to_day(df["activation"]).to_numpy()
+        out["valid_to"] = out["expiry"]
     return out.drop_duplicates(subset="instrument_id", keep="last").reset_index(drop=True)
 
 

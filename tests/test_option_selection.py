@@ -79,3 +79,14 @@ def test_selection_respects_validity_windows():
     defs = _defs().assign(valid_from=D("2024-10-02"), valid_to=D("2024-12-31"))
     assert select_near_the_money(defs, _px("2024-10-01")).empty
     assert not select_near_the_money(defs, _px("2024-10-02")).empty
+
+
+def test_new_definition_snapshots_carry_each_options_own_life():
+    from infra.processing.definitions import normalize_definitions
+    raw = pd.DataFrame({"instrument_id": [7], "underlying": ["SR3U6"], "instrument_class": ["P"], "strike_price": [9600.0],
+                        "expiration": pd.to_datetime(["2026-09-11 21:00"], utc=True),
+                        "activation": pd.to_datetime(["2026-06-15 22:00"], utc=True)})
+    d = normalize_definitions(raw).iloc[0]
+    assert d["valid_from"] == D("2026-06-15") and d["valid_to"] == D("2026-09-11")
+    old = normalize_definitions(raw.drop(columns="activation"))
+    assert "valid_from" not in old.columns  # a cached snapshot without the field: no window, nothing dropped
