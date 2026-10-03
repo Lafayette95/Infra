@@ -173,3 +173,24 @@ def _no_external_network(monkeypatch):
 
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
     monkeypatch.setattr(socket, "create_connection", guarded_create_connection)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_bond_futures_dv01(monkeypatch):
+    """The bmk step's bond-futures DV01 reads the real cash, basket and funding stores:
+    suite-wide it finds nothing (every US bond row NaN with a reason); tests that want
+    values stub ``infra.cycle.bmk.BOND_FUTURES_DV01`` themselves."""
+    import pandas as pd
+    empty = pd.DataFrame(columns=["timestamp", "ticker", "futures_dv01", "ctd"])
+    monkeypatch.setattr("infra.cycle.bmk.BOND_FUTURES_DV01", lambda start, end, tickers: empty)
+
+
+@pytest.fixture(autouse=True)
+def _no_positioning_network(monkeypatch):
+    """CFTC TFF and NY Fed primary dealer fetches find nothing new suite-wide; tests that
+    exercise them pass their own fakes."""
+    monkeypatch.setattr("infra.pipeline.cftc_tff.LAST_MODIFIED", lambda dataset: None)
+    monkeypatch.setattr("infra.pipeline.cftc_tff.FETCH", lambda dataset, since=None: [])
+    monkeypatch.setattr("infra.pipeline.primary_dealer.FETCH",
+                        lambda: '"As Of Date","Time Series","Value (millions)"\n')
+    monkeypatch.setattr("infra.pipeline.primary_dealer.CATALOG_FETCH", lambda: ([], []))

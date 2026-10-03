@@ -331,17 +331,41 @@ class FactorBasis(OneFactorBasis):
         return out
 
     def _extra_bonds(self, c) -> pd.DataFrame:
-        """Expected new issues for this contract, priced on the delivery day at their
-        reference yield (the latest same-tenor issue's, today) - no carry: nobody owns them
-        before issue."""
+        """Expected new issues for this contract, priced on the delivery day at a FORWARD
+        yield: their reference yield (the latest same-tenor issue's, today) + the carry shift
+        (forward yield - spot yield) of the nearest-maturity existing deliverable to the same
+        delivery day - the market's forward for that point of the curve.
+        Found 2026-10-02: pricing them at the SPOT reference yield (no shift) made them
+        artificially cheap whenever carry was negative - with funding ~1.5% above 2y yields
+        and 3 months to delivery an existing bond's forward yield sits ~20bp under its spot
+        (~12/32 of price) - so a not-yet-auctioned 2y note was the deferred ZT contract's CTD
+        at 90-100% for weeks each quarter of 2022-2025 (ZTZ4 on 2024-09-03: 7/32 cheaper than
+        the existing same-maturity note), and ZT's calibration fell below M1's. New-issue
+        probability was ~0 in positive-carry regimes, 19% on average below -25bp of carry.
+        Pass ``spec.future_issue_carry=False`` for the old (spot) pricing."""
         fut = getattr(self, "_future", {}).get(c["contract"])
         if fut is None or fut.empty:
             return super()._extra_bonds(c)
-        fwd = [float(clean_price_from_yield(r.ref_yield, r.coupon, r.maturity, c["delivery"])) for r in fut.itertuples()]
+        shift = np.zeros(len(fut))
+        if self.spec.future_issue_carry:
+            g = self._prepared_bonds
+            g = g[(g["contract"] == c["contract"]) & (g["delivery_kind"] == c["delivery_kind"])]
+            g = g.dropna(subset=["fwd", "yield_eod"])
+            if len(g):
+                fy = np.array([forward_yield(r.fwd, r.coupon, r.maturity, c["delivery"]) for r in g.itertuples()])
+                carry = fy - g["yield_eod"].to_numpy()
+                ok = np.isfinite(carry)
+                mats = pd.to_datetime(g["maturity"]).to_numpy()[ok]
+                carry = carry[ok]
+                if carry.size:
+                    shift = np.array([carry[np.argmin(np.abs(mats - np.datetime64(pd.Timestamp(m))))]
+                                      for m in fut["maturity"]])
+        fwd_yield = fut["ref_yield"].to_numpy() + shift
+        fwd = [float(clean_price_from_yield(y, r.coupon, r.maturity, c["delivery"])) for y, r in zip(fwd_yield, fut.itertuples())]
         return pd.DataFrame({"cusip": fut["cusip"].to_numpy(), "fwd": fwd, "cf": fut["cf"].to_numpy(),
                              "coupon": fut["coupon"].to_numpy(), "maturity": list(fut["maturity"]),
                              "implied_futures": np.array(fwd) / fut["cf"].to_numpy(),
-                             "fwd_yield": fut["ref_yield"].to_numpy()})
+                             "fwd_yield": fwd_yield, "carry_shift_bp": shift * 100})
 
     def _shocks(self, c, g: pd.DataFrame, n_bd: int, z: np.ndarray):
         fm = self.fitted_["factor_models"].get(c["contract"])

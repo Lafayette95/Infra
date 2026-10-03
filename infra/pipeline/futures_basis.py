@@ -189,3 +189,38 @@ class BasisInputs:
                              "cf": conversion_factor(r.coupon, r.maturity_date, month, rule.cf_months),
                              "ref_yield": r.ref_yield, "predecessor": r.predecessor})
         return pd.DataFrame(rows, columns=cols)
+
+
+def deterministic_futures_dv01(start, end, tickers=None, *, roots=US_ROOTS) -> pd.DataFrame:
+    """Per day and contract, the futures DV01 of the DETERMINISTIC cheapest-to-deliver (the
+    basis models' M0 rule: lowest implied futures price over bonds x {first, last} delivery
+    day; DV01 = that bond's forward DV01 / CF, price points per 1bp per 100 face) - for the
+    daily cycle's bmk step, which may not import ``infra/models`` (this uses the same pure
+    analytics M0 does). No futures price needed. Days whose inputs fail (no basket, no cash
+    prices, no funding - funding starts 2018-05) are skipped and listed in ``attrs["errors"]``.
+    Columns: ``timestamp``, ``ticker``, ``futures_dv01``, ``ctd``, ``delivery_kind``."""
+    from infra.analytics.futures_basis import basis_table, futures_dv01
+    cols = ["timestamp", "ticker", "futures_dv01", "ctd", "delivery_kind"]
+    src = BasisInputs(start, end, roots=roots, contracts="all")
+    want = None if tickers is None else set(map(str, tickers))
+    rows, errors = [], {}
+    for day in src.days:
+        try:
+            d = src.day(day)
+        except Exception as exc:
+            errors[pd.Timestamp(day)] = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"
+            continue
+        if d.bonds.empty:
+            continue
+        for contract, g in d.bonds.groupby("contract"):
+            if want is not None and contract not in want:
+                continue
+            t = basis_table(g.dropna(subset=["dv01"]), None)
+            if t.empty:
+                continue
+            c = t.loc[t["implied_futures"].idxmin()]
+            rows.append((pd.Timestamp(day), contract, futures_dv01(c["dv01"], c["repo"], c["settle"], c["delivery"], c["cf"]),
+                         c["cusip"], c["delivery_kind"]))
+    out = pd.DataFrame(rows, columns=cols)
+    out.attrs["errors"] = errors
+    return out

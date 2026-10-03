@@ -41,6 +41,9 @@ class BasisSpec:
     # (infra.processing.futures_baskets.expected_issues) - ZT's realised CTD was a note not
     # yet auctioned on 17% of M0's ZT misses, TN's on 84% of its misses (2019-2026).
     future_issues: bool = True
+    # price expected issues at a FORWARD yield (+ the nearest deliverable's carry shift);
+    # False = the first version's spot pricing (too cheap under negative carry, CLAUDE.md 3f)
+    future_issue_carry: bool = True
     # The delivery TIMING options (infra.analytics.delivery_timing): the wild card (Bermudan
     # over the intention days up to the last trading day) and the end-of-month switch
     # (futures frozen after the last trading day). Each window's variance = the CTD's daily

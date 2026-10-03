@@ -4,9 +4,14 @@ risk). Pure local computation over the cycle's stored settlements - no API.
 
 Risk: one model per risk name in ``RISK_MODELS``. DV01 is exact for STIR futures
 (price = 100 - rate, so 1bp of rate = 0.01 price points: DV01 = point_value x 0.01).
-Bond futures have no DV01 yet - a proper one needs the cheapest-to-deliver bond, which
-this project doesn't source - so their rows are stored with a NaN value and the reason
-in ``method``, and a warning-level check lists them every run.
+US Treasury futures (since 2026-10-02): the DETERMINISTIC cheapest-to-deliver's forward
+DV01 / its conversion factor (``infra.pipeline.futures_basis.deterministic_futures_dv01``,
+the basis models' M0 rule - DV01 validated against daily settlement moves, slope
+0.97-1.00, R^2 >= 0.977, infra/models/basis/CLAUDE.md 7), x the point value. Day by day,
+so it follows CTD switches and rolls. A day whose inputs are missing (no funding before
+2018-05, no cash prices yet) and Eurex bond futures (no baskets or cash prices) are
+stored with a NaN value and the reason in ``method``; a warning-level check lists them
+every run.
 
 Pnl: ``bmk`` names the benchmark pnl definition. Futures use ``futures_price`` = change
 in settlement x point value, per 1 long contract; cash bonds will add their own (total
@@ -30,6 +35,7 @@ from infra.cycle.core import Check, Severity, Step, StepContext
 from infra.cycle.paths import CyclePaths
 from infra.cycle.universe import UniverseMember, daily_universe
 from infra.pipeline import daily as dl
+from infra.pipeline import futures_basis as fb
 from infra.storage import parquet_store
 
 _ONE_DAY = pd.Timedelta(days=1)
@@ -47,7 +53,12 @@ def _dv01(member: UniverseMember, cfg: FuturesRoot) -> tuple[float, str]:
         return np.nan, "unavailable: point value not verified for this root"
     if cfg.category == "STIR":
         return cfg.point_value * 0.01, "stir_index: point_value x 0.01"
-    return np.nan, "unavailable: bond futures DV01 needs the cheapest-to-deliver bond (not yet sourced)"
+    return np.nan, "unavailable: no cheapest-to-deliver model for this root (US Treasury futures only)"
+
+
+# (start, end, tickers) -> timestamp, ticker, futures_dv01 (points per bp), ctd ; module-level
+# so tests stub it (it reads the real cash, basket and funding stores)
+BOND_FUTURES_DV01 = fb.deterministic_futures_dv01
 
 
 RISK_MODELS: dict[str, RiskModel] = {"DV01": _dv01}
@@ -104,11 +115,25 @@ def backfill_daily_risk(
     members, errors = _universe(start, end, paths, specs)
     days = _member_days(members, _settlements(list(members), start, end, paths), start, end)
     model = RISK_MODELS[risk]
+    us_bonds = sorted(t for t in set(days["ticker"]) if members[t].root in fb.US_ROOTS)
+    bond_dv01 = None
+    if risk == "DV01" and us_bonds:
+        try:
+            bond_dv01 = BOND_FUTURES_DV01(start, end, us_bonds)
+        except Exception as exc:  # a missing input must not fail the step: rows go NaN with the reason
+            bond_dv01 = pd.DataFrame(columns=["timestamp", "ticker", "futures_dv01", "ctd"])
+            bond_dv01.attrs["errors"] = {None: f"{type(exc).__name__}: {exc}"}
     out = []
     for ticker, g in days.groupby("ticker"):
         m = members[ticker]
         cfg = FUTURES_ROOTS[m.root]
-        value, method = model(m, cfg)
+        if bond_dv01 is not None and ticker in us_bonds:
+            x = g[["timestamp"]].merge(bond_dv01[bond_dv01["ticker"] == ticker], on="timestamp", how="left")
+            value = (x["futures_dv01"] * cfg.point_value).to_numpy(dtype="float64")
+            method = np.where(x["futures_dv01"].notna(), "ctd_m0: futures_dv01 x point_value, ctd " + x["ctd"].astype(str),
+                              "unavailable: no deterministic CTD that day (missing cash prices, basket or funding)")
+        else:
+            value, method = model(m, cfg)
         out.append(pd.DataFrame({"timestamp": g["timestamp"].to_numpy(), "ticker": ticker,
                                  "risk": risk, "root": m.root, "value": value,
                                  "currency": cfg.currency, "method": method}))

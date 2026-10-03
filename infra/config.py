@@ -296,6 +296,28 @@ DTCC_DIR = RAW_DATA_ROOT / "DTCC"
 DTCC_REPORTS = ("RATES",)  # CFTC cumulative report kinds archived (also: CREDITS, FOREX, ...)
 DTCC_FIRST_DAY = "2024-09-30"  # never request earlier days: DTCC no longer has them
 DTCC_RETENTION_DAYS = 700  # look back this far for unarchived days (inside DTCC's ~730)
+# CFTC Commitments of Traders, TRADERS IN FINANCIAL FUTURES (TFF): weekly positions by
+# trader class (dealer / asset manager / leveraged funds / other / non-reportable) in every
+# financial futures market, from 2006-06-13 - infra/pipeline/cftc_tff.py. Free Socrata API
+# (publicreporting.cftc.gov), no key; ~47k rows per report, one request. Positions are as of
+# TUESDAY, released FRIDAY 15:30 New York (a government shutdown delays releases - the 2013,
+# 2018-19 and 2025 ones did). Reports: futures only, and futures + options combined.
+CFTC_TFF_DIR = RAW_DATA_ROOT / "CFTC_TFF"
+CFTC_TFF_STATE_FILE = RAW_DATA_ROOT / "_coverage" / "cftc_tff.parquet"
+CFTC_TFF_REPORTS = {"futures": "gpe5-46if", "combined": "yw9f-hn96"}  # report -> Socrata dataset id
+CFTC_TFF_RELEASE = ("15:30", "America/New_York", 3)  # local time, zone, days after the Tuesday
+CFTC_TFF_REFETCH_WEEKS = 8  # on a new release, re-read this many weeks back (catches revisions)
+# NY Fed PRIMARY DEALER STATISTICS (FR 2004): weekly positions, transactions, financing
+# (repo / reverse repo by collateral and term) and fails of the primary dealers, ~2,300
+# series ($ millions; "*" = suppressed for confidentiality -> NaN), from 1998-01-28 -
+# infra/pipeline/primary_dealer.py. One free CSV holds every series' whole history (26 MB).
+# As of WEDNESDAY (MBS settlement-class series: their own dates), released the THURSDAY of
+# the following week, 16:15 New York. The reporting form changed at each "series break"
+# (2001, 2013, 2015, 2022, 2024): a key's meaning can shift across one - the catalog holds
+# the current break's descriptions (``RawData/_catalog/primary_dealer.parquet``).
+PRIMARY_DEALER_DIR = RAW_DATA_ROOT / "PrimaryDealer"
+PRIMARY_DEALER_STATE_FILE = RAW_DATA_ROOT / "_coverage" / "primary_dealer.parquet"
+PRIMARY_DEALER_RELEASE = ("16:15", "America/New_York", 8)  # local time, zone, days after the Wednesday
 
 # ------------------------------------------------------------------ API settings
 SCHEMA_OHLCV = "ohlcv-1m"
@@ -818,7 +840,30 @@ OPTIONS_UNIVERSE: dict[str, str] = {
     # against the real API 2026-09-21: SR3.OPT returns 3,358 real option contracts
     # (e.g. "SR3U6 C9762.5"), same convention as the futures root plus ".OPT".
     "SR3.OPT": "GLBX.MDP3",
+    # CBOT Treasury futures options are O-PREFIXED (verified 2026-10-02: OZN.OPT resolves to
+    # 6,706 instruments; ZN.OPT is rejected 422) - unlike SR3.OPT.
+    "OZN.OPT": "GLBX.MDP3",
 }
+
+
+@dataclass(frozen=True)
+class FuturesOptionsIVSpec:
+    """Which options feed a root's implied vol (infra/pipeline/futures_options_iv.py): the
+    ``n_expiries`` nearest expiries >= ``min_days`` away, the ATM strike + ``n_strikes``
+    each side, out-of-the-money side only; definitions snapshotted every ``snapshot_days``
+    on a fixed grid (each day's selection uses the snapshots before AND after it, so a
+    strike listed mid-interval is still found unless it also expired within it)."""
+    parent: str
+    root: str
+    n_expiries: int = 2
+    n_strikes: int = 2
+    min_days: int = 5
+    snapshot_days: int = 30
+
+
+# ZN only as the first pass (user decision 2026-10-02): a 1-factor level-vol scaling for the
+# basis models' add-on IV (infra/models/basis/CLAUDE.md).
+FUTURES_OPTIONS_IV = {"ZN": FuturesOptionsIVSpec("OZN.OPT", "ZN")}
 
 # ------------------------------------------------------------------ FOMC meeting schedule
 # Source of truth for infra.analytics.wirp (World Interest Rate Probability - implied

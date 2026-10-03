@@ -157,40 +157,6 @@ Either lets `px_dataset_present` become a hard `fail` on non-holidays.
 
 ---
 
-## Bond futures have no DV01 (so no pnl-per-DV01) - needs a CTD model
-
-**Found:** 2026-09-28, building the daily cycle's bmk step (CLAUDE.md 12).
-**Where:** `infra/cycle/bmk.py` (`_dv01`, the `RISK_MODELS["DV01"]` entry).
-**Status:** open, deliberately deferred - a CTD model is planned as a separate side
-project.
-
-**The issue:** a bond future's DV01 is the cheapest-to-deliver bond's DV01 divided by its
-conversion factor (roughly - plus delivery-option effects). That needs cash-bond
-reference data (deliverable basket, coupons, maturities, conversion factors) and CTD
-prices/yields, none of which this project sources. STIR futures don't have the problem
-(price = 100 - rate, so DV01 = point value x 0.01 exactly).
-
-**Update 2026-10-02 - the inputs now exist** (CLAUDE.md 18): deliverable baskets with
-per-contract conversion factors (`Reference/Treasuries/FuturesBaskets`: CME's own files
-from 2023-12-09, computed and cross-checked before that), coupons and maturities
-(`Reference/Treasuries/Securities`), and daily END OF DAY prices / yields per CUSIP
-(`Daily/TreasuryPrices`, from 2008). Repo for carry: SOFR (FRED). So the model is now a
-build, not a data problem: forward price of each deliverable to delivery, implied repo,
-cheapest-to-deliver, forward DV01 / conversion factor, with the switch option via a
-parallel yield bump across the basket.
-
-**Update 2026-10-02 - the model exists** (CLAUDE.md 22, `infra/models/basis`): M0's futures DV01 (the deterministic CTD's forward DV01 / CF, `infra.analytics.futures_basis.futures_dv01`) tracks the market's realised sensitivity with slope 0.97-1.00 and R^2 >= 0.977 on every root, 2019-2026; M1/M2 give a probability-weighted version. **What's left is wiring:** the bmk step can't import `infra/models`, so either compute M0's DV01 in the cycle from the analytics + pipeline layers directly (they sit below the models on purpose), or store the model's daily output and have bmk read it. Decide which tier feeds bmk (M0 is already good enough for DV01).
-
-**Current state:** every bond-futures risk row is stored with `value = NaN` and the reason
-in `method`; the warn-level `dv01_coverage` check lists the affected roots every run.
-Bond futures pnl in CURRENCY is unaffected and real (settlement change x point value);
-only `pnl_per_dv01` is NaN for them.
-
-**When the CTD model lands:** add it as the bond branch of `_dv01` (or a separate entry in
-`RISK_MODELS` dispatched by category), backfill `bmk_risk` then `bmk_pnl` over history -
-`pnl_per_dv01` fills in with no other change, since pnl already divides by the prior
-day's stored DV01.
-
 **Interim option considered, not taken:** an empirical DV01 from regressing futures
 price moves on a benchmark yield series (would need a yield feed - the natural first
 user of `backfill_daily_raw_data`). Rejected for now in favour of doing it properly.
@@ -764,8 +730,8 @@ minus its last settlement, added to the continuous series' last value - not writ
   The portfolio vol scaling is therefore estimated on a much smaller portfolio than UBS's.
 * **Price vs yield space:** UBS sizes rates in $DV01 with yield-bp vols; we size on futures
   price vol. The ratio is the contract's duration, which drifts slowly (CTD switches), so
-  normalised positions differ a little; converting needs bond futures DV01 (the CTD model,
-  "Bond futures have no DV01" above).
+  normalised positions differ a little; converting can use the bond futures DV01 now in
+  `Bmk/Risk` (the deterministic-CTD model, since 2026-10-02).
 * **Fit-sample length:** our ECDF and position scale use history from 2015; UBS's use ~10-30
   years, so "extreme" means extreme relative to a shorter, mostly low-vol history.
 * **Monte Carlo simplifications** (as UBS): assets simulated independently, constant
@@ -828,4 +794,34 @@ minus its last settlement, added to the continuous series' last value - not writ
 **Status:** open - a candidate improvement, untested.
 
 **The idea:** the hedge ratio (swap-rate bp per futures point) is a 60-business-day regression of futures settlement changes on the CMT par yield, which bundles two legs: futures point -> the CTD's yield (exactly 1 / the model's futures DV01, point in time, adjusting at once at rolls and CTD switches where a 60-day regression lags) and the CTD's yield -> the swap tenor (a curve beta the DV01 doesn't know - e.g. 1-3y swaps hedged with ZT). **Candidate:** ratio = (curve beta of the swap tenor on the CTD's yield, regressed) x (1 / model futures DV01). **Test:** the swap closes' held-out test (adjusted MAE 0.21bp today, CLAUDE.md 16); switch only if it wins.
+
+---
+
+## CFTC TFF: a shutdown-delayed release is LATER than `known_from` says
+
+**Found:** 2026-10-02, building the TFF store (CLAUDE.md 24).
+**Where:** `infra/processing/cftc_tff.py` (`known_from` = report Tuesday + 3 days, 15:30 New York).
+**Status:** open - narrow, history only.
+
+`known_from` is the SCHEDULED release. During a government shutdown CFTC stops publishing and catches up later (2013-10, 2018-12..2019-01, 2025-10..11), so for those weeks the data became public weeks after `known_from`: a point-in-time backtest reading them on their scheduled day uses data nobody had yet. Live runs are unaffected in effect (the data isn't on disk until it's published), but the stored `known_from` is still the schedule. **Options:** (1) a small table of the catch-up release dates per shutdown (from CFTC's own release notices) overriding `known_from`; (2) store a `first_seen` (the run that first fetched the row) going forward - doesn't fix history. (1) is the real fix; worth doing before the spread layer is backtested across 2018-19 or 2025.
+
+---
+
+## Primary dealer statistics: series breaks and MBS settlement-class dates
+
+**Found:** 2026-10-02, building the store (CLAUDE.md 24).
+**Where:** `infra/pipeline/primary_dealer.py`, `infra/processing/primary_dealer.py`.
+**Status:** open - documentation / modelling caveats, nothing wrong in the stored data.
+
+(1) **Series breaks:** the FR 2004 form changed in 2001, 2013, 2015, 2022 and 2024 (`pd/list/seriesbreaks.json`). The CSV carries every break's history under its keys, but only the CURRENT break's descriptions are catalogued (the list endpoint returns only those), and a key's coverage can change across a break (e.g. Treasury positions split by maturity from 2013; `PDPOSGST-TOT` starts 2013-04-03). A consumer building a long history must splice across breaks deliberately - **option:** a per-break catalog (the API may serve older breaks' series lists by another path; not found yet). (2) **MBS settlement-class series** are dated on days other than the Wednesday as-of date (settlement classes, possibly forward dates); `known_from` takes the first release at least 8 days after each date, which is conservative (never too early) but can be a week late for them. Verify against the FR 2004 instructions before using those series point in time.
+
+---
+
+## Basis: add-on T is inverted against UB's observed option value across carry regimes
+
+**Found:** 2026-10-03, re-scoring M2 / M2T on the 14-day sample (`infra/models/basis/CLAUDE.md` 3e).
+**Where:** `infra/models/basis/model.py` (`_timing`), `infra/analytics/delivery_timing.py`, and funding v1 (`infra/analytics/financing.py`).
+**Status:** open - diagnosis, not yet a fix.
+
+UB, medians in 32nds: positive carry model 11.8 vs observed 4.6; negative carry model 3.5 vs observed 10.9; observed peaks in 2023 (12.2) where the model is lowest (2.5). **Options:** (1) replace the negative-carry rule ("deliver at the first window, no end-of-month option") with the Bermudan that weighs each window's wild card against a day's negative carry - the short still holds a wild card every day up to delivery; (2) test whether the residual is a FUNDING effect - re-run M0's observed value with a term-repo base (the DVP 8-30 / >30-day buckets, `Daily/Repo`) instead of rolling overnight, and see whether UB's 2023 residual collapses; (3) leave it to the explanatory spread layer with carry regime / term premium as regressors. (2) is cheap and decisive and should come first.
 

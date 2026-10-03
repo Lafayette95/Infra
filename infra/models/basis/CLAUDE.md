@@ -36,7 +36,7 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     | Add-on | Flag | What | Status |
     |---|---|---|---|
     | **T - timing options** | `timing_options` (spec `M2T`) | the wild card (Bermudan over the intention days, per-window variance with FOMC / quarter-end / month-end multipliers - the DEFAULT) and the end-of-month switch (futures frozen after the last trading day); the quality simulation then stops at the last trading day | built. With M3, T must read M3's PER-PATH delivery decision instead of the deterministic first/last choice (one window, no EOM under negative carry) - a design point inside M3 |
-    | IV - implied vol | (planned) | rescales the factor vols in `fit` from Treasury-futures options (CBOT options on ZT/ZF/ZN/ZB/UB, on GLBX): the level from at-the-money implied vol, possibly the curve factors from options across tenors | planned. Needs a PAID Databento fetch (verify the option roots' symbology as for `SR3.OPT`, dry-run the cost for 2019-2026 with near-the-money strikes only - Rule 2.3, user approval). Plumbing exists: the daily options pipeline and Black-76 in `infra/analytics`. Caveat: the options are American - Black-76 approximates them (fine near the money, short-dated) |
+    | IV - implied vol | (planned) | rescales the factor vols in `fit` from Treasury-futures options (CBOT options on ZT/ZF/ZN/ZB/UB, on GLBX): the level from at-the-money implied vol, possibly the curve factors from options across tenors | planned. Needs a PAID Databento fetch (verify the option roots' symbology as for `SR3.OPT`, dry-run the cost for 2019-2026 with near-the-money strikes only - Rule 2.3, user approval). Plumbing exists: the daily options pipeline and Black-76 in `infra/analytics`. Caveat: the options are American - Black-76 approximates them (fine near the money, short-dated) **Prep done 2026-10-02 (free calls only, nothing fetched):** the option parents are O-PREFIXED - `OZT.OPT` (1,314 instruments), `OZF.OPT` (1,809), `OZN.OPT` (6,706), `OTN.OPT` (1,584), `OZB.OPT` (3,016), `OUB.OPT` (984) resolve; `ZN.OPT` etc. are rejected (422) - unlike `SR3.OPT`. Costs (`metadata.get_cost`): `definition` ~$0.02/day for all six; `statistics` (settlement + OI) for EVERY listed option ~$0.35/month, $3.54 for the last 12 months - an upper bound of ~$25 for 2019-2026 before Rule 2.3's near-the-money filter. **ZN-only first pass built 2026-10-02** (user: a 1-factor vol scaling needs only near-the-money options at a couple of expiries, not the chain): `infra.config.FUTURES_OPTIONS_IV` / `FuturesOptionsIVSpec`, pure selection `infra/processing/option_selection.py` (2 nearest expiries >= 5 days out, ATM + 2 strikes each side, out-of-the-money side only, strike scale inferred), `infra/pipeline/futures_options_iv.py` (definition snapshots on a fixed grid, each day using the snapshot before AND after it; settlements into `Daily/Options` through the existing daily-options fetch/coverage; `dry_run`, `load_iv_options`). **Dry-run 2019-01..2026-10 (free calls only):** definitions $0.70 on a 30-day grid (96 snapshots) or $1.71 weekly (406); settlements an upper bound of $0.60 (exact once the definitions are cached) - **total ~$1.31 (30-day) / ~$2.31 (weekly)**. Awaiting the user's go-ahead. |
     | MS - microstructure | (planned) | the bond-specific side, modelled JOINTLY because it's one phenomenon seen twice - an on-the-run bond is rich partly BECAUSE it's special, and both switch at the same dates: (1) SPECIALNESS linked to idiosyncratic moves (measured on the NY Fed lending fees, not assumed - not the other assistant's "2bp per 1bp"); (2) CALENDAR effects - timed, directional spread moves around known dates: auction concessions (cheapening into an auction or reopening, richening after), reopening supply (a lasting cheapening at settlement), a successor issue settling (the 1-old losing its on-the-run premium), month-end index extension (new issues entering the indices). Each applied as an expected drift of the affected bond's forward yield to delivery (+ extra variance where the event adds dispersion), NET of what funding's specialness lifecycle already puts in carry (or the same richness is counted twice) | planned. Attaches to M2 or M3 (needs M2's per-bond idiosyncratic structure; not M0/M1). Matters most where recent issues sit in the basket: TN, ZN, ZT, UB. Sizes are small (fractions of a bp to a few bp of yield) but comparable to CTD/runner-up gaps (ZN median 0.26/32). **Future-proofing (user decision 2026-10-02): the calendar effects are read through an EVENT-PROFILE interface** - expected spread path and extra variance by event type x tenor x days from the event - whose first provider is MS's own in-study event study (FedInvest yields from 2008, auction / reopening dates from the auctions store, successor dates from the OTR map); a later full-fledged, project-wide event study becomes a second provider that MS reads instead, with no change to MS |
 
     **The explanatory layer: the basis SPREAD model** (planned) - NOT a pricing tier. What a
@@ -56,12 +56,13 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     its coefficient TESTS v1: ~0 = v1 prices the client spread right, > 0 = hedge funds'
     cost moves more than 1:1 with it), SOFR p99 - p75 (funding-tail stress), the DVP term
     premium (OFR term buckets minus the futures-implied path), quarter-end proximity,
-    positioning (CFTC's free weekly Traders in Financial Futures: asset managers' and
-    leveraged funds' Treasury-futures positions - a small new free pipeline source), reserves
-    (the Fed's H.4.1 on FRED). Its use: a "fair spread" given funding conditions (deviations
+    positioning (CFTC's weekly Traders in Financial Futures: asset managers' and leveraged
+    funds' Treasury-futures positions - stored since 2026-10-02, root CLAUDE.md 24), dealer
+    balance sheets (NY Fed Primary Dealer Statistics: net Treasury positions, repo /
+    reverse repo - same section), reserves (the Fed's H.4.1 on FRED). Its use: a "fair spread" given funding conditions (deviations
     = a signal), the decomposition of the basis, and a validation of the funding model.
-    Needs: the M2T (ideally M3) residuals, so the spread is measured AFTER the option values;
-    the CFTC source. (This replaces the earlier "M4 market-implied" tier: its timing options
+    Needs: the M2T (ideally M3) residuals, so the spread is measured AFTER the option values
+    (the positioning and dealer data are in place, read point in time with ``as_of``). (This replaces the earlier "M4 market-implied" tier: its timing options
     became add-on T, implied vol add-on IV, and its "futures-richness term" this layer. The
     earlier M3 "funding & microstructure" was split the same day: stochastic funding stayed M3,
     specialness + calendar effects became add-on MS, general fat tails moved to M2.)
@@ -257,6 +258,23 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     12/32 when CFs rose, a SMALLER tail). Reading: a timing option (UB-dominant) PLUS a
     futures-richness premium that fades into delivery (convergence forces it out) - the
     latter also pushes ZB/ZF/ZN/ZT negative. That premium is what the explanatory spread layer (section 1) is for (`TOFIX.md`).
+*   **Revised by the M2T sample run (2026-10-03) - the wild card does NOT explain UB.** The
+    table above priced the wild card over every remaining window regardless of carry. The
+    full add-on T (M2T: wild card + end-of-month, event windows, and the rule that under
+    NEGATIVE carry the short delivers at the first window with no end-of-month option) is
+    INVERTED against the observed UB value across carry regimes (every 14th day 2019-2026,
+    medians, 32nds): positive carry model 11.8 vs observed 4.6; negative carry model 3.5 vs
+    observed 10.9. By year, observed peaks in 2023 (12.2, 100% negative carry) where the
+    model is lowest (2.5), and is lowest in 2019-21 (3-7) where the model is highest
+    (9-17). Calibration is unchanged by T (it prices WHEN, not WHICH). Two candidates
+    (`TOFIX.md`): (1) the negative-carry rule is too harsh - delivering at the first
+    window still leaves a wild card every day up to it; (2) something regime-dependent
+    cheapens UB futures under negative carry - most likely funding v1's ROLLING-OVERNIGHT
+    assumption missing the term premium of the hiking years (which would also explain why
+    the observed value grows into delivery) - the explanatory spread layer's job. Other
+    roots: observed values are NEGATIVE (futures rich to M0), which no option produces -
+    the basis-trade premium; T's small positive values (TN 1.3, ZN 0.9, ZB +1.6 over M2)
+    sit under it.
 
 ### 3f. What decides calibration: the spreads' SIZE vs their SHAPE (2026-10-02)
 *   **The realised CTD must follow the realised delivery TIMING.** Scoring every contract at
@@ -302,8 +320,49 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     small variance accidentally fits the quiet body; (3) DILUTION in big baskets - on ZB, M2
     puts a median 61% on the realised CTD (M1 93%) and 11% on bonds outside the top two: each
     of 50 bonds carries its own normal noise, leaking probability to bonds that never win.
-*   **Fix tried: Student-t spreads** (`BasisSpec.spread_df`, spec `M2t`; section 4).
-    Results: section 7.
+*   **Fixes tried** (every 14th day 2019-2026, same inputs and draws per variant; Brier):
+
+    | Root | M1 | M2 | t, 4 df | idio x0.25 | idio x0 | 1 factor | no new issues | no new issues, idio x0 |
+    |---|---|---|---|---|---|---|---|---|
+    | ZB | **0.291** | 0.350 | 0.335 | 0.328 | 0.319 | 0.401 | 0.351 | 0.319 |
+    | ZT | 0.312 | 0.387 | 0.396 | 0.400 | 0.408 | 0.375 | **0.268** | 0.282 |
+    | ZN | 0.346 | 0.332 | 0.334 | 0.343 | 0.350 | **0.328** | 0.329 | 0.344 |
+    | UB | **0.172** | 0.177 | 0.175 | 0.174 | 0.173 | 0.204 | 0.176 | 0.173 |
+
+    (TN/ZF unchanged at ~0.067 / ~0.007.) **Fat tails (`spread_df`) barely help** - kept as
+    an option, off. **ZT's whole gap was the EXPECTED NEW ISSUES:** without them M2 beats M1
+    (0.268 vs 0.312) - the generator's not-yet-auctioned 2y notes won the CTD in the model
+    far more often than real new issues did (>10% probability on 13% of ZT days).
+*   **Root cause: expected issues were priced at SPOT, every existing bond at its FORWARD.**
+    An expected issue was priced on the delivery day at today's reference yield (the latest
+    same-tenor issue's); existing bonds at their forward to delivery (spot + carry). Under
+    NEGATIVE carry the forward yield sits well under spot (funding ~1.5% above 2y yields, 3
+    months to delivery: ~-18..-20bp, ~12/32 of price), so the expected issue looked
+    artificially cheap. The evidence: new-issue probability by the CTD's carry - ZT 19% on
+    average below -25bp of carry, ~0 above 0; ZN 4% vs 0; and always on the DEFERRED
+    contract ~3 months out, at 90-100% for weeks each quarter of 2022-2025 (ZTZ4 on
+    2024-09-03: the September 2y at 99.98%, 7/32 under the existing 0.875% note of the SAME
+    maturity). **Fix** (`BasisSpec.future_issue_carry`, default on): the expected issue
+    takes the carry shift (forward yield - spot yield) of the nearest-maturity existing
+    deliverable to the same delivery day - on that day -18bp, its probability fell to
+    0.1%, priced between the same-maturity low- and high-coupon notes as its coupon
+    implies. The shift is taken against the BID spot yield, like the reference yield, so
+    it also carries the bid-to-mid move onto the existing bonds' basis. Result (same sample):
+
+    | Root | M1 | M2, spot (old) | M2, forward (fix) | M2, no new issues |
+    |---|---|---|---|---|
+    | ZT | 0.312 | 0.387 | **0.262** | 0.268 |
+    | TN | 0.069 | 0.067 | **0.050** | 0.068 |
+    | ZN | 0.346 | 0.332 | **0.326** | 0.329 |
+    | ZB | **0.291** | 0.350 | 0.350 | 0.351 |
+    | UB | **0.172** | 0.177 | 0.177 | 0.176 |
+
+    Base rate it should match: 5 of 186 realised CTDs 2019-2026 were auctioned within ~3
+    months of the decision (four new 7y notes into ZN / TN, the December 2025 2y into ZTH6) -
+    rare but real, so the feature stays on and now ADDS skill (TN most). M2 now beats M1
+    everywhere except ZB and (marginally) UB.
+    **ZB is partly dilution** (idiosyncratic noise over a 50-bond basket: idio x0 recovers
+    about half the gap to M1) - not yet fixed.
 
 ## 4. The models
 *   **M0 (`DeterministicBasis`)**: no fitting. Per contract: CTD, delivery day, fair futures,
@@ -428,17 +487,19 @@ Regression benchmarks (3b): CTD implied repo +13 to +20bp over SOFR in 2019-20; 
 *   **M2**: corrected Brier best on TN and ZN, worse than M1 on ZB/ZT (3f: right variance,
     wrong shape); DV01 slope 0.99-1.06; the new-issue probability exceeded 10% on 13% of ZT
     days and 5% of ZN days; model option value median ZB 2.6/32 (observed -0.45).
-*   **M2t, M2T**: (pending)
+*   **M2t, M2T**: the full M2T history run (started before the forward fix) is stale for
+    calibration; M2 / M2T are re-scored on the 14-day sample instead (3f).
 
 ## 8. Open (root `TOFIX.md`, "Basis: ...")
 Next steps in order: M2t / M2T results; M3 (stochastic funding & timing); add-on MS
-(specialness + calendar effects, behind the event-profile interface); the spread layer (needs
-the CFTC positioning source); add-on IV (needs the paid options fetch). Combinations are
+(specialness + calendar effects, behind the event-profile interface); the spread layer (its
+positioning / dealer inputs are stored); add-on IV (needs the paid options fetch). Combinations are
 tested on the bench separately and together (e.g. M3 + T + MS). Known
 issues: futures richness and UB's residual; the cash bid/mid guess; only front contracts have a 15:30
 quote; the expected-issue generator ignores holidays; the wild-card window's remaining
 caveats (constants calibrated on 2019-2026, unscheduled events, the halt, futures as the
-cash proxy); wiring the futures DV01 into the cycle's bmk step.
+cash proxy). (Done 2026-10-02: M0's futures DV01 feeds the cycle's bmk step,
+`infra.pipeline.futures_basis.deterministic_futures_dv01` - root CLAUDE.md 12.)
 
 ## 9. Running it
     PY=/opt/homebrew/Caskroom/miniconda/base/envs/infra-env/bin/python

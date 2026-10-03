@@ -22,6 +22,8 @@ from infra.cycle.paths import CyclePaths
 from infra.cycle.raw_bulk import BULK_CHECKS, backfill_daily_bulk
 from infra.cycle.raw_cpi_weights import CPI_WEIGHTS_CHECKS, backfill_daily_cpi_weights
 from infra.cycle.raw_dtcc import DTCC_CHECKS, backfill_daily_dtcc
+from infra.cycle.raw_positioning import (POSITIONING_CHECKS, backfill_daily_cftc_tff,
+                                         backfill_daily_primary_dealer)
 from infra.cycle.raw_releases import RELEASE_CHECKS, backfill_daily_releases
 from infra.cycle.raw_reference import (CALENDAR_CHECKS, TAILS_CHECKS, backfill_daily_auction_tails,
                                        backfill_daily_release_calendar)
@@ -34,9 +36,11 @@ from infra.cycle.raw_reference import (CALENDAR_CHECKS, TAILS_CHECKS, backfill_d
 RAW_SOURCES: dict[str, Callable[..., dict]] = {"releases": backfill_daily_releases, "bulk": backfill_daily_bulk,
                                                "cpi_weights": backfill_daily_cpi_weights, "dtcc": backfill_daily_dtcc,
                                                "release_calendar": backfill_daily_release_calendar,
-                                               "auction_tails": backfill_daily_auction_tails}
+                                               "auction_tails": backfill_daily_auction_tails,
+                                               "cftc_tff": backfill_daily_cftc_tff,
+                                               "primary_dealer": backfill_daily_primary_dealer}
 RAW_CHECKS: tuple[Check, ...] = (RELEASE_CHECKS + BULK_CHECKS + CPI_WEIGHTS_CHECKS + DTCC_CHECKS + CALENDAR_CHECKS
-                                 + TAILS_CHECKS)
+                                 + TAILS_CHECKS + POSITIONING_CHECKS)
 
 
 def backfill_daily_raw_data(

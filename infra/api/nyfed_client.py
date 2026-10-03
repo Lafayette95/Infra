@@ -1,6 +1,7 @@
 """New York Fed Markets Data API (markets.newyorkfed.org/api) - NETWORK ONLY, no files.
 
-Free, no key. Two endpoints are used (verified 2026-10-02):
+Free, no key. Endpoints used (verified 2026-10-02) - the reference rates and securities
+lending below, and the PRIMARY DEALER STATISTICS (``fetch_primary_dealer_csv``):
 * secured reference rates ``rates/secured/<rate>/search.json`` - SOFR, TGCR and BGCR per
   business day from 2018-04-02 (when they started), each with its 1st/25th/75th/99th
   volume-weighted percentiles and volume ($bn). Day D is published ~08:00 New York on
@@ -66,3 +67,33 @@ def fetch_sec_lending(start, end) -> list[dict]:
     (inclusive), each with its per-CUSIP ``details``."""
     return get_json("seclending/all/results/details/search.json", _dates(start, end)) \
         .get("seclending", {}).get("operations", [])
+
+
+def fetch_primary_dealer_csv(*, sleep=time.sleep) -> str:
+    """The Primary Dealer Statistics' WHOLE history, every series, one CSV (verified
+    2026-10-02: ~26 MB, columns ``As Of Date``, ``Time Series``, ``Value (millions)``; a
+    suppressed value is ``*``), from ``pd/get/all/timeseries.csv``."""
+    url = f"{BASE}/pd/get/all/timeseries.csv"
+    request = urllib.request.Request(url, headers={"User-Agent": "infra-data-pipeline"})
+    last = None
+    for attempt in range(RETRIES + 1):
+        if attempt:
+            sleep(BACKOFF_S * 2 ** (attempt - 1))
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT_S) as resp:
+                return resp.read().decode("utf-8-sig")
+        except urllib.error.HTTPError as exc:
+            last = f"HTTP {exc.code}"
+            if exc.code < 500 and exc.code != 429:
+                break
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            last = f"{type(exc).__name__}: {exc}"
+    raise NyFedError(f"pd/get/all/timeseries.csv: {last}")
+
+
+def fetch_primary_dealer_catalog() -> tuple[list[dict], list[dict]]:
+    """(series of the CURRENT series break with their descriptions, every series break with
+    its date range)."""
+    series = get_json("pd/list/timeseries.json", {}).get("pd", {}).get("timeseries", [])
+    breaks = get_json("pd/list/seriesbreaks.json", {}).get("pd", {}).get("seriesbreaks", [])
+    return series, breaks

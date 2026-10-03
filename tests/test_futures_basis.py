@@ -273,3 +273,25 @@ def test_fat_tailed_spreads_keep_the_variance_and_add_kurtosis():
     assert kurtosis(fat[:, 0]) > 2.0 and abs(kurtosis(normal[:, 0])) < 0.2
     with pytest.raises(ValueError):
         simulate_shocks(fm, 20, z[:10], np.random.default_rng(5), spread_df=2.0)
+
+
+def test_expected_issues_are_priced_at_a_forward_yield_not_spot():
+    """Regression (2026-10-02): an expected new issue takes the nearest deliverable's carry
+    shift (forward - spot yield). Priced at spot it was ~20bp too cheap under negative
+    carry and won the deferred ZT contract's CTD at ~100%."""
+    from dataclasses import replace
+    from infra.analytics.futures_basis import clean_price_from_yield
+    from infra.models.basis.config import BASIS_MODELS
+    from infra.models.basis.model import TIERS
+    delivery, mat = pd.Timestamp("2024-12-02"), pd.Timestamp("2026-09-30")
+    existing = pd.DataFrame({"contract": ["ZTZ4"], "delivery_kind": ["first"], "cusip": ["OLD"], "coupon": [0.875],
+                             "maturity": [mat], "yield_eod": [3.85],
+                             "fwd": [float(clean_price_from_yield(3.65, 0.875, mat, delivery))]})
+    fut = pd.DataFrame({"cusip": ["NEW"], "maturity": [mat], "coupon": [3.875], "cf": [0.9651], "ref_yield": [3.88]})
+    c = pd.Series({"contract": "ZTZ4", "delivery_kind": "first", "delivery": delivery})
+    for carry, expected in ((True, 3.68), (False, 3.88)):
+        m = TIERS["M2"](replace(BASIS_MODELS["M2"], future_issue_carry=carry))
+        m._future, m._prepared_bonds = {"ZTZ4": fut}, existing
+        x = m._extra_bonds(c).iloc[0]
+        assert x["fwd_yield"] == pytest.approx(expected, abs=1e-4)
+        assert x["fwd"] == pytest.approx(float(clean_price_from_yield(expected, 3.875, mat, delivery)), abs=1e-6)

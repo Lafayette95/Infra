@@ -589,16 +589,44 @@ def test_contract_rolling_in_mid_window_still_gets_first_day_pnl(stir_env):
 
 
 def test_bond_futures_dv01_unavailable_with_reason_and_only_warns(env):
-    paths, fake, opts = env
+    paths, fake, opts = env  # conftest: the CTD model finds no inputs -> ZN NaN too
     report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk", "bmk_pnl"],
                              run_day="2025-01-10", paths=paths, options=opts)
     assert report.ok, report.summary()
     cov = next(c for c in report.outcome("bmk_risk").checks if c.name == "dv01_coverage")
     assert not cov.passed and cov.severity.value == "warn"
-    assert cov.details["method"].str.contains("cheapest-to-deliver").all()
+    reasons = cov.details.set_index("root")["method"]
+    assert "US Treasury futures only" in reasons["FGBL"] and "no deterministic CTD" in reasons["ZN"]
     pnl = _store(paths, "Pnl")
     assert pnl["pnl"].notna().all() and pnl["pnl_per_dv01"].isna().all()  # pnl yes, per-DV01 no
     assert set(pnl.loc[pnl["root"] == "FGBL", "currency"]) == {"EUR"}
+
+
+def test_us_bond_futures_dv01_from_the_ctd_model_day_by_day(env, monkeypatch):
+    """ZN's DV01 = the CTD model's futures DV01 x $1000/pt, per day (it follows CTD
+    switches); a day the model can't price stays NaN; pnl per DV01 uses the prior day's."""
+    paths, fake, opts = env
+
+    def fake_dv01(start, end, tickers):
+        days = pd.bdate_range(start, end)
+        return pd.DataFrame([(d, t, 0.06 + 0.001 * i, f"CTD{i}") for t in tickers
+                             for i, d in enumerate(days) if d != D("2025-01-08")],
+                            columns=["timestamp", "ticker", "futures_dv01", "ctd"])
+
+    monkeypatch.setattr("infra.cycle.bmk.BOND_FUTURES_DV01", fake_dv01)
+    report = run_daily_cycle("2025-01-06", "2025-01-10", steps=["px", "bmk_risk", "bmk_pnl"],
+                             run_day="2025-01-10", paths=paths, options=opts)
+    assert report.ok, report.summary()
+    risk = _store(paths, "Risk")
+    zn = risk[risk["root"] == "ZN"].set_index(["ticker", "timestamp"]).sort_index()
+    t = zn.index.get_level_values(0)[0]
+    assert zn.loc[(t, D("2025-01-06")), "value"] == pytest.approx(60.0)
+    assert zn.loc[(t, D("2025-01-09")), "value"] == pytest.approx(63.0)
+    assert "ctd CTD3" in zn.loc[(t, D("2025-01-09")), "method"]
+    assert pd.isna(zn.loc[(t, D("2025-01-08")), "value"])
+    pnl = _store(paths, "Pnl").set_index(["ticker", "timestamp"])
+    row = pnl.loc[(t, D("2025-01-07"))]
+    assert row["pnl_per_dv01"] == pytest.approx(row["pnl"] / 60.0)
 
 
 def test_pnl_consistency_check_catches_a_stored_row_that_disagrees_with_the_spec(stir_env):
