@@ -36,6 +36,10 @@ class FactorModel:
     variance_ratio: float  # median over bonds: var(h-day spread change) / (h x var(1-day))
     backfilled: dict  # cusip -> where its missing history came from
     noise_var: np.ndarray | None = None  # (n,) mark-noise variance per bond (bp^2), see fit_factor_model
+    idio_corr: np.ndarray | None = None  # (n, n) correlation of the idiosyncratic moves (None = independent)
+    idio_kernel: tuple | None = None  # (a, length_years) of idio_corr, for diagnostics
+    level_beta: np.ndarray | None = None  # (n,) each bond's spread move per unit of level move (None = 0)
+    joint: bool = False  # True: phi are components of TOTAL yield changes (level inside PC1), no separate level
 
 
 def ewma_weights(n: int, lam: float) -> np.ndarray:
@@ -72,7 +76,8 @@ def change_panel(yields: pd.DataFrame, cusips: list[str], predecessor: dict[str,
 
 def fit_factor_model(dy: pd.DataFrame, horizon_bd: int, *, k: int = 3, lam_slow: float = 0.99,
                      lam_fast: float = 0.94, backfilled: dict | None = None, min_idio_share: float = 0.01,
-                     max_horizon_share: float = 0.34, noise_removal: float = 0.0) -> FactorModel:
+                     max_horizon_share: float = 0.34, noise_removal: float = 0.0,
+                     maturities_years: np.ndarray | None = None, level_betas: bool = False) -> FactorModel:
     """Fit on a complete panel of DAILY changes (rows = days, columns = bonds), with the
     spread covariance taken at ``horizon_bd`` (capped at ``max_horizon_share`` of the
     window so enough overlapping changes remain).
@@ -83,7 +88,25 @@ def fit_factor_model(dy: pd.DataFrame, horizon_bd: int, *, k: int = 3, lam_slow:
     changes a lag-1 autocovariance of -s^2, so s^2 = max(-autocov, 0) per bond, on the
     spread changes. Motivation (2026-10-02/03): on ZB's ~50-bond basket M2 put only a
     median 61% on the realised CTD (M1 93%), every bond's own noise leaking probability to
-    bonds that never win; FedInvest's marks for old off-the-runs are the noisiest part."""
+    bonds that never win; FedInvest's marks for old off-the-runs are the noisiest part.
+
+    ``maturities_years`` (one per column): if given, the idiosyncratic moves are CORRELATED
+    by maturity distance, rho_ij = a x exp(-|m_i - m_j| / l) (i != j; 1 on the diagonal - a
+    mix of an exponential kernel and the identity, so always a valid correlation), a and l
+    fitted to the residual (spread covariance minus the factors) correlations of pairs
+    under 2 years apart. Found 2026-10-03 on ZB: the residuals of bonds maturing within 3
+    months of each other correlate 0.35-0.63, within 3-6 months ~0.4, fading by a year;
+    taken as independent, a near-twin CTD / runner-up pair got ~2x its variance (z-score
+    sd 0.51 for pairs < 6 months apart).
+
+    ``level_betas``: the spreads are taken to move with the level, s_i = beta_i x L + rest,
+    beta fitted on the same h-day changes (slow EWMA), and the PCA / idiosyncratic split
+    runs on the REST; ``simulate_shocks`` then adds beta x the level shock. Found
+    2026-10-03 on ZB: in a level move the 15y bonds' spreads move +0.04..+0.07 per unit and
+    the 25y bonds' -0.04..-0.06 (the curve flattens as yields fall), the level explaining
+    15-45% of a bond's spread variance; drawn independently of the level, a CTD / runner-
+    up pair with opposite betas loses the covariance that offsets its DV01-difference term,
+    and M2 overstated ZB's pair variance in every year (z-score sd 0.34-0.77)."""
     x = dy.to_numpy(dtype="float64")
     t, n = x.shape
     if t < 40 or n == 0:
@@ -93,6 +116,14 @@ def fit_factor_model(dy: pd.DataFrame, horizon_bd: int, *, k: int = 3, lam_slow:
     spread_cum = np.cumsum(x - level[:, None], axis=0)
     dh = spread_cum[h:] - spread_cum[:-h]  # overlapping h-day spread changes
     w = ewma_weights(dh.shape[0], lam_slow)
+    beta = None
+    if level_betas:
+        lvl_cum = np.cumsum(level)
+        lh = lvl_cum[h:] - lvl_cum[:-h]
+        denom = float((w * lh) @ lh)
+        if denom > 0:
+            beta = (w * lh) @ dh / denom
+            dh = dh - lh[:, None] * beta[None, :]
     cov = (w[:, None] * dh).T @ dh
     vals, vecs = np.linalg.eigh(cov)
     vals, vecs = vals[::-1].clip(min=0.0), vecs[:, ::-1]
@@ -110,7 +141,81 @@ def fit_factor_model(dy: pd.DataFrame, horizon_bd: int, *, k: int = 3, lam_slow:
                  "idio": float(psi.sum() / total)}
     d1 = (x - level[:, None]).var(axis=0)
     ratio = float(np.median(np.diag(cov) / np.where(d1 > 0, h * d1, np.nan)))
-    return FactorModel(tuple(dy.columns), h, phi, psi, sigma_level, explained, ratio, backfilled or {}, noise)
+    idio_corr, kernel = None, None
+    if maturities_years is not None and n > 1:
+        res = cov - phi @ phi.T
+        d = np.sqrt(np.clip(np.diag(res), 1e-12, None))
+        rc = res / np.outer(d, d)
+        m = np.asarray(maturities_years, dtype="float64")
+        gap = np.abs(m[:, None] - m[None, :])
+        iu = np.triu_indices(n, 1)
+        g, r = gap[iu], rc[iu]
+        near = g < 2.0
+        best = (0.0, 0.5, np.inf)
+        if near.sum() >= 5:
+            for ell in (0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                k_ = np.exp(-g[near] / ell)
+                a = float(np.clip((k_ @ r[near]) / (k_ @ k_), 0.0, 0.95))
+                err = float(((r[near] - a * k_) ** 2).sum())
+                if err < best[2]:
+                    best = (a, ell, err)
+        a, ell = best[0], best[1]
+        if a > 0:
+            idio_corr = a * np.exp(-gap / ell)
+            np.fill_diagonal(idio_corr, 1.0)
+            kernel = (a, ell)
+    return FactorModel(tuple(dy.columns), h, phi, psi, sigma_level, explained, ratio, backfilled or {}, noise,
+                       idio_corr, kernel, beta)
+
+
+def fit_joint_model(dy: pd.DataFrame, horizon_bd: int, *, k: int = 4, lam_slow: float = 0.99,
+                    lam_fast: float = 0.94, backfilled: dict | None = None, min_idio_share: float = 0.01,
+                    max_horizon_share: float = 0.34) -> FactorModel:
+    """The JOINT horizon PCA (user's original M2 design, built 2026-10-03): the covariance
+    of h-day TOTAL yield changes of the basket (level included, slow EWMA, overlapping
+    changes), top ``k`` components + a diagonal idiosyncratic remainder. PC1 is the
+    level-like component and carries the curve's own co-movement (its loadings aren't flat:
+    on ZB the 15y bonds load more than the 25y ones - the flattening that the split model
+    lost by drawing the level and the spreads independently). Two speeds kept: PC1's
+    loadings are rescaled so the basket-level variance at the horizon matches the FAST
+    EWMA of the daily basket-level changes (``lam_fast``) x h; the rest stays slow. The
+    returned model has ``joint=True``: ``simulate_shocks`` draws PC1 with the caller's
+    ``z_level`` (the same draws M1 uses) and the other components independently."""
+    x = dy.to_numpy(dtype="float64")
+    t, n = x.shape
+    if t < 40 or n == 0:
+        raise ValueError(f"too little history to fit: {t} days x {n} bonds")
+    h = int(max(1, min(horizon_bd, int(t * max_horizon_share))))
+    cum = np.cumsum(x, axis=0)
+    dh = cum[h:] - cum[:-h]
+    w = ewma_weights(dh.shape[0], lam_slow)
+    cov = (w[:, None] * dh).T @ dh
+    vals, vecs = np.linalg.eigh(cov)
+    vals, vecs = vals[::-1].clip(min=0.0), vecs[:, ::-1]
+    k = max(1, min(k, n))
+    phi = vecs[:, :k] * np.sqrt(vals[:k])[None, :]
+    if phi[:, 0].sum() < 0:
+        phi[:, 0] = -phi[:, 0]  # PC1 oriented as "all yields up"
+    # floor on the SPREAD variance (each bond net of the basket mean), as in the split model:
+    # 1% of the TOTAL h-day variance - level-dominated - would be a ~5bp sd of pure noise per
+    # bond on ZB (found 2026-10-03), several times the real idiosyncratic size
+    dm = dh - dh.mean(axis=1, keepdims=True)
+    psi = np.maximum(np.diag(cov) - (phi ** 2).sum(axis=1), min_idio_share * ((w[:, None] * dm) * dm).sum(axis=0))
+    level = x.mean(axis=1)
+    wf = ewma_weights(t, lam_fast)
+    sigma_level = float(np.sqrt((wf * level ** 2).sum()))
+    ones = np.full(n, 1.0 / n)
+    slow_level_var = float(ones @ cov @ ones)
+    pc1_level_var = float((ones @ phi[:, 0]) ** 2)
+    rest = max(slow_level_var - pc1_level_var, 0.0)
+    target = sigma_level ** 2 * h
+    if pc1_level_var > 0 and target > rest:
+        phi[:, 0] *= np.sqrt((target - rest) / pc1_level_var)
+    total = float(np.trace(cov))
+    explained = {"level": float(vals[0] / total) if total else np.nan,
+                 "spread_factors": float(vals[1:k].sum() / total) if total else np.nan,
+                 "idio": float(psi.sum() / total) if total else np.nan}
+    return FactorModel(tuple(dy.columns), h, phi, psi, sigma_level, explained, np.nan, backfilled or {}, joint=True)
 
 
 def simulate_shocks(model: FactorModel, horizon_bd: int, z_level: np.ndarray, rng: np.random.Generator,
@@ -126,9 +231,23 @@ def simulate_shocks(model: FactorModel, horizon_bd: int, z_level: np.ndarray, rn
     over-predicts moderate moves, hence too many switches."""
     paths = z_level.size
     half = paths // 2
+    if model.joint:  # PC1 takes the shared level draws; the factors are already AT the horizon
+        zo = rng.standard_normal((half, model.phi.shape[1] - 1))
+        ze = rng.standard_normal((half, len(model.cusips)))
+        zs = np.column_stack([z_level, np.vstack([zo, -zo])])
+        ze = np.vstack([ze, -ze])
+        spread = zs[:, 1:] @ model.phi[:, 1:].T + ze * np.sqrt(model.psi * idio_scale)[None, :]
+        if spread_df is not None:
+            if spread_df <= 2:
+                raise ValueError("spread_df must exceed 2 (finite variance)")
+            wt = (spread_df - 2) / rng.chisquare(spread_df, half)
+            spread = spread * np.sqrt(np.concatenate([wt, wt]))[:, None]
+        return z_level[:, None] * model.phi[:, 0][None, :] + spread
     zs = rng.standard_normal((half, model.phi.shape[1]))
     ze = rng.standard_normal((half, len(model.cusips)))
     zs, ze = np.vstack([zs, -zs]), np.vstack([ze, -ze])
+    if model.idio_corr is not None:  # idiosyncratic moves correlated by maturity distance
+        ze = ze @ np.linalg.cholesky(model.idio_corr + 1e-10 * np.eye(len(model.cusips))).T
     spread = zs @ model.phi.T + ze * np.sqrt(model.psi * idio_scale)[None, :]  # idio_scale: a variance multiplier
     if spread_df is not None:
         if spread_df <= 2:
@@ -136,4 +255,5 @@ def simulate_shocks(model: FactorModel, horizon_bd: int, z_level: np.ndarray, rn
         w = (spread_df - 2) / rng.chisquare(spread_df, half)  # E[w] = 1: variance kept
         spread = spread * np.sqrt(np.concatenate([w, w]))[:, None]
     level = model.sigma_level * np.sqrt(max(horizon_bd, 0)) * z_level
-    return level[:, None] + spread
+    load = 1.0 if model.level_beta is None else 1.0 + model.level_beta[None, :]
+    return level[:, None] * load + spread

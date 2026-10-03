@@ -335,3 +335,55 @@ def test_iv_add_on_scales_by_implied_over_realised_points():
     assert m._vol_scale(c) == 1.0  # no option data that day: falls back to the EWMA
     m.fitted_ = {"iv": None}
     assert m._vol_scale(c) == 1.0
+
+
+def test_idiosyncratic_moves_correlate_by_maturity_distance():
+    rng = np.random.default_rng(11)
+    t, mats = 1500, np.sort(np.concatenate([np.linspace(20, 30, 28), [20.1, 25.1]]))  # a basket-like spread + twins
+    gap = np.abs(mats[:, None] - mats[None, :])
+    true = 0.7 * np.exp(-gap / 0.5); np.fill_diagonal(true, 1.0)
+    e = rng.standard_normal((t, len(mats))) @ np.linalg.cholesky(true).T
+    dy = pd.DataFrame(e + rng.standard_normal((t, 1)) * 0.5, columns=[f"B{i}" for i in range(len(mats))])
+    plain = fit_factor_model(dy, 20, k=1)
+    corr = fit_factor_model(dy, 20, k=1, maturities_years=mats)
+    assert plain.idio_corr is None and corr.idio_kernel is not None
+    far = int(np.argmax(mats))
+    assert corr.idio_corr[0, 1] > 0.3 and abs(corr.idio_corr[0, far]) < 0.05  # near twins vs far apart
+    var = lambda fm: fm.psi[0] + fm.psi[1] - 2 * (0 if fm.idio_corr is None else fm.idio_corr[0, 1]) * np.sqrt(fm.psi[0] * fm.psi[1])
+    assert var(corr) < 0.7 * var(plain)  # the near-twin pair's idiosyncratic variance shrinks
+    z = rng.standard_normal(20_000)
+    s = simulate_shocks(corr, 20, z, np.random.default_rng(1))
+    assert np.corrcoef(s[:, 0] - s.mean(1), s[:, 1] - s.mean(1))[0, 1] > np.corrcoef(s[:, 0] - s.mean(1), s[:, far] - s.mean(1))[0, 1]
+
+
+def test_level_betas_capture_spreads_that_move_with_the_level():
+    rng = np.random.default_rng(4)
+    t, n = 1200, 8
+    true_beta = np.linspace(0.3, -0.3, n)  # short bonds move more with the level: a flattener
+    L = rng.normal(0, 3.0, t)
+    dy = pd.DataFrame(L[:, None] * (1 + true_beta[None, :]) + rng.normal(0, 0.5, (t, n)), columns=[f"B{i}" for i in range(n)])
+    fm = fit_factor_model(dy, 10, k=1, level_betas=True)
+    assert fm.level_beta[0] > 0.15 and fm.level_beta[-1] < -0.15
+    plain = fit_factor_model(dy, 10, k=1)
+    assert plain.level_beta is None
+    z = np.random.default_rng(2).standard_normal(20_000)
+    s = simulate_shocks(fm, 10, z, np.random.default_rng(3))
+    lvl = fm.sigma_level * np.sqrt(10) * z
+    assert np.corrcoef(lvl, s[:, 0] - s[:, -1])[0, 1] > 0.5  # the first-minus-last spread now moves with the level
+
+
+def test_joint_pca_keeps_the_curve_co_movement_and_the_fast_level_vol():
+    from infra.models.basis.factors import fit_joint_model
+    rng = np.random.default_rng(4)
+    t, n, h = 1200, 8, 10
+    true_beta = np.linspace(0.3, -0.3, n)
+    L = rng.normal(0, 3.0, t)
+    dy = pd.DataFrame(L[:, None] * (1 + true_beta[None, :]) + rng.normal(0, 0.5, (t, n)), columns=[f"B{i}" for i in range(n)])
+    fm = fit_joint_model(dy, h, k=3)
+    assert fm.joint and fm.phi[0, 0] > fm.phi[-1, 0] > 0  # PC1: all up, short end more - the flattener
+    ones = np.full(n, 1 / n)
+    level_var = ones @ (fm.phi @ fm.phi.T + np.diag(fm.psi)) @ ones
+    assert level_var == pytest.approx(fm.sigma_level ** 2 * fm.horizon_bd, rel=0.15)  # two speeds: level at the FAST vol
+    z = np.random.default_rng(2).standard_normal(20_000)
+    s = simulate_shocks(fm, h, z, np.random.default_rng(3))
+    assert np.corrcoef(z, s[:, 0] - s[:, -1])[0, 1] > 0.5

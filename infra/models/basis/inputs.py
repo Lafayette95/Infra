@@ -14,7 +14,7 @@ from infra.pipeline.treasury_prices import read_prices
 from infra.pipeline.treasury_ref import read_securities
 
 
-def basis_days(spec: BasisSpec, start, end, *, contracts: str = "quoted") -> Iterator[BasisDay]:
+def basis_days(spec: BasisSpec, start, end, *, contracts: str = "quoted", days=None) -> Iterator[BasisDay]:
     """One ``BasisDay`` per business day in ``[start, end]`` with cash prices and baskets.
     Tiers above M0 also get ``meta["levels"]``: the CMT par yields (%) at each root's
     ``level_tenor``, published by the end of the day (point in time)."""
@@ -24,7 +24,10 @@ def basis_days(spec: BasisSpec, start, end, *, contracts: str = "quoted") -> Ite
         if spec.tier != "M0" else None
     panel = yield_panel(spec, start, end) if spec.tier not in ("M0", "M1") else None
     iv = iv_panel(spec, start, end) if spec.tier != "M0" and spec.level_vol_source == "iv" else None
+    only = None if days is None else set(pd.DatetimeIndex(days).normalize())  # a sample: skip the rest
     for day in src.days:
+        if only is not None and day not in only:
+            continue
         if pd.Timestamp(start) <= day <= pd.Timestamp(end):
             raw = src.day(day)
             if levels is not None:

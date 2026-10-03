@@ -68,6 +68,14 @@ class BasisSpec:
     idio_scale: float = 1.0
     # M2+: mark-noise variances removed from the idiosyncratic variance (factors.fit_factor_model)
     idio_noise_removal: float = 0.0
+    # M2+: correlate the idiosyncratic moves by maturity distance (factors.fit_factor_model)
+    idio_maturity_corr: bool = False
+    # M2+: spreads move with the level (beta per bond; factors.fit_factor_model)
+    level_betas: bool = False
+    # M2+: the JOINT horizon PCA on total yield changes (factors.fit_joint_model) instead
+    # of level + spread PCA; n_joint_factors components
+    joint_pca: bool = False
+    n_joint_factors: int = 4
     timing_options: bool = False
     # T under NEGATIVE carry: True (default since 2026-10-03, user decision) = Bermudan over
     # every intention day, each passed window costing a day's carry, the end-of-month switch

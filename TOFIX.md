@@ -849,5 +849,81 @@ CME REUSES instrument ids (557 of 38,633 ZN option ids had more than one definit
 **Where:** `infra/models/basis/factors.py` (`fit_factor_model`: the horizon covariance of a ~50-bond basket).
 **Status:** open - M1 is the better tier for ZB until fixed (Brier 0.291 vs M2 0.350 on the 14-day sample).
 
-ZB's CTD/runner-up spread changes have a z-score sd of 0.63 under M2 (ideal 1): ~2.5x too much predicted variance, and M2 puts a median 61% on the realised CTD vs M1's 93%. Ruled out: fat tails (`spread_df`), mark noise (`idio_noise_removal` - FedInvest marks barely reverse). Removing the idiosyncratic part entirely recovers half the gap (0.319). **Options:** (1) shrink the idiosyncratic covariance toward a structured target (e.g. by maturity distance) instead of a free diagonal; (2) estimate the horizon covariance over a calmer / regime-matched window (the 500-day EWMA spans 2020-22's dislocations); (3) model the spread of each bond to the CTD rather than to the basket mean (the pair that decides). A root-specific scale would fit the sample and should be avoided.
+**Update 2026-10-03:** two causes found and built as options (`idio_maturity_corr`, `level_betas` / `joint_pca`, all default off), closing about a quarter of the gap (0.350 -> 0.334) but costing UB (0.177 -> 0.192) - see `infra/models/basis/CLAUDE.md` 3f. Still open: the rest of the gap; label noise ruled out. Original entry: ZB's CTD/runner-up spread changes have a z-score sd of 0.63 under M2 (ideal 1): ~2.5x too much predicted variance, and M2 puts a median 61% on the realised CTD vs M1's 93%. Ruled out: fat tails (`spread_df`), mark noise (`idio_noise_removal` - FedInvest marks barely reverse). Removing the idiosyncratic part entirely recovers half the gap (0.319). **Options:** (1) shrink the idiosyncratic covariance toward a structured target (e.g. by maturity distance) instead of a free diagonal; (2) estimate the horizon covariance over a calmer / regime-matched window (the 500-day EWMA spans 2020-22's dislocations); (3) model the spread of each bond to the CTD rather than to the basket mean (the pair that decides). A root-specific scale would fit the sample and should be avoided.
 
+
+## Stats: not scheduled; walk-forward runs are by hand
+
+**Found:** 2026-10-03, building `infra/models/stats`.
+**Where:** `infra/models/walk_forward.py`, `scripts/run_walk_forward.py`, `infra/storage/model_runs.py`.
+**Status:** open.
+
+**The issue:** use case (a) (root CLAUDE.md 3) runs only when someone runs the script; no
+scheduled weekly refit stores its params, so a "live" strategy reading the latest fit has
+nothing refreshed for it. Same gap as "CTA: no scheduled fit/predict": the daily cycle may
+not import `infra/models`. A saved run is also replaced WHOLE on re-run (no incremental
+append of the newest refit). **Options:** a separate models runner (its own Prefect flow /
+launchd job after the daily cycle) that, per registered run, fits at the new refit date
+and APPENDS one params frame + the new predictions to `ModelRuns/<name>`; registry of
+runs as config (spec name + series + refit rule).
+
+## Stats: `release:` series are indexed by observation period, and one snapshot per read
+
+**Found:** 2026-10-03. **Where:** `infra/pipeline/series_panel.py` (`_release`).
+**Status:** open.
+
+**The issue:** a macro series comes back on its PERIOD axis (May payrolls dated
+2025-05-01) as published by `as_of`, not on the axis of when each value became known. Mixed
+with daily market data, May's value sits at 05-01 although it was published in June:
+a regression of daily moves on it would use it ~5 weeks early. And a frame read once with
+`as_of` = the backtest's end carries LATER revisions into earlier refits. **Mitigations
+today:** pass `raw` to `walk_forward` as a callable `as_of -> read_panel(..., as_of=as_of)`
+(vintage-correct per refit); keep macro-only regressions on the period axis. **Fix
+options:** a `release_known:` source indexed by publication day (first-print or latest
+vintage), built from `infra.processing.releases` (`timestamp` = publication day).
+
+## Stats: Kalman regression is slow (pure-Python filter)
+
+**Found:** 2026-10-03. **Where:** `infra/models/stats/regression.py` (`kalman_filter`,
+`KalmanRegression.estimate`).
+**Status:** open, low priority.
+
+**The issue:** ~1s per fit on 1,300 daily rows (the MLE runs the filter a few hundred
+times); the dashboard's "diagnostics" box with Kalman refits monthly over 5 years took
+~35s. Weekly walk-forwards over many years take minutes. **Options:** vectorise the
+filter for a scalar observation (it is already O(k^2) per step - the loop is the cost);
+warm-start the MLE from the previous refit's (q, r); or only estimate (q, r) on a slower
+schedule and re-filter at each refit.
+
+## Stats: hockey-stick knot inference is grid-limited and its F p-value is naive
+
+**Found:** 2026-10-03. **Where:** `HockeyStickRegression` (`regression.py`).
+**Status:** open, documented.
+
+**The issue:** the knot is the best of `knot_grid` (60) quantile points, so with low noise
+the profile-likelihood interval collapses to one or two grid points (`knot_ci_low ==
+knot`), and `F_vs_linear_p_naive` uses an F distribution that does not hold when the knot
+exists only under the alternative (Davies 1987). **Options:** refine the knot by a 1-D
+optimisation between the grid neighbours; sup-F p-values by Hansen (1996)'s simulation or a
+residual bootstrap.
+
+## Stats: logit/probit have no penalty; separation is only flagged
+
+**Found:** 2026-10-03. **Where:** `LogitRegression.estimate`.
+**Status:** open.
+
+**The issue:** with a regressor that separates the classes (common with thresholds on a
+small sample) the MLE diverges; the fit stops at |beta| > 50 and reports `separation=1`,
+but the coefficients are then meaningless. **Options:** a ridge (L2) or Firth penalty in
+the IRLS step, as a spec field.
+
+## Stats: Marchenko-Pastur edge with few series uses the discarded eigenvalues
+
+**Found:** 2026-10-03, on the US curve (6 tenors). **Where:** `pca.noise_edge`.
+**Status:** documented choice, revisit if misleading.
+
+**The issue:** below `MP_MIN_VARIABLES` (20) there is no noise bulk; the noise level is then
+the mean of the eigenvalues after the k retained ones, so `n_above_mp` depends on k (US
+curve, k=3: PC1-PC4 above, PC4 marginally). It is a heuristic there, not a test.
+`diagnostics.parallel_analysis` is the better small-p tool; the dashboard does not show it
+yet.

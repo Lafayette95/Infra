@@ -390,6 +390,24 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     variance that the horizon covariance overstates for the CTD pair (z-score sd 0.63 = ~2.5x
     too much variance, section 3f); removing the idiosyncratic part entirely recovered half
     the gap (0.319). Open (`TOFIX.md`); until then M1 is the better tier for ZB.
+*   **ZB, dug further (2026-10-03).** Decomposing M2's predicted CTD / runner-up variance
+    (every 7th day 2019-2026) against the realised: over-stated in EVERY year (z-score sd
+    0.34-0.77) and gap bucket, the idiosyncratic part dominant (median 4.0 of 6.2/32).
+    Two omissions found and built as options (default off - neither is a clean win):
+    (1) `idio_maturity_corr` - residuals of bonds maturing < 3 months apart correlate
+    0.35-0.63, the model took them as independent; an exponential kernel fitted per day
+    (a ~0.5, l ~0.4y) gives ZB 0.350 -> 0.344. (2) the LEVEL / SPREAD co-movement -
+    spreads move with the level (15y bonds +0.04..+0.07 per unit, 25y -0.04..-0.06: the
+    curve flattens as yields fall; the level explains 15-45% of a bond's spread variance),
+    which the split level + spread PCA drew independently. Two equivalent fixes: `level_betas`
+    (spread = beta x level + rest) and `joint_pca` (the user's original design: PCA on the
+    horizon covariance of TOTAL yield changes, PC1 rescaled to the fast level vol, idio
+    floored on the SPREAD variance - flooring on the level-dominated total added ~5bp of
+    noise per bond). Same sample, Brier: ZB 0.350 -> 0.334 (both), UB 0.177 -> 0.192/0.193,
+    TN 0.050 -> 0.052, ZT 0.262 -> 0.265; ZN, ZF unchanged. The two agree almost exactly -
+    the betas restore precisely what the split dropped. Not label noise: ZB's realised CTD
+    won by a median 1.97/32 on the decision day (29% < 1/32), ZN's by 1.38 (42%) and M2
+    beats M1 on ZN. ZB's remaining gap (0.334 vs M1 0.291) is open.
     **ZB is partly dilution** (idiosyncratic noise over a 50-bond basket: idio x0 recovers
     about half the gap to M1) - not yet fixed.
 

@@ -22,7 +22,7 @@ from infra.analytics.futures_basis import (bachelier_exchange, basis_table, clea
 from infra.analytics.sofr_curve import business_days
 from infra.models.base import Model
 from infra.models.basis.config import BASIS_MODELS, BasisSpec
-from infra.models.basis.factors import change_panel, fit_factor_model, simulate_shocks
+from infra.models.basis.factors import change_panel, fit_factor_model, fit_joint_model, simulate_shocks
 from infra.pipeline.futures_basis import BasisDay
 
 TICKS = 32.0
@@ -342,9 +342,18 @@ class FactorBasis(OneFactorBasis):
                 maturity.update(zip(fut["cusip"], fut["maturity"]))
             try:
                 dy, src = change_panel(yields, cusips, predecessor, maturity, self.spec.factor_window)
+                if self.spec.joint_pca:
+                    models[contract] = fit_joint_model(dy, horizon, k=self.spec.n_joint_factors,
+                                                       lam_slow=self.spec.factor_lambda, lam_fast=self.spec.vol_lambda,
+                                                       backfilled=src)
+                    continue
                 models[contract] = fit_factor_model(dy, horizon, k=self.spec.n_spread_factors,
                                                     lam_slow=self.spec.factor_lambda, lam_fast=self.spec.vol_lambda,
-                                                    backfilled=src, noise_removal=self.spec.idio_noise_removal)
+                                                    backfilled=src, noise_removal=self.spec.idio_noise_removal,
+                                                    maturities_years=np.array([(pd.Timestamp(maturity[c]) - day).days / 365.25
+                                                                               for c in dy.columns])
+                                                    if self.spec.idio_maturity_corr else None,
+                                                    level_betas=self.spec.level_betas)
             except (ValueError, KeyError) as exc:
                 errors[contract] = str(exc)
         self.fitted_ = dict(self.fitted_, tier="M2", factor_models=models, factor_errors=errors)
@@ -405,7 +414,11 @@ class FactorBasis(OneFactorBasis):
             return None
         idx = [fm.cusips.index(x) for x in g["cusip"]]
         rng = np.random.default_rng(self.spec.seed + 1)
-        fm = replace(fm, sigma_level=fm.sigma_level * self._vol_scale(c))  # add-on IV scales the LEVEL only
+        if fm.joint:  # add-on IV scales the LEVEL component only (PC1)
+            phi = fm.phi.copy(); phi[:, 0] *= self._vol_scale(c)
+            fm = replace(fm, phi=phi)
+        else:
+            fm = replace(fm, sigma_level=fm.sigma_level * self._vol_scale(c))  # add-on IV scales the LEVEL only
         shocks = simulate_shocks(fm, n_bd, z, rng, spread_df=self.spec.spread_df, idio_scale=self.spec.idio_scale)
         return shocks[:, idx]
 
@@ -414,7 +427,14 @@ class FactorBasis(OneFactorBasis):
         if fm is None:
             return float("nan")
         a, b = fm.cusips.index(g["cusip"].iloc[i]), fm.cusips.index(g["cusip"].iloc[j])
-        cov = (fm.sigma_level * self._vol_scale(c)) ** 2 * max(n_bd, 0) + fm.phi @ fm.phi.T + np.diag(fm.psi)
+        sd = np.sqrt(fm.psi)
+        idio = np.diag(fm.psi) if fm.idio_corr is None else fm.idio_corr * np.outer(sd, sd)
+        if fm.joint:  # components already at the horizon, PC1 = the level
+            phi = fm.phi.copy(); phi[:, 0] *= self._vol_scale(c)
+            cov = phi @ phi.T + idio
+        else:
+            load = np.ones(len(fm.cusips)) if fm.level_beta is None else 1.0 + fm.level_beta
+            cov = (fm.sigma_level * self._vol_scale(c)) ** 2 * max(n_bd, 0) * np.outer(load, load) + fm.phi @ fm.phi.T + idio
         var = fdv[i] ** 2 * cov[a, a] + fdv[j] ** 2 * cov[b, b] - 2 * fdv[i] * fdv[j] * cov[a, b]
         return float(np.sqrt(max(var, 0.0)))
 

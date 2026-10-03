@@ -19,13 +19,15 @@ import pandas as pd
 
 from infra.models.basis.config import BASIS_MODELS
 from infra.models.basis.inputs import basis_days
-from infra.models.basis.model import make_model
+from infra.models.basis.model import TIERS, make_model  # noqa: F401 (make_model: callers)
 
 
-def run(name: str, start, end, *, contracts: str = "quoted", log_every: int = 0) -> dict[str, pd.DataFrame]:
-    """Fit (point in time, per day) and predict ``name`` over ``[start, end]``."""
-    model, out_c, out_b = make_model(name), [], []
-    for i, raw in enumerate(basis_days(BASIS_MODELS[name], start, end, contracts=contracts)):
+def run(name, start, end, *, contracts: str = "quoted", log_every: int = 0, days=None) -> dict[str, pd.DataFrame]:
+    """Fit (point in time, per day) and predict ``name`` (a registered spec name, or a
+    ``BasisSpec``) over ``[start, end]`` - every day, or only ``days`` (a sample)."""
+    spec = BASIS_MODELS[name] if isinstance(name, str) else name
+    model, out_c, out_b = TIERS[spec.tier](spec), [], []
+    for i, raw in enumerate(basis_days(spec, start, end, contracts=contracts, days=days)):
         prepared = model.prepare(raw)
         pred = model.fit(prepared, as_of=raw.day).predict(prepared)
         out_c.append(pred["contracts"])
