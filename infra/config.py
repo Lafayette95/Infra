@@ -93,6 +93,11 @@ SWAP_CLOSES_DIR = DERIVED_ROOT / "SwapCloses"
 # tickers as the CMT par curve (US_BOND_10y) - a consumer picks the series by ``source``
 # (BOND_YIELD_SOURCES) through infra.pipeline.bond_yields.read_bond_yields.
 OTR_YIELDS_DIR = DERIVED_ROOT / "OTRYields"
+# Saved walk-forward runs of the statistical models (infra/models/stats, CLAUDE.md 25):
+# one folder per run name holding params.parquet (one tidy params frame per refit) and
+# predictions.parquet (the stitched out-of-sample rows), written by
+# scripts/run_walk_forward.py through infra.storage.model_runs.
+MODEL_RUNS_DIR = DERIVED_ROOT / "ModelRuns"
 BOND_YIELD_SOURCES = ("cmt", "otr")
 
 # Repo rates and the NY Fed's Treasury securities lending (CLAUDE.md 19), both fetched by

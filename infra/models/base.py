@@ -43,6 +43,12 @@ class Model(ABC):
     def predict(self, prepared: Any, **kwargs) -> Any:
         """Outputs on new data with the fitted parameters held fixed."""
 
+    def params(self):
+        """The fitted parameters as a tidy frame (``section, row, col, value``), so a
+        walk-forward can stack one per fit date and a later session can rebuild the fit
+        (``infra.models.walk_forward``). Optional: models that don't need it may skip it."""
+        raise NotImplementedError(f"{type(self).__name__} does not export its parameters")
+
     @property
     def is_fitted(self) -> bool:
         return getattr(self, "fitted_", None) is not None

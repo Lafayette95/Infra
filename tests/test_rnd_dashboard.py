@@ -98,7 +98,7 @@ def test_app_builds_with_all_pages_registered():
     layout = app.layout()
     assert layout is not None
     paths = {p["relative_path"] for p in dash.page_registry.values()}
-    assert paths == {"/", "/rnd", "/wirp"}
+    assert paths == {"/", "/rnd", "/wirp", "/models"}
 
 
 def test_create_app_is_idempotent_across_calls():

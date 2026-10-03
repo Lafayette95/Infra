@@ -250,6 +250,7 @@ def test_paper_positions_follow_the_stated_formula():
 
 def test_futures_prices_reads_disk_only(monkeypatch):
     from infra.models.cta import inputs
+    from infra.pipeline import series_panel
     days = pd.bdate_range("2024-01-01", periods=4)
     rel = pd.DataFrame({"timestamp": days, "ticker": "ZN.v.0", "contract": ["ZNH4", "ZNH4", "ZNM4", "ZNM4"],
                         "settlement_price": [110.0, 110.5, 111.5, 111.0]})
@@ -262,8 +263,8 @@ def test_futures_prices_reads_disk_only(monkeypatch):
         seen["fetch_missing"] = fetch_missing
         return rel
 
-    monkeypatch.setattr(inputs, "load_relative_daily", fake_rel)
-    monkeypatch.setattr(inputs.dl, "read_daily_from_disk", lambda tickers, start, end: absolute)
+    monkeypatch.setattr(series_panel, "load_relative_daily", fake_rel)
+    monkeypatch.setattr(series_panel.dl, "read_daily_from_disk", lambda tickers, start, end: absolute)
     out = inputs.futures_prices(["ZN.v.0"], days[0], days[-1])
     assert seen["fetch_missing"] is False
     assert out["ZN.v.0"].diff().dropna().tolist() == [0.5, 0.25, -0.5]

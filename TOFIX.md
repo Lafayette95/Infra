@@ -927,3 +927,40 @@ the mean of the eigenvalues after the k retained ones, so `n_above_mp` depends o
 curve, k=3: PC1-PC4 above, PC4 marginally). It is a heuristic there, not a test.
 `diagnostics.parallel_analysis` is the better small-p tool; the dashboard does not show it
 yet.
+
+## Stats: HMM parameters are estimated from complete feature rows only
+
+**Found:** 2026-10-03, building `infra/models/stats/hmm.py`.
+**Where:** `hmm.m_step_gaussian`.
+**Status:** open, low priority.
+
+**The issue:** the filter uses rows with gaps (marginal likelihood over the observed
+features), but the M-step's means and covariances use complete feature rows only. With the
+default daily-score features every row with any observed N series has complete scores
+(the scores themselves are projected over the gaps), so today this only matters for the
+`columns` feature builder on gappy inputs. **Fix:** the conditional-Gaussian M-step (expected
+missing entries and their covariance per regime, as `pca.ppca_em` does).
+
+## Stats: a daily-score HMM's predicted regime can swing within days out of sample
+
+**Found:** 2026-10-03, US/DE/UK curves walk-forward (`infra/models/stats/CLAUDE.md` 7).
+**Status:** open, a modelling choice per use.
+
+**The issue:** the default features (daily factor scores) make each day's emission very
+informative, so out of sample the predicted probability of the 2-regime HMM moved 0.15 ->
+0.92 within three days (Sep 2026) even with `sticky=200`. Fine for the z-score scaling,
+noisy if a strategy keys on the regime itself. **Options:** larger `sticky` (pseudo-counts
+~ the regime durations wanted), `hmm2_vol` (rolling-vol features, slower), a minimum-duration
+(semi-Markov) HMM, or smoothing the probability path used for trading (point-in-time:
+trailing only). Not chosen yet: needs a strategy to judge against.
+
+## Stats: Markov-switching regression not built
+
+**Found:** 2026-10-03 (decision). **Status:** deferred.
+
+The external-regime path covers "regimes from a richer data set" for PCA (`RegimePCA`);
+the regression analogue (regime-weighted regression with `RegimeModel` probabilities) and a
+true Markov-switching regression (regimes defined by the regression's own fit: emission =
+residual density per regime, through `hmm.forward_backward`, M-step = the existing weighted
+estimators) are both still to build. Also queued by the user: Johansen / VECM and
+regression with autocorrelated errors (Prais-Winsten).

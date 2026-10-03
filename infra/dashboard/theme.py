@@ -22,3 +22,15 @@ THEMES: dict[str, dict[str, str]] = {
 def tokens(theme: str) -> dict[str, str]:
     """Token dict for ``theme`` (falls back to light)."""
     return THEMES.get(theme, THEMES["light"])
+
+
+# Categorical series colours, fixed order (never cycled): the dataviz skill's reference
+# palette, validated by the skill in both modes; slots 1-2 are the up/down pair above.
+SERIES: dict[str, list[str]] = {
+    "light": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"],
+    "dark": ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
+}
+
+
+def series_colors(theme: str) -> list[str]:
+    return SERIES.get(theme, SERIES["light"])

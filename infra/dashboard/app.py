@@ -25,7 +25,9 @@ def create_app() -> Dash:
     import infra.dashboard.layout  # noqa: F401  (import triggers dash.register_page)
     import infra.dashboard.rnd_layout  # noqa: F401  (import triggers dash.register_page)
     import infra.dashboard.wirp_layout  # noqa: F401  (import triggers dash.register_page)
+    import infra.dashboard.models_layout  # noqa: F401  (import triggers dash.register_page)
     from infra.dashboard.callbacks import register_callbacks
+    from infra.dashboard.models_callbacks import register_models_callbacks
     from infra.dashboard.rnd_callbacks import register_rnd_callbacks
     from infra.dashboard.shell import build_shell, register_shell_callbacks
     from infra.dashboard.wirp_callbacks import register_wirp_callbacks
@@ -35,4 +37,5 @@ def create_app() -> Dash:
     register_callbacks(app)
     register_rnd_callbacks(app)
     register_wirp_callbacks(app)
+    register_models_callbacks(app)
     return app

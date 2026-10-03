@@ -21,3 +21,9 @@ html, body { margin: 0; }
 .kpi strong { font-size: 20px; font-variant-numeric: tabular-nums; }
 .note { margin-top: 24px; padding: 14px 18px; border-left: 3px solid var(--axis); }
 .note p { font-size: 13px; color: var(--ink2); line-height: 1.6; margin: 8px 0 0; }
+.controls + .controls { margin-top: 10px; }
+.controls label.wide { min-width: 420px; flex: 1; }
+.table-wrap { overflow-x: auto; margin: 12px 0; }
+.table-wrap table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink2); }
+.table-wrap th, .table-wrap td { padding: 4px 10px; border-bottom: 1px solid var(--grid); text-align: right; }
+.table-wrap th:first-child, .table-wrap td:first-child { text-align: left; color: var(--ink); }

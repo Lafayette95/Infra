@@ -1,4 +1,4 @@
-# infra/models - Models: Nowcasting, Inflation, CTA (additive to the root CLAUDE.md)
+# infra/models - Models: Nowcasting, Inflation, CTA, Basis, Stats (additive to the root CLAUDE.md)
 
 Everything in the root `CLAUDE.md` still applies (conda env, modularity, one-way
 dependencies, point-in-time `as_of`, `TOFIX.md`, UTC). This file only adds what is
@@ -17,10 +17,37 @@ specific to the models sub-project.
 *   **Parameters live in a config registry** (a spec dataclass per parametrisation, toggled
     by name, e.g. `CTA_MODELS`), apart from the code; **inputs are abstract**: reading stored
     data is a separate `inputs` module per model.
+*   **Shared machinery for every model (2026-10-03):** `infra/models/prep.py` (string prep
+    steps: stateless ones in `prepare`, stateful scaling fitted in `fit` and frozen - so
+    resample / diff / normalise is a helper of ANY model, not of one) and
+    `infra/models/walk_forward.py` (the point-in-time refit loop, below). `Model.params()`
+    (optional) exports the fit as a tidy `section, row, col, value` frame.
 *   **The nowcast predates this** (functions `estimate` = fit, `nowcast`/`news` = predict,
     `panel.py` = prepare). It maps onto the pattern; it was not refactored.
 *   **Scheduling is open:** the daily cycle may not import `infra/models`, so a scheduled
     fit/predict needs its own runner (`TOFIX.md`, "CTA: no scheduled fit/predict").
+
+## 0a. The two use cases every model must serve (user requirement, 2026-10-03)
+The SAME classes, specs and parameters serve both; never a second implementation for one
+of them.
+*   **(a) Point-in-time continuous refit for a strategy - the important one.** A backtest
+    refits on a schedule (say every Friday) on data up to that date ONLY, saves the
+    parameters as of that refit, and uses that frozen fit to compute the following week's
+    outputs (fitted values, residuals, factors, signals). Stitched, that is the history as
+    a live user would have seen it. Generic loop: `infra.models.walk_forward.walk_forward`
+    (any model with `prepare` / `fit(as_of)` / `params()` / `predict(start=, end=)`;
+    the CTA keeps its own because its predict continues a recursive state). Rules that
+    make it safe: every stateless prep step is trailing; stateful scaling is fitted inside
+    `fit`; `fit` takes only rows known by `as_of`; outputs after the fit date are flagged
+    `in_sample=False`; `from_params` rebuilds any stored fit. Saved runs:
+    `scripts/run_walk_forward.py --save NAME` -> `Database/Derived/ModelRuns/NAME`.
+    A new model must pass the shock test in
+    `tests/test_stats_models.py::test_walk_forward_is_point_in_time` (change every value
+    after T; nothing up to T may move).
+*   **(b) On-demand interactive use in Dash.** Select the input series, the model and its
+    parameters, a fit date, and see the fit and its out-of-sample behaviour (the `/models`
+    page for the statistical models, `infra/models/stats/CLAUDE.md` 2). The page builds
+    the same spec objects a walk-forward uses.
 
 ## 1. Scope and layering
 *   **`infra/models` is a consumer layer, like `infra/analytics`**: pure computation on data
@@ -28,7 +55,9 @@ specific to the models sub-project.
     that read storage: `infra/models/nowcast/nowcast.py` (through
     `infra.pipeline.releases.read_releases_from_disk`) and `infra/models/cta/inputs.py`
     (through `infra.pipeline.relative_daily.load_relative_daily(fetch_missing=False)` and
-    `infra.pipeline.daily.read_daily_from_disk`).
+    `infra.pipeline.daily.read_daily_from_disk`; the continuous-futures reader moved to
+    `infra.pipeline.series_panel.continuous_futures` on 2026-10-03, unchanged), and
+    `infra/models/stats` (any series through `infra.pipeline.series_panel.read_panel`).
 *   **Dependencies point one way.** `infra/api`, `processing`, `pipeline`, `cycle` and
     `storage` never import `infra.models`. Only `infra/dashboard` may, from above. This is
     enforced by `tests/test_architecture.py`.
@@ -359,3 +388,13 @@ specific to the models sub-project.
     so the daily cycle can use the futures DV01 without importing `infra/models`. Read that
     file before touching it.
 
+## 11. Regression & PCA on any series
+*   **Its own sub-project, `infra/models/stats/`, with its own `CLAUDE.md`**: regression
+    classes (OLS/WLS, stepwise, ridge/lasso/elastic net, Huber, quantile, hockey stick,
+    total least squares, logit/probit, Kalman time-varying beta) and PCA classes (plain,
+    weighted, missing data by probabilistic-PCA EM), regime models (Gaussian HMM, rules) and
+    a regime-weighted PCA (K series' structure under regimes inferred from N series), their
+    diagnostics (factor correlation
+    by sub-period, eigenvector stability, parallel analysis, bootstrap loadings,
+    coefficient stability), input-agnostic, serving both use cases of 0a. Read that file
+    before touching it.
