@@ -99,3 +99,18 @@ def vol_at_horizon(atm: pd.DataFrame, horizon) -> pd.DataFrame:
 def normal_vol_points_per_day(iv: float | np.ndarray, future: float | np.ndarray) -> np.ndarray:
     """Lognormal vol (annual) -> price vol in futures points per trading day."""
     return np.asarray(iv) * np.asarray(future) / np.sqrt(TRADING_DAYS)
+
+
+def front_changes(settlements: pd.DataFrame, open_interest: pd.DataFrame) -> pd.Series:
+    """Daily settlement changes (points) of the FRONT contract - the one with the most open
+    interest the day before (known at the start of the day), same contract both days, so a
+    roll never shows up as a move. Inputs wide: index day, columns contract."""
+    prev = open_interest.shift(1).astype(float).dropna(how="all")
+    front = prev.idxmax(axis=1)
+    d1 = settlements - settlements.shift(1)
+    return pd.Series([d1.at[d, c] if c in d1.columns else np.nan for d, c in front.items()], index=front.index).dropna()
+
+
+def ewma_points(changes: pd.Series, lam: float) -> pd.Series:
+    """EWMA vol (points per day) of daily changes, known at each day's close."""
+    return np.sqrt((changes ** 2).ewm(alpha=1 - lam).mean())

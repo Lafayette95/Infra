@@ -23,6 +23,7 @@ def basis_days(spec: BasisSpec, start, end, *, contracts: str = "quoted") -> Ite
     levels = level_history(spec, pd.Timestamp(start) - pd.Timedelta(days=spec.vol_history_days), end) \
         if spec.tier != "M0" else None
     panel = yield_panel(spec, start, end) if spec.tier not in ("M0", "M1") else None
+    iv = iv_panel(spec, start, end) if spec.tier != "M0" and spec.level_vol_source == "iv" else None
     for day in src.days:
         if pd.Timestamp(start) <= day <= pd.Timestamp(end):
             raw = src.day(day)
@@ -32,7 +33,24 @@ def basis_days(spec: BasisSpec, start, end, *, contracts: str = "quoted") -> Ite
                 y = panel["yields"]
                 raw.meta.update({"yields": y[y.index <= day].tail(spec.factor_window + 1),
                                  "predecessor": panel["predecessor"], "maturity": panel["maturity"]})
+            if iv is not None:
+                raw.meta["iv"] = iv_for_day(iv, day)
             yield raw
+
+
+def iv_panel(spec: BasisSpec, start, end) -> dict:
+    """Add-on IV: ``iv_root``'s at-the-money vols (per day x expiry) and the EWMA of its
+    front contract's daily moves (points/day), over the range."""
+    from infra.pipeline.futures_iv import atm_iv, front_ewma_points
+    return {"atm": atm_iv(spec.iv_root, start, end),
+            "ewma_pts": front_ewma_points(spec.iv_root, start, end, lam=spec.vol_lambda)}
+
+
+def iv_for_day(iv: dict, day) -> dict:
+    """The day's slice of ``iv_panel`` (point in time: that day's settlements)."""
+    day = pd.Timestamp(day)
+    a = iv["atm"]
+    return {"atm": a[a["timestamp"] == day], "ewma_pts": iv["ewma_pts"].get(day, float("nan"))}
 
 
 def yield_panel(spec: BasisSpec, start, end) -> dict:

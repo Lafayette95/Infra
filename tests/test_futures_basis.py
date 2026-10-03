@@ -318,3 +318,20 @@ def test_mark_noise_is_measured_from_reversal_and_removed_from_idio():
     clean = fit_factor_model(dy, 20, k=1, noise_removal=2.0)
     assert plain.noise_var[0] == pytest.approx(4.0, rel=0.35) and plain.noise_var[1:].max() < 1.0
     assert clean.psi[0] < plain.psi[0] - 4.0 and clean.psi[1:] == pytest.approx(plain.psi[1:], rel=0.2)
+
+
+def test_iv_add_on_scales_by_implied_over_realised_points():
+    from dataclasses import replace
+    from infra.analytics.futures_iv import normal_vol_points_per_day
+    from infra.models.basis.config import BASIS_MODELS
+    from infra.models.basis.model import TIERS
+    m = TIERS["M1"](replace(BASIS_MODELS["M1"], level_vol_source="iv"))
+    atm = pd.DataFrame({"timestamp": [pd.Timestamp("2024-05-01")] * 2, "expiry": pd.to_datetime(["2024-05-24", "2024-06-21"]),
+                        "underlying": "ZNM4", "future": 108.0, "T": [23 / 365, 51 / 365], "atm_iv": [0.06, 0.06], "n_options": 6})
+    m.fitted_ = {"iv": {"atm": atm, "ewma_pts": 0.40}}
+    c = pd.Series({"delivery": pd.Timestamp("2024-06-03")})
+    assert m._vol_scale(c) == pytest.approx(float(normal_vol_points_per_day(0.06, 108.0)) / 0.40)
+    m.fitted_ = {"iv": {"atm": atm.iloc[0:0], "ewma_pts": 0.40}}
+    assert m._vol_scale(c) == 1.0  # no option data that day: falls back to the EWMA
+    m.fitted_ = {"iv": None}
+    assert m._vol_scale(c) == 1.0

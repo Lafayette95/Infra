@@ -29,6 +29,14 @@ class BasisSpec:
     level_tenor: tuple[tuple[str, int], ...] = (("ZT", 2), ("Z3N", 3), ("ZF", 5), ("ZN", 7), ("TN", 10),
                                                 ("ZB", 20), ("UB", 30))
     vol_lambda: float = 0.94
+    # Add-on IV (1-factor vol scaling): "ewma" = the level vol as estimated (default);
+    # "iv" = scaled by iv_root's implied / realised ratio that day, both in futures points
+    # (ATM implied at the contract's delivery horizon / EWMA of the front contract's daily
+    # moves), applied to every root - infra/pipeline/futures_iv.py. Validated 2026-10-03:
+    # ZN's 1-month implied forecasts the next 21 days' realised vol better than the EWMA
+    # (MAE 0.085 vs 0.096 points/day, correlation 0.66 vs 0.55).
+    level_vol_source: str = "ewma"
+    iv_root: str = "ZN"
     vol_history_days: int = 3 * 365
     n_paths: int = 20_000  # antithetic pairs included
     seed: int = 0
@@ -83,4 +91,6 @@ BASIS_MODELS: dict[str, BasisSpec] = {
                                 "predecessor backfill for young bonds; correlated shocks at the M0 delivery day"),
     "M2T": BasisSpec("M2T", "M2", "M2 + the timing options (wild card and end-of-month switch)", timing_options=True),
     "M2t": BasisSpec("M2t", "M2", "M2 with fat-tailed spreads (Student-t, 6 df, one mixing draw per path)", spread_df=6.0),
+    "M2TIV": BasisSpec("M2TIV", "M2", "M2T with the level vol scaled by ZN's implied / realised ratio (add-on IV)",
+                       timing_options=True, level_vol_source="iv"),
 }

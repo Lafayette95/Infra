@@ -14,8 +14,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from infra.analytics.futures_iv import atm_vol, implied_vols, vol_at_horizon  # noqa: F401 (re-export)
-from infra.config import DAILY_OPTIONS_DIR
+from infra.analytics.futures_iv import (atm_vol, ewma_points, front_changes, implied_vols,  # noqa: F401
+                                        vol_at_horizon)
+from infra.config import DAILY_FUTURES_DIR, DAILY_OPTIONS_DIR
 from infra.pipeline import daily as dl
 from infra.processing.statistics import decode_daily_options
 from infra.storage import parquet_store
@@ -41,3 +42,21 @@ def atm_iv(root: str, start, end, *, store: Path = DAILY_OPTIONS_DIR, discount: 
     fut["ticker"] = fut["ticker"].astype(str)
     fut = fut.dropna(subset=["settlement_price"]).rename(columns={"settlement_price": "price"})[["timestamp", "ticker", "price"]]
     return atm_vol(implied_vols(opts, fut, discount=discount))
+
+
+
+def front_ewma_points(root: str, start, end, *, lam: float = 0.94, history_days: int = 400,
+                      store: Path = DAILY_FUTURES_DIR) -> pd.Series:
+    """EWMA vol (futures points/day) of ``root``'s front-contract settlement changes (most
+    open interest the day before), by day - the realised side of the implied/realised
+    ratio the basis models' IV add-on scales by. Reads ``Daily/Futures``."""
+    first = pd.Timestamp(start) - pd.Timedelta(days=history_days)
+    stop = pd.Timestamp(end) + pd.Timedelta(days=1)
+    names = parquet_store.read_partitioned(store, start=first, end=stop, columns=["ticker"])
+    tickers = pd.Series(names["ticker"].astype(str).unique()) if names is not None else pd.Series([], dtype=str)
+    tickers = sorted(tickers[tickers.str.fullmatch(rf"{root}[FGHJKMNQUVXZ]\d")])
+    fut = dl.read_daily_from_disk(tickers, first, stop)
+    fut["ticker"] = fut["ticker"].astype(str)
+    w = fut.pivot(index="timestamp", columns="ticker", values="settlement_price").sort_index()
+    oi = fut.pivot(index="timestamp", columns="ticker", values="open_interest").sort_index()
+    return ewma_points(front_changes(w, oi), lam)

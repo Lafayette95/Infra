@@ -9,10 +9,13 @@ Output of ``predict`` for one day, every tier alike:
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 
 from infra.analytics.delivery_timing import eom_switch_value, wildcard_value, window_kinds
+from infra.analytics.futures_iv import normal_vol_points_per_day, vol_at_horizon
 from infra.config import FOMC_MEETINGS
 from infra.analytics.futures_basis import (bachelier_exchange, basis_table, clean_price_from_yield, forward_yield,
                                           futures_dv01, simulate_delivery)
@@ -113,6 +116,7 @@ class OneFactorBasis(DeterministicBasis):
     def prepare(self, raw: BasisDay, **kwargs) -> pd.DataFrame:
         out = super().prepare(raw)
         out.attrs["levels"] = raw.meta.get("levels")
+        out.attrs["iv"] = raw.meta.get("iv")
         return out
 
     def fit(self, prepared, as_of=None) -> "OneFactorBasis":
@@ -122,8 +126,23 @@ class OneFactorBasis(DeterministicBasis):
         if as_of is not None:
             levels = levels[levels.index <= pd.Timestamp(as_of)]
         self.fitted_ = {"tier": "M1", "as_of": as_of,
-                        "vol_bp_day": {r: ewma_vol_bp(levels[r], self.spec.vol_lambda) for r in levels.columns}}
+                        "vol_bp_day": {r: ewma_vol_bp(levels[r], self.spec.vol_lambda) for r in levels.columns},
+                        "iv": prepared.attrs.get("iv") if self.spec.level_vol_source == "iv" else None}
+        if self.spec.level_vol_source == "iv" and self.fitted_["iv"] is None:
+            raise ValueError("level_vol_source='iv' needs meta['iv'] (infra.models.basis.inputs.iv_panel)")
         return self
+
+    def _vol_scale(self, c) -> float:
+        """Add-on IV: the implied / realised vol ratio of ``spec.iv_root`` (futures points)
+        at this contract's delivery horizon; 1 with the add-on off, or when the day has no
+        option data (``vol_scale`` in the output says which)."""
+        iv = self.fitted_.get("iv")
+        if iv is None or iv["atm"].empty or not np.isfinite(iv["ewma_pts"]) or iv["ewma_pts"] <= 0:
+            return 1.0
+        h = vol_at_horizon(iv["atm"], pd.Timestamp(c["delivery"]))
+        if h.empty or not np.isfinite(h["iv"].iloc[0]):
+            return 1.0
+        return float(normal_vol_points_per_day(h["iv"].iloc[0], h["future"].iloc[0]) / iv["ewma_pts"])
 
     def predict(self, prepared: pd.DataFrame, **kwargs) -> dict[str, pd.DataFrame]:
         base = super().predict(prepared)
@@ -139,10 +158,12 @@ class OneFactorBasis(DeterministicBasis):
         for _, c in contracts.iterrows():
             g = bonds[(bonds["contract"] == c["contract"]) & (bonds["delivery_kind"] == c["delivery_kind"])]
             g = g.dropna(subset=["fwd"])
-            sigma = self.fitted_["vol_bp_day"].get(c["root"], np.nan)
+            scale = self._vol_scale(c)
+            sigma = self.fitted_["vol_bp_day"].get(c["root"], np.nan) * scale
             day = pd.Timestamp(c["day"])
             n_bd = len(business_days(day + pd.Timedelta(days=1), self._quality_horizon_end(c)))
-            out = c.to_dict() | {"fair_futures_m0": c["fair_futures"], "vol_bp_day": sigma, "horizon_bd": n_bd}
+            out = c.to_dict() | {"fair_futures_m0": c["fair_futures"], "vol_bp_day": sigma, "horizon_bd": n_bd,
+                                 "vol_scale": scale}
             if not np.isfinite(sigma) or len(g) == 0:
                 rows.append(out)
                 continue
@@ -217,7 +238,7 @@ class OneFactorBasis(DeterministicBasis):
         F stays put). Wild card: Bermudan over the intention days left (from the first
         intention day, 2 business days before the delivery month, to the last trading day),
         the EOM value as continuation."""
-        sigma = self.fitted_["vol_bp_day"].get(c["root"], np.nan)
+        sigma = self.fitted_["vol_bp_day"].get(c["root"], np.nan) * self._vol_scale(c)
         b = self._prepared_bonds
         g = b[(b["contract"] == c["contract"]) & (b["delivery_kind"] == "last")].dropna(subset=["fwd", "dv01"])
         if not np.isfinite(sigma) or g.empty:
@@ -270,11 +291,11 @@ class OneFactorBasis(DeterministicBasis):
 
     def _shocks(self, c, g: pd.DataFrame, n_bd: int, z: np.ndarray):
         """Yield shocks (bp) at delivery: one per path, shared by the basket."""
-        return self.fitted_["vol_bp_day"][c["root"]] * np.sqrt(max(n_bd, 0)) * z
+        return self.fitted_["vol_bp_day"][c["root"]] * self._vol_scale(c) * np.sqrt(max(n_bd, 0)) * z
 
     def _pair_sd(self, c, g: pd.DataFrame, fdv: np.ndarray, i: int, j: int, n_bd: int) -> float:
         """Sd (futures points) of the implied-futures spread of bonds i and j at delivery."""
-        return abs(fdv[i] - fdv[j]) * self.fitted_["vol_bp_day"][c["root"]] * np.sqrt(max(n_bd, 0))
+        return abs(fdv[i] - fdv[j]) * self.fitted_["vol_bp_day"][c["root"]] * self._vol_scale(c) * np.sqrt(max(n_bd, 0))
 
 
 class FactorBasis(OneFactorBasis):
@@ -384,6 +405,7 @@ class FactorBasis(OneFactorBasis):
             return None
         idx = [fm.cusips.index(x) for x in g["cusip"]]
         rng = np.random.default_rng(self.spec.seed + 1)
+        fm = replace(fm, sigma_level=fm.sigma_level * self._vol_scale(c))  # add-on IV scales the LEVEL only
         shocks = simulate_shocks(fm, n_bd, z, rng, spread_df=self.spec.spread_df, idio_scale=self.spec.idio_scale)
         return shocks[:, idx]
 
@@ -392,7 +414,7 @@ class FactorBasis(OneFactorBasis):
         if fm is None:
             return float("nan")
         a, b = fm.cusips.index(g["cusip"].iloc[i]), fm.cusips.index(g["cusip"].iloc[j])
-        cov = fm.sigma_level ** 2 * max(n_bd, 0) + fm.phi @ fm.phi.T + np.diag(fm.psi)  # level + spreads at horizon
+        cov = (fm.sigma_level * self._vol_scale(c)) ** 2 * max(n_bd, 0) + fm.phi @ fm.phi.T + np.diag(fm.psi)
         var = fdv[i] ** 2 * cov[a, a] + fdv[j] ** 2 * cov[b, b] - 2 * fdv[i] * fdv[j] * cov[a, b]
         return float(np.sqrt(max(var, 0.0)))
 
