@@ -13,6 +13,8 @@ interest and yields. Pure functions, no I/O.
 """
 from __future__ import annotations
 
+import calendar
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import brentq
@@ -46,18 +48,41 @@ def normalize(page: pd.DataFrame, day) -> pd.DataFrame:
 def coupon_dates(maturity: pd.Timestamp, settle: pd.Timestamp, per_year: int) -> list[pd.Timestamp]:
     """Regular coupon dates from the last one at or before ``settle`` through maturity,
     stepping back from maturity (end-of-month maturities stay end of month)."""
+    # integer month arithmetic, not DateOffset (~20x faster; same dates: a day past the
+    # month's end clips to it, as relativedelta does, and end-of-month stays end of month)
+    maturity, settle = pd.Timestamp(maturity), pd.Timestamp(settle)
     months = 12 // per_year
     eom = (maturity + pd.Timedelta(days=1)).day == 1
     dates, k = [], 0
     while True:
-        d = maturity - pd.DateOffset(months=months * k)
-        if eom:
-            d = d + pd.offsets.MonthEnd(0)
+        total = maturity.year * 12 + (maturity.month - 1) - months * k
+        y, m = divmod(total, 12)
+        last = calendar.monthrange(y, m + 1)[1]
+        d = pd.Timestamp(year=y, month=m + 1, day=last if eom else min(maturity.day, last))
         dates.append(d)
         if d <= settle:
             break
         k += 1
-    return sorted(dates)
+    return dates[::-1]
+
+
+def _schedule(maturity, settle, per_year: int):
+    """(coupons still to come, fraction of the current period left) at ``settle``."""
+    dates = coupon_dates(maturity, settle, per_year)
+    period = (dates[1] - dates[0]).days
+    return len(dates) - 1, (dates[1] - settle).days / period
+
+
+def full_price_from_yield(yield_pct: float, coupon: float, maturity, settle, per_year: int) -> float:
+    """Full (dirty) price per 100 at a street-convention yield (%) - the inverse of the
+    yield in ``accrued_and_yield`` (regular periods; the first period approximated as
+    regular)."""
+    maturity, settle = pd.Timestamp(maturity), pd.Timestamp(settle)
+    if settle >= maturity:
+        return np.nan
+    n, w = _schedule(maturity, settle, per_year)
+    disc = (1 + yield_pct / 100 / per_year) ** -(np.arange(n) + w)
+    return float(coupon / per_year * disc.sum() + 100 * disc[-1])
 
 
 def accrued_and_yield(price: float, coupon: float, maturity, settle, per_year: int, dated_date=None,
@@ -75,18 +100,10 @@ def accrued_and_yield(price: float, coupon: float, maturity, settle, per_year: i
     accrued = coupon / per_year * max((settle - accrual_start).days, 0) / period
     if price is None or not np.isfinite(price):
         return accrued, np.nan
-    n = len(dates) - 1  # coupons still to come
-    w = (nxt - settle).days / period
     full = price + accrued
-    c = coupon / per_year
-    k = np.arange(n)
-
-    def pv(y):
-        disc = (1 + y / per_year) ** -(k + w)
-        return c * disc.sum() + 100 * disc[-1] - full
-
     try:
-        return accrued, 100 * brentq(pv, -0.2, 1.0)
+        return accrued, 100 * brentq(lambda y: full_price_from_yield(100 * y, coupon, maturity, settle, per_year) - full,
+                                     -0.2, 1.0)
     except ValueError:
         return accrued, np.nan
 

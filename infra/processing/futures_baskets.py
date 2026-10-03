@@ -151,3 +151,66 @@ def listed_contracts(root: str, day, n: int = 3) -> list[pd.Timestamp]:
             out.append(m)
         m = m + pd.DateOffset(months=3)
     return out
+
+
+def _shift_months(day: pd.Timestamp, months: int, eom: bool) -> pd.Timestamp:
+    """``day`` moved by whole months, keeping end-of-month, else the day (clipped)."""
+    d = pd.Timestamp(day) + pd.DateOffset(months=months)
+    return d + pd.offsets.MonthEnd(0) if eom else d
+
+
+def expected_issues(securities: pd.DataFrame, as_of, until, tenors: dict[str, tuple[str, str]]) -> pd.DataFrame:
+    """Original issues EXPECTED after ``as_of`` and up to ``until`` - not yet auctioned, so
+    absent from ``securities`` (the reference table as known at ``as_of``). Each tenor's
+    pattern is inferred from its own three latest issues: the cycle in months (monthly
+    2y/3y/5y/7y, quarterly 10y/20y/30y new CUSIPs; reopenings add none) and whether issue
+    and maturity days are month-ends. One row per expected issue: ``cusip`` (a
+    placeholder, ``NEW:<tenor>:<issue date>``), ``tenor``, ``security_type``,
+    ``term_months``, ``issue_date``, ``maturity_date``, ``auction_date`` (~ issue - 4
+    business days), ``predecessor`` (the latest ACTUAL issue of the tenor, whose history
+    and yield stand in for it)."""
+    as_of, until = pd.Timestamp(as_of), pd.Timestamp(until)
+    rows = []
+    for tenor, (stype, term) in tenors.items():
+        s = securities[(securities["security_type"] == stype) & (securities["original_term"] == term)]
+        s = s.dropna(subset=["issue_date"]).sort_values("issue_date").tail(3)
+        if len(s) < 2:
+            continue
+        issues = pd.to_datetime(s["issue_date"])
+        cycle = int(round(np.median(np.diff(issues.to_numpy()).astype("timedelta64[D]").astype(int)) / 30.44))
+        if cycle < 1:
+            continue
+        last = s.iloc[-1]
+        iss, mat = pd.Timestamp(last["issue_date"]), pd.Timestamp(last["maturity_date"])
+        mat_eom = (mat + pd.Timedelta(days=1)).day == 1
+        # Issue-day convention: month-end issues (2y/5y/7y; the 20y too, though it matures
+        # on the 15th) are nominally the month's last calendar day, rolled FORWARD to a
+        # business day (June 30 2019, a Sunday -> issued Monday July 1); mid-month issues
+        # fall on the maturity's day of month (the 15th), rolled forward likewise.
+        month_end_issue = mat_eom or iss.day >= 25 or (iss.day <= 3 and iss.day != mat.day)
+        nominal_month = pd.Timestamp(year=iss.year, month=iss.month, day=1)
+        if month_end_issue and iss.day <= 3:
+            nominal_month = nominal_month - pd.DateOffset(months=1)
+        k = 1
+        while True:
+            month = nominal_month + pd.DateOffset(months=cycle * k)
+            if month_end_issue:
+                nominal = month + pd.offsets.MonthEnd(0)
+            else:
+                nominal = month.replace(day=min(mat.day, (month + pd.offsets.MonthEnd(0)).day))
+            nxt = nominal if nominal.weekday() < 5 else nominal + pd.offsets.BDay(1)
+            if nxt > until:
+                break
+            if nxt > as_of:
+                rows.append({"cusip": f"NEW:{tenor}:{nxt.date()}", "tenor": tenor, "security_type": stype,
+                             "term_months": int(last["term_months"]), "issue_date": nxt,
+                             "maturity_date": _shift_months(mat, cycle * k, mat_eom),
+                             "auction_date": nxt - pd.offsets.BDay(4), "predecessor": str(last["cusip"])})
+            k += 1
+    return pd.DataFrame(rows, columns=["cusip", "tenor", "security_type", "term_months", "issue_date",
+                                       "maturity_date", "auction_date", "predecessor"])
+
+
+def expected_issue_coupon(yield_pct: float) -> float:
+    """The Treasury sets a new coupon at the highest 1/8 at or below the auction yield."""
+    return float(np.floor(yield_pct * 8 + 1e-9) / 8)

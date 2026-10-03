@@ -648,6 +648,19 @@ SWAP_CLOSES: dict[str, SwapCloseSpec] = {
     ),
 }
 
+# Futures snaps (CLAUDE.md 23): per snap instant and contract, the last two-sided bbo-1m
+# quote at or before the instant (at most FUTURES_SNAP_TOLERANCE_MIN old), plus that day's
+# settlement for comparison. The instants are SWAP_CLOSES' (one place for every benchmark
+# time). BASIS_SNAP is the instant the futures basis is computed at: FedInvest's END OF DAY
+# cash is a 15:30 New York snapshot - verified 2026-10-02, the CTD's daily gross-basis
+# noise against futures at each minute has a sharp minimum exactly at 15:30 (ZN 0.49/32
+# vs 2.06 at 15:00 and 1.68 at 16:00), so the street's 15:00 convention (settlement vs
+# 15:00 cash) would mismatch our two legs by 30 minutes.
+FUTURES_SNAPS_DIR = DERIVED_ROOT / "FuturesSnaps"
+FUTURES_SNAPS: tuple[str, ...] = ("NY1500", "NY1530", "NY1600", "LDN1615")
+FUTURES_SNAP_TOLERANCE_MIN = 5
+BASIS_SNAP = "NY1530"
+
 # ------------------------------------------------------------------ daily cycle
 # Operational parameters of the scheduled daily cycle (infra/cycle, CLAUDE.md section 12).
 # Deliberately separate from FUTURES_ROOTS: that describes the instrument universe itself,

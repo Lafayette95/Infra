@@ -18,6 +18,7 @@ Business days approximate SIFMA's US calendar: federal holidays plus Good Friday
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -26,12 +27,28 @@ from pandas.tseries.holiday import GoodFriday, USFederalHolidayCalendar
 _ONE_DAY = pd.Timedelta(days=1)
 
 
-def business_days(start, end) -> pd.DatetimeIndex:
-    """SOFR fixing days in ``[start, end]`` (approximation of the SIFMA calendar)."""
-    start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
+_CALENDAR_SPAN = (pd.Timestamp("1990-01-01"), pd.Timestamp("2075-12-31"))
+
+
+@lru_cache(maxsize=1)
+def _all_business_days() -> pd.DatetimeIndex:
+    start, end = _CALENDAR_SPAN
     holidays = USFederalHolidayCalendar().holidays(start, end)
     good_friday = pd.DatetimeIndex(GoodFriday.dates(start, end))
     return pd.bdate_range(start, end).difference(holidays).difference(good_friday)
+
+
+def business_days(start, end) -> pd.DatetimeIndex:
+    """SOFR fixing days in ``[start, end]`` (approximation of the SIFMA calendar). Built
+    once for 1990-2075 and sliced: rebuilding the holiday calendar per call dominated the
+    basis model's run time."""
+    start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
+    if start < _CALENDAR_SPAN[0] or end > _CALENDAR_SPAN[1]:
+        holidays = USFederalHolidayCalendar().holidays(start, end)
+        good_friday = pd.DatetimeIndex(GoodFriday.dates(start, end))
+        return pd.bdate_range(start, end).difference(holidays).difference(good_friday)
+    days = _all_business_days()
+    return days[(days >= start) & (days <= end)]
 
 
 def governing_days(days: pd.DatetimeIndex, fixing_days: pd.DatetimeIndex) -> pd.DatetimeIndex:
@@ -84,14 +101,18 @@ class SofrPath:
 
     def compounded(self, start, end) -> float:
         """Annualized rate (%, simple ACT/360) of rolling overnight from ``start`` to ``end``
-        (calendar days in ``[start, end)``), daily compounded."""
+        (calendar days in ``[start, end)``), daily compounded. Days past the path's last
+        priced day take that day's rate (flat extrapolation): a delivery a few days past the
+        SR1 strip's last month (found on a 2019 last trading day) must not fail. Days before
+        the path's start are an error."""
         days = pd.date_range(pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize() - _ONE_DAY)
         if len(days) == 0:
             return float("nan")
-        missing = days.difference(self.daily.index)
-        if len(missing):
-            raise ValueError(f"path does not cover {missing[0].date()}..{missing[-1].date()}")
-        growth = np.prod(1.0 + self.daily.loc[days].to_numpy() / 100.0 / 360.0)
+        priced = self.daily.dropna()
+        if days[0] < priced.index.min():
+            raise ValueError(f"path starts {priced.index.min().date()}, after {days[0].date()}")
+        rates = priced.reindex(days).ffill()
+        growth = np.prod(1.0 + rates.to_numpy() / 100.0 / 360.0)
         return float((growth - 1.0) * 360.0 / len(days) * 100.0)
 
 

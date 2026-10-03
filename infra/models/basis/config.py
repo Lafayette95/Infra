@@ -1,0 +1,65 @@
+"""Basis model parameters (infra/models/basis/CLAUDE.md) - specs kept apart from the code so
+several tiers / variants sit side by side and are toggled by name (``BASIS_MODELS``).
+
+The ladder (user decisions 2026-10-02): M0 deterministic -> M1 one factor -> M2 macro +
+basket-spread PCA -> M3 funding & microstructure -> M4 market-implied. Only M0 exists.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class BasisSpec:
+    name: str
+    tier: str  # "M0" .. "M4": which model class runs it (infra.models.basis.model.TIERS)
+    description: str = ""
+    # Cash is FedInvest's END OF DAY, a BID price; move it toward mid by this fraction of
+    # half the posted buy/sell spread (the posted spread is a convention, not the market's:
+    # 0.5 = a quarter of it, between "bid" (0) and "posted mid" (1)).
+    cash_mid_frac: float = 0.5
+    funding_model: str = "v1"  # infra.config.FINANCING_MODELS
+    roots: tuple[str, ...] = ("ZT", "Z3N", "ZF", "ZN", "TN", "ZB", "UB")
+    # M1+: the one level factor. Its vol = EWMA of daily changes (bp) of the CMT par yield
+    # at the contract's tenor, data before the day only; weight lambda per day.
+    level_tenor: tuple[tuple[str, int], ...] = (("ZT", 2), ("Z3N", 3), ("ZF", 5), ("ZN", 7), ("TN", 10),
+                                                ("ZB", 20), ("UB", 30))
+    vol_lambda: float = 0.94
+    vol_history_days: int = 3 * 365
+    n_paths: int = 20_000  # antithetic pairs included
+    seed: int = 0
+    # M2+: the basket factor model (infra.models.basis.factors). Level vol fast
+    # (vol_lambda), relative structure on a slow EWMA over ``factor_window`` days.
+    n_spread_factors: int = 3
+    factor_lambda: float = 0.99
+    factor_window: int = 500
+    # M2+: include EXPECTED new issues the basket will accept before delivery
+    # (infra.processing.futures_baskets.expected_issues) - ZT's realised CTD was a note not
+    # yet auctioned on 17% of M0's ZT misses, TN's on 84% of its misses (2019-2026).
+    future_issues: bool = True
+    # The delivery TIMING options (infra.analytics.delivery_timing): the wild card (Bermudan
+    # over the intention days up to the last trading day) and the end-of-month switch
+    # (futures frozen after the last trading day). Each window's variance = the CTD's daily
+    # price variance x the root's ORDINARY-day share of it in 15:00-19:00 New York x the
+    # day's multiplier. Measured 2019-2026 on each root's front futures (bbo-1m mids, the
+    # day's own 15:00 -> next 15:00 move as the daily variance); day kinds exclusive in the
+    # order fomc > quarter_end > month_end > ordinary. ``wildcard_var_share`` is the
+    # fallback for a root not listed (the all-days share 2024-2026, 6.3%).
+    timing_options: bool = False
+    wildcard_var_share: float = 0.063
+    wildcard_window: tuple[tuple[str, float, float, float, float], ...] = (
+        # root, ordinary share, x FOMC day, x quarter-end, x month-end
+        ("ZT", 0.040, 6.29, 2.14, 2.88), ("ZF", 0.045, 5.40, 2.00, 3.06), ("ZN", 0.049, 4.12, 2.14, 2.36),
+        ("TN", 0.053, 3.14, 2.31, 2.16), ("ZB", 0.056, 2.46, 2.78, 1.85), ("UB", 0.067, 1.67, 2.40, 1.27),
+    )
+
+
+BASIS_MODELS: dict[str, BasisSpec] = {
+    "M0": BasisSpec("M0", "M0", "deterministic: forward CTD by lowest implied futures price over bonds x "
+                                "{first, last} delivery day; option value 0"),
+    "M1": BasisSpec("M1", "M1", "one factor: the same normal shock to every deliverable's forward yield at the "
+                                "M0 delivery day; quality option by simulation"),
+    "M2": BasisSpec("M2", "M2", "basket factor model: level + PCA on the basket's spreads + idiosyncratic, "
+                                "predecessor backfill for young bonds; correlated shocks at the M0 delivery day"),
+    "M2T": BasisSpec("M2T", "M2", "M2 + the timing options (wild card and end-of-month switch)", timing_options=True),
+}

@@ -179,6 +179,8 @@ build, not a data problem: forward price of each deliverable to delivery, implie
 cheapest-to-deliver, forward DV01 / conversion factor, with the switch option via a
 parallel yield bump across the basket.
 
+**Update 2026-10-02 - the model exists** (CLAUDE.md 22, `infra/models/basis`): M0's futures DV01 (the deterministic CTD's forward DV01 / CF, `infra.analytics.futures_basis.futures_dv01`) tracks the market's realised sensitivity with slope 0.97-1.00 and R^2 >= 0.977 on every root, 2019-2026; M1/M2 give a probability-weighted version. **What's left is wiring:** the bmk step can't import `infra/models`, so either compute M0's DV01 in the cycle from the analytics + pipeline layers directly (they sit below the models on purpose), or store the model's daily output and have bmk read it. Decide which tier feeds bmk (M0 is already good enough for DV01).
+
 **Current state:** every bond-futures risk row is stored with `value = NaN` and the reason
 in `method`; the warn-level `dv01_coverage` check lists the affected roots every run.
 Bond futures pnl in CURRENCY is unaffected and real (settlement change x point value);
@@ -559,11 +561,13 @@ day's vintage would have been lost.
 
 ---
 
-## Derived: OTR yields and swap closes are not in the daily cycle yet
+## Derived: OTR yields, swap closes and futures snaps are not in the daily cycle yet
 
 **Found:** 2026-10-02, wiring the Treasury reference data and prices into the cycle (CLAUDE.md 12, 16, 18).
 **Where:** `infra.pipeline.bond_yields.build_otr_yields`, `infra.pipeline.swap_closes.backfill_swap_closes`; the `derived` step (`infra/cycle/derived.py`, `DERIVED_METRICS`).
 **Status:** open, deferred (user decision 2026-10-02: hold `derived` until the intraday data is scheduled).
+
+**Added 2026-10-02:** the futures snap store (`Derived/FuturesSnaps`, CLAUDE.md 23) is in the same position - built by hand with `infra.pipeline.futures_snaps.build_futures_snaps`, from bbo-1m quotes that are themselves not fetched daily yet. When the intraday data is scheduled, `derived` should build the day's snaps BEFORE the swap closes and the basis models, which read them.
 
 **The issue:** both are computed by hand today, so their stores only extend when someone runs them. `Derived/OTRYields` stops at the last `build_otr_yields()` and `Derived/SwapCloses` at 2026-09-30. **Why not now:** the futures-adjusted swap closes need each day's bond-futures `bbo-1m` quotes for the `.v.0` contracts. That's a daily intraday fetch, which belongs with scheduling the intraday cycle (`infra/cycle/intraday.py`, still run by hand). Wiring only half now would leave the adjusted closes silently stale. **To do, together:** (1) schedule the intraday fetch, including bond-futures `bbo-1m` for `SWAP_HEDGES` roots' `.v.0` (a few cents a day); (2) add OTR yields and swap closes (pure + adjusted, recomputing the last `SWAP_CORRECTION_DAYS` for late corrections) to `DERIVED_METRICS`, with presence / sanity / revision checks; (3) the OTR yields' check vs CMT (within a few bp, outside auction-to-issue days).
 
@@ -766,3 +770,51 @@ minus its last settlement, added to the continuous series' last value - not writ
   years, so "extreme" means extreme relative to a shorter, mostly low-vol history.
 * **Monte Carlo simplifications** (as UBS): assets simulated independently, constant
   forecast vol, normalisation and portfolio scaling held over the horizon.
+
+---
+
+## Basis: futures trade rich against funding v1 on ZT/ZF/ZN/ZB, and UB's option value is unexplained
+
+**Found:** 2026-10-02, the basis models' 2019-2026 bench (`infra/models/basis/CLAUDE.md` 5).
+**Where:** `infra/models/basis`; observed option value = fair (M0) - market futures at 15:30.
+**Status:** open - the M3/M4 tiers' job.
+
+**The issue:** (1) the observed option value is NEGATIVE on 58-87% of days for ZB, ZF, ZN, ZT (medians -0.4 to -0.7/32): the futures are RICH against our funding, the basis-trade premium documented for 2019-20 (CTD implied repo +13 to +20bp over SOFR) - a pure delivery-option model can't produce a negative value, so the model needs a futures-richness term (M4) or a funding calibrated to implied repo. (2) UB's observed value has a median of ~6/32 while M1 explains ~0 of it (yields far below the 6% notional, so parallel moves rarely switch). Candidates, in the order the tiers can test them: relative moves among the long bonds (M2), the end-of-month and wild-card options (M4), a cash bid/mid bias on old long bonds (`cash_mid_frac`; their posted spread is 1-2/32).
+
+---
+
+## Basis: the cash bid/mid adjustment is a guess
+
+**Found:** 2026-10-02 (CLAUDE.md 18, 22). **Where:** `infra.models.basis.config.BasisSpec.cash_mid_frac`.
+**Status:** open.
+
+**The issue:** FedInvest's END OF DAY is the bid (its Sell column), and its posted Buy/Sell spread is a fixed convention (0.5/1/2 32nds by maturity), not the market's. The basis needs the mid; the model adds `cash_mid_frac` (0.5) x half the posted spread, i.e. a quarter of it - a guess between bid and posted mid. The bias it can leave is up to ~1/32 on ZB's and UB's old long bonds. **Options:** calibrate the fraction from the data (the value that makes CTD net basis most consistent across roots / most stationary), or a real mid source (TRACE end-of-day is paid, user decision 2026-10-02: no).
+
+---
+
+## Basis: only each root's front contract has a 15:30 futures quote
+
+**Found:** 2026-10-02. **Where:** `Derived/FuturesSnaps` (from bbo-1m, which the front-quotes backfill stores for each root's `.v.0` only).
+**Status:** open, minor.
+
+**The issue:** the basis models run on contracts quoted at 15:30 only; deferred contracts would fall back to the 15:00 settlement (half an hour off the cash close: 2-5/32 of basis noise). Around a roll both contracts matter (the back month becomes front over a few days). **Options:** extend the front-quotes backfill to `.v.1` (cost: priced per month like the front); or accept settlement-based numbers for deferreds, flagged (current fallback).
+
+---
+
+## Basis: the expected-issue generator ignores holidays
+
+**Found:** 2026-10-02. **Where:** `infra.processing.futures_baskets.expected_issues`.
+**Status:** open, minor.
+
+**The issue:** a predicted issue day is rolled forward past weekends only; an issue day falling on a federal holiday is predicted a day early. Backtest 2019-2026: 815/845 issues within 5 days (all usable) but only 747 exact. A day's error only matters for issues landing right at a contract's last delivery day. **Fix:** roll with the SIFMA-approximate calendar (`infra.analytics.sofr_curve.business_days`) instead of weekdays.
+
+---
+
+## Basis: the wild-card window's variance - remaining caveats after the event fix
+
+**Found:** 2026-10-02, building the timing options (`infra/models/basis/CLAUDE.md`, `infra.analytics.delivery_timing`).
+**Where:** `BasisSpec.wildcard_window`; `infra.models.basis.model.OneFactorBasis._timing`.
+**Status:** partly fixed 2026-10-02 - event days now get their own variance; the rest is secondary (user decision).
+
+**Fixed:** each wild-card window has its own variance: the root's ORDINARY-day share of daily variance in 15:00 -> 19:00 New York (ZT 4.0% ... UB 6.7%) x a multiplier for FOMC days (1.7-6.3x by root), quarter-ends (2.0-2.8x) and month-ends (1.3-3.1x), measured 2019-2026 (`BasisSpec.wildcard_window`; day kinds `infra.analytics.delivery_timing.window_kinds`). Found moot: the LAST intention day's later deadline (20:00 Chicago = 21:00 New York, 1.5-1.75x the variance of a 19:00 window) - that day falls after the last trading day, when the futures price is already frozen, so it belongs to the end-of-month period, not to a wild-card window.
+**Remaining:** (1) the shares and multipliers are constants calibrated on 2019-2026, so a backtest before 2026 uses later data in a parameter (a mild look-ahead); re-measuring them point in time needs the intraday quotes at fit time. (2) Other after-close events aren't tagged (e.g. ZN's largest window move, +29.5/32 on 2025-04-02, the tariff announcement) - the release calendar (CLAUDE.md 17) could add scheduled ones; unscheduled ones can't be anticipated. (3) The window spans CME's 17:00-18:00 New York halt (futures don't trade, cash thinly does), and futures moves stand in for the CTD's cash moves - both secondary.

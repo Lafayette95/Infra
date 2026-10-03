@@ -350,3 +350,11 @@ specific to the models sub-project.
 *   **Its own sub-project, `infra/models/cta/`, with its own `CLAUDE.md`**: a bottom-up
     replica of a trend-following CTA (UBS Q-Series 2022), the first model built on the
     `base.Model` pattern. Read that file before touching it.
+
+## 10. Treasury futures basis
+*   **Its own sub-project, `infra/models/basis/`, with its own `CLAUDE.md`**: the delivery-option
+    / cheapest-to-deliver model ladder (M0 deterministic ... M4 market-implied) and its
+    validation bench. Its pure maths lives BELOW the models (`infra/analytics/futures_basis.py`)
+    so the daily cycle can use the futures DV01 without importing `infra/models`. Read that
+    file before touching it.
+

@@ -52,16 +52,27 @@ def client_basis_bp(fixings: pd.DataFrame, window: int) -> float:
     return float(((tail["p75"] - tail["rate"]) * 100).median())
 
 
+def _memo(inputs: FinancingInputs, key, compute):
+    """One day's inputs are immutable, so a layer value depending only on them (and its
+    arguments) is computed once per key - a basket of 50 bonds x 2 delivery days asks the
+    same base path and client basis 100 times."""
+    cache = inputs.extra.setdefault("_memo", {})
+    if key not in cache:
+        cache[key] = compute()
+    return cache[key]
+
+
 def _base_sofr_futures(inputs: FinancingInputs, spec, start, end, cusip) -> float:
     if inputs.sofr_path is None:
         raise ValueError("base 'sofr_futures' needs a fitted SOFR path")
-    return inputs.sofr_path.compounded(start, end)
+    return _memo(inputs, ("sofr_futures", start, end), lambda: inputs.sofr_path.compounded(start, end))
 
 
 def _basis_sofr_p75(inputs: FinancingInputs, spec, start, end, cusip) -> float:
     if inputs.sofr_fixings is None:
         raise ValueError("basis 'sofr_p75' needs the published SOFR fixings")
-    return client_basis_bp(inputs.sofr_fixings, spec.basis_window) / 100.0
+    return _memo(inputs, ("sofr_p75", spec.basis_window),
+                 lambda: client_basis_bp(inputs.sofr_fixings, spec.basis_window) / 100.0)
 
 
 def _special_lifecycle_decay(inputs: FinancingInputs, spec, start, end, cusip) -> float:
