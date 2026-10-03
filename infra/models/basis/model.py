@@ -226,7 +226,16 @@ class OneFactorBasis(DeterministicBasis):
         ltd, ld = pd.Timestamp(c["last_trading"]), g["delivery"].iloc[0]
         month_start = bd[bd >= ltd.replace(day=1)][0]
         first_intention = bd[bd < month_start][-2]
-        if c["delivery_kind"] == "first":  # negative carry: deliver at once - one window, no EOM
+        wait_cost = 0.0
+        if c["delivery_kind"] == "first" and self.spec.timing_carry_bermudan:
+            # negative carry, Bermudan: every intention day to the last trading day is a
+            # window; passing one costs a day's negative carry on the bond to deliver; the
+            # end-of-month switch is the continuation, net of its own days' carry
+            n_eom = int(((bd > ltd) & (bd <= ld)).sum())
+            window_days = bd[(bd >= max(first_intention, pd.Timestamp(c["day"]))) & (bd <= ltd)]
+            r = b[(b["contract"] == c["contract"]) & (b["cusip"] == c["ctd"])].iloc[0]
+            wait_cost = max(((r["price"] + r["ai_settle"]) * r["repo"] / 100 - r["coupon"]) / 360, 0.0)
+        elif c["delivery_kind"] == "first":  # negative carry, first version: one window, no EOM
             n_eom = 0
             window_days = bd[bd >= max(first_intention, pd.Timestamp(c["day"]))][:1]
         else:
@@ -238,13 +247,15 @@ class OneFactorBasis(DeterministicBasis):
         cf = g["cf"].to_numpy()
         eom = eom_switch_value(g["fwd"].to_numpy(), cf, float(implied[ctd]), ctd, g["dv01"].to_numpy(),
                                sigma * np.sqrt(max(n_eom, 0)), z) if n_eom > 0 else 0.0
+        eom -= wait_cost * n_eom  # 0 unless negative carry (Bermudan): waiting past the LTD isn't free
         share, mult = self._window_variance(c["root"])
         kinds = window_kinds(window_days, [pd.Timestamp(m.end_date) for m in FOMC_MEETINGS])
         window_sd = [sigma * g["dv01"].iloc[ctd] * np.sqrt(share * mult[k]) for k in kinds]
-        wild = wildcard_value(cf[ctd], window_sd, continuation=eom)
+        wild = wildcard_value(cf[ctd], window_sd, continuation=eom, wait_cost=wait_cost)
         wild_32, eom_32 = wild / cf[ctd] * TICKS, eom / cf[ctd] * TICKS
         return {"wildcard_32": wild_32, "eom_32": eom_32, "wildcard_windows": n_windows, "eom_days": n_eom,
-                "wildcard_event_windows": sum(k != "ordinary" for k in kinds), "timing_32": wild_32 + eom_32}
+                "wildcard_event_windows": sum(k != "ordinary" for k in kinds), "timing_32": wild_32 + eom_32,
+                "wildcard_wait_cost_32": wait_cost / cf[ctd] * TICKS}  # eom_32 is NET of its carry
 
     def _window_variance(self, root: str) -> tuple[float, dict]:
         """The root's ordinary-day window share and day-kind multipliers (spec)."""
@@ -312,7 +323,7 @@ class FactorBasis(OneFactorBasis):
                 dy, src = change_panel(yields, cusips, predecessor, maturity, self.spec.factor_window)
                 models[contract] = fit_factor_model(dy, horizon, k=self.spec.n_spread_factors,
                                                     lam_slow=self.spec.factor_lambda, lam_fast=self.spec.vol_lambda,
-                                                    backfilled=src)
+                                                    backfilled=src, noise_removal=self.spec.idio_noise_removal)
             except (ValueError, KeyError) as exc:
                 errors[contract] = str(exc)
         self.fitted_ = dict(self.fitted_, tier="M2", factor_models=models, factor_errors=errors)

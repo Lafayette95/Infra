@@ -295,3 +295,26 @@ def test_expected_issues_are_priced_at_a_forward_yield_not_spot():
         x = m._extra_bonds(c).iloc[0]
         assert x["fwd_yield"] == pytest.approx(expected, abs=1e-4)
         assert x["fwd"] == pytest.approx(float(clean_price_from_yield(expected, 3.875, mat, delivery)), abs=1e-6)
+
+
+def test_wildcard_wait_cost_lowers_value_and_zero_cost_is_the_old_induction():
+    from infra.analytics.delivery_timing import wildcard_value
+    sds = [0.25] * 20
+    free = wildcard_value(0.66, sds)
+    costly = wildcard_value(0.66, sds, wait_cost=0.004)
+    assert wildcard_value(0.66, sds, wait_cost=0.0) == free
+    assert 0 < costly < free
+    # waiting prohibitively costly: deliver at the first window whatever the move -> ~0
+    assert wildcard_value(0.66, sds, wait_cost=10.0) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_mark_noise_is_measured_from_reversal_and_removed_from_idio():
+    rng = np.random.default_rng(3)
+    t, n = 600, 6
+    true = np.cumsum(rng.normal(0, 1.0, (t, n)), axis=0)
+    marks = true + rng.normal(0, 2.0, (t, n)) * (np.arange(n) == 0)  # bond 0: noisy marks, s = 2bp
+    dy = pd.DataFrame(np.diff(marks, axis=0), columns=[f"B{i}" for i in range(n)])
+    plain = fit_factor_model(dy, 20, k=1)
+    clean = fit_factor_model(dy, 20, k=1, noise_removal=2.0)
+    assert plain.noise_var[0] == pytest.approx(4.0, rel=0.35) and plain.noise_var[1:].max() < 1.0
+    assert clean.psi[0] < plain.psi[0] - 4.0 and clean.psi[1:] == pytest.approx(plain.psi[1:], rel=0.2)

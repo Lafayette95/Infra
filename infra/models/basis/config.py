@@ -58,7 +58,14 @@ class BasisSpec:
     # M2+: multiplier on the idiosyncratic spread VARIANCE (1 = as estimated). Under test
     # 2026-10-02: FedInvest's noisy marks for old off-the-runs may inflate it.
     idio_scale: float = 1.0
+    # M2+: mark-noise variances removed from the idiosyncratic variance (factors.fit_factor_model)
+    idio_noise_removal: float = 0.0
     timing_options: bool = False
+    # T under NEGATIVE carry: True (default since 2026-10-03, user decision) = Bermudan over
+    # every intention day, each passed window costing a day's carry, the end-of-month switch
+    # as continuation net of its own days' carry; False = the first version's rule (deliver
+    # at the first window, no EOM), which priced UB's T at 2.5/32 in 2023 vs 12.2 observed
+    timing_carry_bermudan: bool = True
     wildcard_var_share: float = 0.063
     wildcard_window: tuple[tuple[str, float, float, float, float], ...] = (
         # root, ordinary share, x FOMC day, x quarter-end, x month-end

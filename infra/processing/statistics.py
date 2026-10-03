@@ -100,13 +100,25 @@ def clean_daily_option_statistics(raw: pd.DataFrame, definitions: pd.DataFrame, 
     per ``instrument_id`` - the same normalised frame ``infra.pipeline.options`` already
     uses (Rule 2.3 step 1); joined here rather than trusting the statistics payload's own
     ``symbol`` column, which does not reliably resolve for options (verified 2026-09-21).
+
+    If ``definitions`` carries ``valid_from`` / ``valid_to`` (inclusive trading days), a
+    statistic counts only inside its instrument's window: CME REUSES instrument ids (found
+    2026-10-03 - 557 of 38,633 ZN option ids carried more than one definition over
+    2019-2026, and a request reaching back before an option's listing returned the
+    statistics of the id's PREVIOUS owner, e.g. "settlements" of 114.0 and 39.7 on a ZN
+    put listed only weeks later). Without the columns, every row is kept (as before).
     """
     df = _prepare(raw, dataset)
     if df.empty:
         return empty_daily_options()
     pivoted = _pivot_last_per_group(df, ["_day", "instrument_id"]).reset_index(names=["timestamp", "instrument_id"])
-    meta = definitions[["instrument_id", "underlying", "option_type", "strike", "expiry"]]
+    windowed = {"valid_from", "valid_to"} <= set(definitions.columns)
+    meta = definitions[["instrument_id", "underlying", "option_type", "strike", "expiry",
+                        *(["valid_from", "valid_to"] if windowed else [])]]
     out = pivoted.merge(meta, on="instrument_id", how="inner")
+    if windowed:
+        day = pd.to_datetime(out["timestamp"])
+        out = out[(day >= pd.to_datetime(out["valid_from"])) & (day <= pd.to_datetime(out["valid_to"]))]
     out["open_interest"] = out["open_interest"].astype("Int64")
     return out[DAILY_OPTIONS_COLUMNS].sort_values(DAILY_OPTIONS_KEYS).reset_index(drop=True)
 

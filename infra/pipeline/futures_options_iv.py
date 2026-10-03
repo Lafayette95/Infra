@@ -23,6 +23,7 @@ from infra.pipeline import daily as dl
 from infra.pipeline import daily_options as dopt
 from infra.pipeline.options import _definitions_path, load_definitions
 from infra.processing.option_selection import fetch_ranges, select_near_the_money
+from infra.storage import parquet_store
 
 _GRID_EPOCH = pd.Timestamp("2000-01-03")
 
@@ -41,15 +42,35 @@ def snapshot_days(start, end, step_days: int, *, today=None) -> list[pd.Timestam
     return sorted({min(d, last_ok) for d in days})
 
 
+DEF_COLUMNS = ["instrument_id", "underlying", "option_type", "strike", "expiry", "valid_from", "valid_to"]
+_KEY = ["underlying", "option_type", "strike", "expiry"]
+
+
 def definitions(spec: FuturesOptionsIVSpec, start, end, *, fetch_missing: bool = False,
                 directory: Path = DEFINITIONS_DIR, client=None) -> pd.DataFrame:
-    """Union of the grid snapshots covering ``[start, end]`` (cache-first; paid only with
-    ``fetch_missing``)."""
-    frames = [load_definitions(spec.parent, d, fetch_missing=fetch_missing, directory=directory, client=client)
-              for d in snapshot_days(start, end, spec.snapshot_days)]
-    frames = [f for f in frames if not f.empty]
-    return pd.concat(frames, ignore_index=True).drop_duplicates("instrument_id", keep="last") if frames else \
-        pd.DataFrame(columns=["instrument_id", "underlying", "option_type", "strike", "expiry"])
+    """The grid snapshots covering ``[start, end]`` (cache-first; paid only with
+    ``fetch_missing``), one row per (instrument id, option) with its VALIDITY WINDOW:
+    from the first snapshot it appears in to the earlier of its expiry and the snapshot
+    after its last appearance. CME REUSES instrument ids (557 of 38,633 ZN option ids had
+    more than one definition over 2019-2026), so an id alone is not an option: a first
+    version kept one definition per id across all snapshots and requested statistics from
+    before an option was listed, storing its id's PREVIOUS owner's numbers under the
+    option's key (``TOFIX.md``). Starting at the first appearance (not one grid step
+    before) costs up to one grid step of a late-listed strike's life - safe over complete."""
+    days = snapshot_days(start, end, spec.snapshot_days)
+    frames = []
+    for d in days:
+        f = load_definitions(spec.parent, d, fetch_missing=fetch_missing, directory=directory, client=client)
+        if not f.empty:
+            frames.append(f.assign(_snap=d))
+    if not frames:
+        return pd.DataFrame(columns=DEF_COLUMNS)
+    allv = pd.concat(frames, ignore_index=True)
+    step = pd.Timedelta(days=spec.snapshot_days)
+    g = allv.groupby(["instrument_id", *_KEY], observed=True)["_snap"].agg(["min", "max"]).reset_index()
+    g["valid_from"] = g["min"]
+    g["valid_to"] = pd.concat([g["max"] + step, pd.to_datetime(g["expiry"])], axis=1).min(axis=1)
+    return g[DEF_COLUMNS]
 
 
 def underlying_settlements(tickers, start, end) -> pd.DataFrame:
@@ -147,3 +168,26 @@ def load_iv_options(root: str, start, end, *, client=None, max_cost_usd: float =
         dopt.fetch_and_store_daily_options(plan, defs, dataset=OPTIONS_UNIVERSE[spec.parent], root=store,
                                            coverage_file=coverage_file, max_cost_usd=max_cost_usd, client=client)
     return sel
+
+
+def purge_outside_windows(root: str, defs: pd.DataFrame, *, store: Path = DAILY_OPTIONS_DIR) -> int:
+    """Delete stored settlements of ``root``'s options dated outside every validity window
+    of their option (``definitions``) - the rows a reused instrument id's PREVIOUS owner
+    left under the option's key before the windows existed (found 2026-10-03). Rows of
+    options with no definition in ``defs`` are left alone. Returns rows removed."""
+    from infra.processing.statistics import decode_daily_options
+
+    windows = defs.assign(underlying=defs["underlying"].astype(str), option_type=defs["option_type"].astype(str))
+    windows = windows[windows["underlying"].str.fullmatch(rf"{root}[FGHJKMNQUVXZ]\d")]
+    by_key = {k: g[["valid_from", "valid_to"]].to_numpy() for k, g in windows.groupby(_KEY)}
+
+    def outside(part: pd.DataFrame) -> pd.Series:
+        d = decode_daily_options(part)
+        keys = zip(d["underlying"].astype(str), d["option_type"].astype(str), d["strike"], d["expiry"])
+        flags = []
+        for k, day in zip(keys, pd.to_datetime(d["timestamp"])):
+            w = by_key.get(k)
+            flags.append(w is not None and not any(lo <= day <= hi for lo, hi in w))
+        return pd.Series(flags, index=part.index)
+
+    return parquet_store.delete_where(store, outside)

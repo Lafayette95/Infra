@@ -819,9 +819,35 @@ minus its last settlement, added to the continuous series' last value - not writ
 
 ## Basis: add-on T is inverted against UB's observed option value across carry regimes
 
+**Update 2026-10-03 - option (1) DONE, now the default** (user decision): the Bermudan negative-carry rule with the end-of-month continuation net of carry (`BasisSpec.timing_carry_bermudan`) takes UB's negative-carry T from 3.15 to 9.69/32 (observed 11.27), 2023 from 2.5 to 8.8 (12.2). T is now ~9-12/32 in BOTH regimes (essentially the wild card - the end-of-month nets -0.8 / +0.13); what stays open is the OBSERVED value's swing with the carry regime (positive 4.7 vs negative 11.3), see below - most likely futures richness, for the spread layer.
+
 **Found:** 2026-10-03, re-scoring M2 / M2T on the 14-day sample (`infra/models/basis/CLAUDE.md` 3e).
 **Where:** `infra/models/basis/model.py` (`_timing`), `infra/analytics/delivery_timing.py`, and funding v1 (`infra/analytics/financing.py`).
 **Status:** open - diagnosis, not yet a fix.
 
-UB, medians in 32nds: positive carry model 11.8 vs observed 4.6; negative carry model 3.5 vs observed 10.9; observed peaks in 2023 (12.2) where the model is lowest (2.5). **Options:** (1) replace the negative-carry rule ("deliver at the first window, no end-of-month option") with the Bermudan that weighs each window's wild card against a day's negative carry - the short still holds a wild card every day up to delivery; (2) test whether the residual is a FUNDING effect - re-run M0's observed value with a term-repo base (the DVP 8-30 / >30-day buckets, `Daily/Repo`) instead of rolling overnight, and see whether UB's 2023 residual collapses; (3) leave it to the explanatory spread layer with carry regime / term premium as regressors. (2) is cheap and decisive and should come first.
+UB, medians in 32nds: positive carry model 11.8 vs observed 4.6; negative carry model 3.5 vs observed 10.9; observed peaks in 2023 (12.2) where the model is lowest (2.5). **Options:** (1) replace the negative-carry rule ("deliver at the first window, no end-of-month option") with the Bermudan that weighs each window's wild card against a day's negative carry - the short still holds a wild card every day up to delivery; (2) test whether the residual is a FUNDING effect - re-run M0's observed value with a term-repo base (the DVP 8-30 / >30-day buckets, `Daily/Repo`) instead of rolling overnight, and see whether UB's 2023 residual collapses; (3) leave it to the explanatory spread layer with carry regime / term premium as regressors.
+
+**(2) tested 2026-10-03 and REJECTED** (a test only, nothing changed in the model - user decision): replacing each CTD's v1 rate with OFR's DVP >30-day rate (`OFR_DVP_G30`, known from D+1, CTD assumed not special) moves funding by -2..+9bp per year and the observed residuals by <= ~1/32 - UB 2023 12.2 -> 12.1, 2024 9.2 -> 8.3. (The premise was also backwards: HIGHER funding raises the fair price and the residual; only LOWER true funding could shrink it.) UB's 2023-24 residual equals an implied repo ~200bp BELOW funding (10-50bp in other years): no funding curve does that. **Next candidates, all UB-specific:** the CTD choice (the market's vs M0's), the long-bond cash marks (FedInvest's bid on 25y+ bonds, amplified by CF ~0.6-0.75), or real UB futures cheapness (positioning - the TFF data is now stored). Side finding: term funding narrows the shorter roots' futures richness only in scarce-reserve 2019 (ZN -0.8 -> -0.1, ZT -1.3 -> -0.7/32).
+
+**Dissected 2026-10-03 (UBU3, 2023-06-01), three more candidates REJECTED:** (a) the CTD choice - 912810SE9 (3.375% Nov-2048, CF 0.6623) is cheapest by 52/32 over the runner-up, with sane cash marks (3.95%), and the futures sit 8/32 under its implied price (implied repo 4.56% vs funding 5.28%); (b) CTD specialness - the 72bp gap is exactly what ~75bp of specialness would give, but SE9 was lent by the NY Fed on 170 days 2022-06..2024 at the 5bp MINIMUM fee (once 11bp), so it wasn't special; (c) positioning (TFF, point in time, every 14th day 2019-2026) - leveraged funds 30-50% net short UB's open interest every year, correlation with the residual 0.00; asset managers -0.21; dealers +0.44 (residual larger when dealers are less short - weak, 8 yearly points); ZB / ZN nothing. **What remains:** a UB-specific delivery-option value the models underprice, hump-shaped 2019 (2.8) -> 2023 (12.2) -> 2026 (2.4)/32, tracking neither yield level nor carry cleanly. Next: implied vol (the ZN options now stored; UB's own options would be the real test) and M3's per-path timing.
+
+---
+
+## Options pipeline (SR3): instrument ids are reused - statistics can belong to a previous owner
+
+**Found:** 2026-10-03, computing ZN at-the-money vols (fixed for the ZN IV options the same day, `infra/pipeline/futures_options_iv.py`).
+**Where:** `infra/pipeline/daily_options.py` / `infra/pipeline/options.py` (`load_daily_options`, `load_options`) - the SR3 options pipeline.
+**Status:** open for SR3 - fixed for the ZN IV options.
+
+CME REUSES instrument ids (557 of 38,633 ZN option ids had more than one definition over 2019-2026; ids are shared across all of Globex). A statistics request for an id over days before the option was LISTED returns the id's PREVIOUS owner's numbers, which then land under the option's key: ZN puts listed weeks later showed "settlements" of 114.0, 39.7, 0.0003 (vols 0.4%..450%). Fixed for the ZN IV path: each definition carries a validity window (first snapshot it appears in .. min(expiry, the snapshot after its last appearance)); `infra.processing.statistics.clean_daily_option_statistics` drops statistics outside it when the windows are supplied; selection honours it; 28,726 bad rows (12.6% of `Daily/Options`, all ZN) were purged (`purge_outside_windows`). **The SR3 path** takes ids from ONE snapshot (`definitions_day`) and fetches a range around it, so a range reaching before a strike's listing (or after its expiry, if the id was reassigned) has the same exposure. **Fix:** give `load_daily_options` the same windows (the definition's own `activation`/`expiration` fields would be exact - `normalize_definitions` drops them today), then purge SR3 rows outside them.
+
+---
+
+## Basis: M2 overstates the CTD-pair spread variance on ZB
+
+**Found:** 2026-10-02/03 (`infra/models/basis/CLAUDE.md` 3f).
+**Where:** `infra/models/basis/factors.py` (`fit_factor_model`: the horizon covariance of a ~50-bond basket).
+**Status:** open - M1 is the better tier for ZB until fixed (Brier 0.291 vs M2 0.350 on the 14-day sample).
+
+ZB's CTD/runner-up spread changes have a z-score sd of 0.63 under M2 (ideal 1): ~2.5x too much predicted variance, and M2 puts a median 61% on the realised CTD vs M1's 93%. Ruled out: fat tails (`spread_df`), mark noise (`idio_noise_removal` - FedInvest marks barely reverse). Removing the idiosyncratic part entirely recovers half the gap (0.319). **Options:** (1) shrink the idiosyncratic covariance toward a structured target (e.g. by maturity distance) instead of a free diagonal; (2) estimate the horizon covariance over a calmer / regime-matched window (the 500-day EWMA spans 2020-22's dislocations); (3) model the spread of each bond to the CTD rather than to the basket mean (the pair that decides). A root-specific scale would fit the sample and should be avoided.
 

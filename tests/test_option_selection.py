@@ -56,3 +56,26 @@ def test_snapshot_grid_brackets_the_range_and_never_reaches_the_future():
     assert days[0] <= D("2024-10-01") and days[-1] > D("2024-12-31")
     assert all(b - a == pd.Timedelta(days=30) for a, b in zip(days, days[1:]))
     assert snapshot_days("2026-09-01", "2026-10-01", 30, today="2026-10-03")[-1] == D("2026-10-01")
+
+
+def test_reused_instrument_ids_only_count_inside_their_validity_window():
+    """CME reuses instrument ids: statistics outside an option's window belong to the id's
+    previous owner and must not land under the option's key (found 2026-10-03)."""
+    from infra.processing.statistics import clean_daily_option_statistics
+    defs = pd.DataFrame({"instrument_id": [7, 7], "underlying": ["ZNM0", "ZNU0"], "option_type": ["P", "C"],
+                         "strike": [137.75, 140.0], "expiry": [D("2020-04-24"), D("2020-08-21")],
+                         "valid_from": [D("2020-04-17"), D("2020-06-01")], "valid_to": [D("2020-04-24"), D("2020-08-21")]})
+    raw = pd.DataFrame({"instrument_id": [7, 7, 7], "stat_type": [3, 3, 3], "price": [114.0, 0.25, 1.5],
+                        "quantity": [0, 0, 0],
+                        "ts_ref": pd.to_datetime(["2020-03-09", "2020-04-20", "2020-06-15"], utc=True),
+                        "ts_recv": pd.to_datetime(["2020-03-09 21:00", "2020-04-20 21:00", "2020-06-15 21:00"], utc=True),
+                        "update_action": [1, 1, 1], "stat_flags": [3, 3, 3]})
+    out = clean_daily_option_statistics(raw, defs, "GLBX.MDP3")
+    assert list(zip(out["timestamp"], out["underlying"], out["settlement_price"])) == \
+        [(D("2020-04-20"), "ZNM0", 0.25), (D("2020-06-15"), "ZNU0", 1.5)]
+
+
+def test_selection_respects_validity_windows():
+    defs = _defs().assign(valid_from=D("2024-10-02"), valid_to=D("2024-12-31"))
+    assert select_near_the_money(defs, _px("2024-10-01")).empty
+    assert not select_near_the_money(defs, _px("2024-10-02")).empty

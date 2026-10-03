@@ -33,18 +33,22 @@ def expected_max_normal(a: float, v: float) -> float:
     return float(v * norm.cdf(x) + a * norm.pdf(x))
 
 
-def wildcard_value(cf: float, window_sd, n_windows: int | None = None, continuation: float = 0.0) -> float:
+def wildcard_value(cf: float, window_sd, n_windows: int | None = None, continuation: float = 0.0,
+                   wait_cost: float = 0.0) -> float:
     """Value (bond points per contract) of the wild-card windows by backward induction,
     ``continuation`` = the value of waiting past the last window (the EOM option).
     ``window_sd``: one sd per window in CHRONOLOGICAL order (event days carry more), or a
-    single sd repeated ``n_windows`` times. Returns the value ABOVE ``continuation``."""
+    single sd repeated ``n_windows`` times. ``wait_cost``: what passing a window costs
+    (bond points) - a day's NEGATIVE carry on the bond to deliver, when delivering early is
+    the baseline: at each window deliver (the tail's move) or pay it and keep the later
+    windows. Returns the value ABOVE ``continuation``."""
     sds = np.atleast_1d(np.asarray(window_sd, dtype="float64"))
     if n_windows is not None and sds.size == 1:
         sds = np.repeat(sds, max(n_windows, 0))
     tail = abs(1.0 / cf - 1.0)
     v = continuation
     for sd in sds[::-1]:  # backward from the last window
-        v = expected_max_normal(tail * sd, v)
+        v = expected_max_normal(tail * sd, v - wait_cost)
     return v - continuation
 
 

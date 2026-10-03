@@ -33,7 +33,10 @@ def select_near_the_money(definitions: pd.DataFrame, settlements: pd.DataFrame, 
     price`` (the underlying futures). One row per (day, selected option)."""
     if definitions.empty or settlements.empty:
         return pd.DataFrame(columns=SELECTION_COLUMNS)
-    defs = definitions.drop_duplicates("instrument_id")
+    # with validity windows (instrument ids are reused, infra.pipeline.futures_options_iv)
+    # an id can appear once per window; without them, one definition per id
+    windowed = {"valid_from", "valid_to"} <= set(definitions.columns)
+    defs = definitions if windowed else definitions.drop_duplicates("instrument_id")
     px = settlements.dropna(subset=["price"])
     scale = strike_scale(defs["strike"], px["price"])
     by_und = {u: g for u, g in defs.groupby("underlying")}
@@ -42,6 +45,8 @@ def select_near_the_money(definitions: pd.DataFrame, settlements: pd.DataFrame, 
     for day in sorted(px["timestamp"].unique()):
         day = pd.Timestamp(day)
         live = defs[defs["expiry"] >= day + pd.Timedelta(days=min_days)]
+        if windowed:
+            live = live[(live["valid_from"] <= day) & (live["valid_to"] >= day)]
         for expiry in sorted(live["expiry"].unique())[:n_expiries]:
             e = live[live["expiry"] == expiry]
             for und, g in e.groupby("underlying"):

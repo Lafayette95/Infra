@@ -35,6 +35,7 @@ class FactorModel:
     explained: dict  # variance shares at the horizon, for diagnostics
     variance_ratio: float  # median over bonds: var(h-day spread change) / (h x var(1-day))
     backfilled: dict  # cusip -> where its missing history came from
+    noise_var: np.ndarray | None = None  # (n,) mark-noise variance per bond (bp^2), see fit_factor_model
 
 
 def ewma_weights(n: int, lam: float) -> np.ndarray:
@@ -71,10 +72,18 @@ def change_panel(yields: pd.DataFrame, cusips: list[str], predecessor: dict[str,
 
 def fit_factor_model(dy: pd.DataFrame, horizon_bd: int, *, k: int = 3, lam_slow: float = 0.99,
                      lam_fast: float = 0.94, backfilled: dict | None = None, min_idio_share: float = 0.01,
-                     max_horizon_share: float = 0.34) -> FactorModel:
+                     max_horizon_share: float = 0.34, noise_removal: float = 0.0) -> FactorModel:
     """Fit on a complete panel of DAILY changes (rows = days, columns = bonds), with the
     spread covariance taken at ``horizon_bd`` (capped at ``max_horizon_share`` of the
-    window so enough overlapping changes remain)."""
+    window so enough overlapping changes remain).
+
+    ``noise_removal``: how many MARK-NOISE variances to take off each bond's idiosyncratic
+    variance (0 = none, as first built; 1 = the start-of-horizon mark; 2 = both ends of an
+    h-day change). A price mark with independent noise of variance s^2 gives its daily
+    changes a lag-1 autocovariance of -s^2, so s^2 = max(-autocov, 0) per bond, on the
+    spread changes. Motivation (2026-10-02/03): on ZB's ~50-bond basket M2 put only a
+    median 61% on the realised CTD (M1 93%), every bond's own noise leaking probability to
+    bonds that never win; FedInvest's marks for old off-the-runs are the noisiest part."""
     x = dy.to_numpy(dtype="float64")
     t, n = x.shape
     if t < 40 or n == 0:
@@ -89,7 +98,10 @@ def fit_factor_model(dy: pd.DataFrame, horizon_bd: int, *, k: int = 3, lam_slow:
     vals, vecs = vals[::-1].clip(min=0.0), vecs[:, ::-1]
     k = max(0, min(k, n - 1))
     phi = vecs[:, :k] * np.sqrt(vals[:k])[None, :]
-    psi = np.maximum(np.diag(cov) - (phi ** 2).sum(axis=1), min_idio_share * np.diag(cov))
+    sx = x - level[:, None]
+    sx = sx - sx.mean(axis=0)
+    noise = np.maximum(-(sx[1:] * sx[:-1]).mean(axis=0), 0.0)
+    psi = np.maximum(np.diag(cov) - (phi ** 2).sum(axis=1) - noise_removal * noise, min_idio_share * np.diag(cov))
     wf = ewma_weights(t, lam_fast)
     sigma_level = float(np.sqrt((wf * level ** 2).sum()))
     level_var_h = sigma_level ** 2 * h
@@ -98,7 +110,7 @@ def fit_factor_model(dy: pd.DataFrame, horizon_bd: int, *, k: int = 3, lam_slow:
                  "idio": float(psi.sum() / total)}
     d1 = (x - level[:, None]).var(axis=0)
     ratio = float(np.median(np.diag(cov) / np.where(d1 > 0, h * d1, np.nan)))
-    return FactorModel(tuple(dy.columns), h, phi, psi, sigma_level, explained, ratio, backfilled or {})
+    return FactorModel(tuple(dy.columns), h, phi, psi, sigma_level, explained, ratio, backfilled or {}, noise)
 
 
 def simulate_shocks(model: FactorModel, horizon_bd: int, z_level: np.ndarray, rng: np.random.Generator,
