@@ -52,6 +52,12 @@ cash flows, also gives carry, rolldown and z-spreads, and a check on CMT.
     Svensson; NOT the CMT curve): our Svensson within ~1bp at every tenor (mean -1.1..+0.9,
     sd 0.9-2.7bp) from a different price source - the method reproduces. The spline differs
     more at 10-30y (sd 5-8bp), by design: it follows local shape Svensson smooths over.
+*   **Which curve is which** (asked 2026-10-04): our CMT store comes from the US TREASURY
+    (`infra/api/treasury_client.py`, home.treasury.gov "Daily Treasury Par Yield Curve
+    Rates", root CLAUDE.md 13). The Fed's H.15 release - FRED's `DGS2`, `DGS10`, ... - REPUBLISHES
+    those same Treasury CMT yields (the Fed distributes them, the Treasury fits them). The
+    Fed's GSW (`feds200628.csv`) is a separate Fed Board staff fit. CMT is fitted too ("constant
+    maturity" = read off a fitted par curve at fixed tenors), mainly on the on-the-runs.
 *   **vs CMT** (the Treasury's par curve, fitted mainly to ON-THE-RUN issues; 2016+): the
     spline sits +2..+3bp above CMT at 2/5/20/30y (sd ~2bp) - the on-the-runs' liquidity
     premium; 10y -1bp (to look at).
