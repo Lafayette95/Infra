@@ -477,6 +477,17 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     while individual pairs scatter widely). **Next:** shrink the drift by its out-of-sample
     predictive slope (realised relative z-spread change of deliverable pairs on the
     predicted one) before applying it. MS stays off.
+*   **Shrinkage calibration (2026-10-04) - MS has NO per-bond forecasting power.** For every
+    deliverable vs its basket's CTD (the 6 nearest by implied futures, every 7th day 2019-2026,
+    7,184 pairs): realised relative z-spread change to the delivery day regressed on MS's
+    predicted relative drift (profiles point in time). Pooled slope: aging 0.01 (t 0.2, corr
+    0.003), events 0.05 (t 1.2, corr 0.03). Out of sample by year, the FULL drift makes the
+    forecast worse every year (R^2 -0.1..-0.9) and the optimal shrinkage estimated from earlier
+    years is ~0. By root: UB aging 0.36 (t 7.0) - the one real per-bond signal (old 30y bonds);
+    ZT 0.57 (t 1.8) and ZN 0.15-0.20 (t 1.6) weak; TN negative. **Verdict:** the event study
+    is a valid DESCRIPTIVE result (average effects real and significant), but not a per-bond
+    forecast of relative richness between deliverables - MS stays off. Possible narrow
+    follow-up: a UB-only beta (small gain: UB Brier 0.177 vs 0.184 with aging).
 
 ## 4. The models
 *   **M0 (`DeterministicBasis`)**: no fitting. Per contract: CTD, delivery day, fair futures,
