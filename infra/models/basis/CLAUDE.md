@@ -502,6 +502,19 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     quantity** (a bond's drift vs the curve). A version that could work: the event study run
     on deliverable PAIRS directly (a deliverable's richness vs its basket's CTD around events).
 
+### 3h. M3 sized and SHELVED (2026-10-04)
+*   **What M3 would add:** a stochastic funding factor (correlated with the yield level), per-path
+    carry and per-path first / last-day delivery - a CARRY-SWITCH option where carry is near 0.
+*   **Sizing (M0 history 2019-2026, realised timing from `validate.realised_ctd`):** M0's
+    first / last-day call is wrong on ~3-5% of contract-days overall (up to ~10% beyond 90 days
+    for ZT / ZN / ZF; 8-9% when |CTD carry| < 50bp, 0-1% above); 20 of 186 contracts saw the
+    call flip at least once. But when the call is in doubt little is at stake: first vs last
+    day only changes ~one month of carry, and with carry near 0 (10-25bp) that is ~100 x
+    0.0015 x 30/360 ~ 0.01 points, ~0.3/32. Funding uncertainty moving the forwards (and the
+    CTD) is second order next to the yield moves M2 already simulates.
+*   **Verdict:** shelved - the Bermudan timing rule (add-on T, 3e) already captured the part of
+    stochastic timing that mattered (the wild card under negative carry).
+
 ## 4. The models
 *   **M0 (`DeterministicBasis`)**: no fitting. Per contract: CTD, delivery day, fair futures,
     the CTD's net basis / implied repo / funding, the OBSERVED option value (fair - market,
