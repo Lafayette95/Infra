@@ -70,3 +70,14 @@ cash flows, also gives carry, rolldown and z-spreads, and a check on CMT.
 *   **vs CMT** (the Treasury's par curve, fitted mainly to ON-THE-RUN issues; 2016+): the
     spline sits +2..+3bp above CMT at 2/5/20/30y (sd ~2bp) - the on-the-runs' liquidity
     premium; 10y -1bp (to look at).
+
+## 4. Open questions
+*   **GSW's price timing.** The GSW paper (FEDS 2006-28, data section): CRSP end-of-day quotes to
+    November 1987, then "Treasury quotes provided by the Federal Reserve Bank of New York
+    (FRBNY), which is a proprietary database constructed from several sources of market
+    information" - no time of day, nor bid / mid, stated. The New York Fed also collects the
+    Treasury's 15:30 bid quotes for CMT, so a 15:30 snap is plausible but unconfirmed; our
+    Svensson's small gap to GSW (sd 0.9-2.7bp) is consistent with similar timing, not proof.
+    A cheap test if it ever matters: regress the daily change of (ours - GSW) on the futures'
+    move between 15:30 and the NY1600 snap - a later GSW snap would load negatively.
+
