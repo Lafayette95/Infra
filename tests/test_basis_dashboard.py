@@ -37,7 +37,10 @@ def test_store_round_trip_and_rerun_replaces_days(tmp_path):
 
 def test_figures_and_table_render():
     c, b = _run()
-    assert len(basis_charts.optionality_figure(c).data) == 6  # 4 components + model + observed
+    assert len(basis_charts.optionality_figure(c, part="quality").data) == 2  # macro + spread
+    assert len(basis_charts.optionality_figure(c, part="timing").data) == 4  # wild card + EOM + model + observed
+    sw = c.assign(delivery_kind=["first", "first", "last", "last"])
+    assert basis_charts._switch_days(sw) == [sw["day"].iloc[2]]
     assert len(basis_charts.probability_figure(b).data) == 2
     t = bond_table(b[b["day"] == b["day"].iloc[0]], pd.DataFrame())
     rows = t.children[1].children

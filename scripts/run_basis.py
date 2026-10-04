@@ -50,6 +50,9 @@ def main() -> int:
     p.add_argument("--workers", type=int, help="run in parallel (a month per process) - needs --out-dir")
     p.add_argument("--out-dir", help="checkpoint directory: one file pair per month, finished months skipped")
     p.add_argument("--every", type=int, default=1, help="every Nth business day (a sample), with --out-dir")
+    p.add_argument("--contracts", default="quoted", choices=["quoted", "all"],
+                   help="quoted = contracts with a futures quote at the snap (the front); all = every listed "
+                        "contract, each tracked to its delivery (the dashboard wants this)")
     p.add_argument("--persist", action="store_true",
                    help="store the run's contracts and bonds in Derived/BasisRuns/<model> (the dashboard reads it)")
     p.add_argument("--set", action="append", default=[], metavar="FIELD=VALUE",
@@ -59,7 +62,8 @@ def main() -> int:
     if a.out_dir:
         from infra.models.basis.parallel import resolve_spec, run_parallel
         spec = resolve_spec(a.model, dict(_parse_set(x) for x in a.set))
-        res = run_parallel(spec, a.start, a.end, a.out_dir, every=a.every, workers=a.workers or 1)
+        res = run_parallel(spec, a.start, a.end, a.out_dir, every=a.every, workers=a.workers or 1,
+                           contracts=a.contracts)
         print(f"{len(res['contracts'])} contract-days in {time.time() - t0:.0f}s")
         if a.persist:
             from infra.storage import basis_runs

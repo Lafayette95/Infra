@@ -78,13 +78,13 @@ def register_basis_callbacks(app: Dash) -> None:
 
     @app.callback(Output("basis-kpis", "children"), Output("basis-table", "children"),
                   Output("basis-prob-chart", "figure"), Output("basis-option-chart", "figure"),
-                  Output("basis-status", "children"),
+                  Output("basis-timing-chart", "figure"), Output("basis-status", "children"),
                   Input("basis-model", "value"), Input("basis-contract", "value"), Input("basis-day", "value"),
                   Input("theme", "value"))
     def refresh(model, contract, day, theme):
         empty = basis_charts.empty_figure("Pick a model, a contract and a day", theme)
         if not model or not contract or not day:
-            return [], None, empty, empty, "No stored basis run - see scripts/run_basis.py --persist"
+            return [], None, empty, empty, empty, "No stored basis run - see scripts/run_basis.py --persist"
         try:
             c = basis_runs.read(model, "contracts", contracts=[contract])
             b = basis_runs.read(model, "bonds", contracts=[contract])
@@ -106,8 +106,9 @@ def register_basis_callbacks(app: Dash) -> None:
                      ("Futures DV01", _fmt(g("futures_dv01"), "{:.4f}"))]
             kpis = [html.Div(className="kpi", children=[html.Span(k), html.Strong(v)]) for k, v in tiles]
             return (kpis, bond_table(today, rv), basis_charts.probability_figure(b, theme),
-                    basis_charts.optionality_figure(c, theme),
+                    basis_charts.optionality_figure(c, theme, part="quality"),
+                    basis_charts.optionality_figure(c, theme, part="timing"),
                     f"{model} - {contract} on {day}: {today['cusip'].nunique()} deliverables")
         except Exception as exc:  # a data surprise must not crash the page
             log.exception("basis page refresh failed")
-            return [], None, empty, empty, f"⚠ {type(exc).__name__}: {exc}"
+            return [], None, empty, empty, empty, f"⚠ {type(exc).__name__}: {exc}"

@@ -45,28 +45,51 @@ def probability_figure(bonds: pd.DataFrame, theme: str = "light") -> go.Figure:
     return fig
 
 
-def optionality_figure(contracts: pd.DataFrame, theme: str = "light") -> go.Figure:
-    """``contracts``: one contract over time (``day`` + the components, ``option_value_model_32``,
-    ``option_value_obs_32``). Stacked components (32nds), model total and observed as lines."""
+QUALITY = COMPONENTS[:2]
+TIMING = COMPONENTS[2:]
+
+
+def _switch_days(contracts: pd.DataFrame) -> list:
+    """Days on which the model's delivery day switched (first <-> last): the horizon jumps
+    by ~a month there, and the option values with it."""
+    c = contracts.sort_values("day")
+    k = c["delivery_kind"].astype(str)
+    return list(c.loc[k.ne(k.shift()) & k.shift().notna(), "day"])
+
+
+def optionality_figure(contracts: pd.DataFrame, theme: str = "light", *, part: str = "quality") -> go.Figure:
+    """One part of the modelled optionality over time (32nds): ``part`` = "quality" (macro +
+    spread - decays with the horizon and moves with the CTD / runner-up gap) or "timing"
+    (wild card + end of month - concentrated in the delivery month, so roughly flat until
+    then). Stacked components; the timing panel adds the model total and the observed
+    value (M0 fair - market) as lines; dotted verticals where the model's delivery
+    day switched first <-> last."""
     t = tokens(theme)
     if contracts.empty:
         return empty_figure("No model run stored for this contract", theme)
     c = contracts.sort_values("day")
+    comps = QUALITY if part == "quality" else TIMING
     colors = series_colors(theme)
+    offset = 0 if part == "quality" else len(QUALITY)
     fig = go.Figure()
-    for k, (col, label) in enumerate(COMPONENTS):
+    for k, (col, label) in enumerate(comps):
         if col in c.columns and c[col].notna().any():
-            fig.add_trace(go.Scatter(x=c["day"], y=c[col].fillna(0.0), name=label, stackgroup="o", mode="lines",
-                                     line=dict(width=0.5, color=colors[k % len(colors)]),
+            y = c[col].fillna(0.0)
+            fig.add_trace(go.Scatter(x=c["day"], y=y, name=label, stackgroup="o", mode="lines",
+                                     line=dict(width=0.5, color=colors[(offset + k) % len(colors)]),
                                      hovertemplate="%{y:.2f}/32<extra>" + label + "</extra>"))
-    fig.add_trace(go.Scatter(x=c["day"], y=c["option_value_model_32"], name="Model total", mode="lines",
-                             line=dict(color=t["ink"], width=1.5, dash="dot"),
-                             hovertemplate="%{y:.2f}/32<extra>Model total</extra>"))
-    if "option_value_obs_32" in c.columns:
-        fig.add_trace(go.Scatter(x=c["day"], y=c["option_value_obs_32"], name="Observed (M0 fair - market)", mode="lines",
-                                 line=dict(color=t["muted"], width=1.5),
-                                 hovertemplate="%{y:.2f}/32<extra>Observed</extra>"))
-    fig = _style(fig, t, 360)
-    fig.update_layout(title="Modelled optionality by component (32nds)", showlegend=True,
-                      legend=dict(orientation="h", y=-0.15))
+    if part == "timing":
+        fig.add_trace(go.Scatter(x=c["day"], y=c["option_value_model_32"], name="Model total (quality + timing)",
+                                 mode="lines", line=dict(color=t["ink"], width=1.5, dash="dot"),
+                                 hovertemplate="%{y:.2f}/32<extra>Model total</extra>"))
+        if "option_value_obs_32" in c.columns:
+            fig.add_trace(go.Scatter(x=c["day"], y=c["option_value_obs_32"], name="Observed (M0 fair - market)",
+                                     mode="lines", line=dict(color=t["muted"], width=1.5),
+                                     hovertemplate="%{y:.2f}/32<extra>Observed</extra>"))
+    for d in _switch_days(c):
+        fig.add_vline(x=d, line=dict(color=t["muted"], width=1, dash="dot"))
+    fig = _style(fig, t, 320)
+    title = ("Quality option: macro (level) + spread (relative), 32nds" if part == "quality"
+             else "Timing options: wild card + end of month, 32nds (with the model total and the observed value)")
+    fig.update_layout(title=title, showlegend=True, legend=dict(orientation="h", y=-0.18))
     return fig

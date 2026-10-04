@@ -33,6 +33,7 @@ def build_layout() -> html.Div:
         dcc.Loading(children=[
             dcc.Graph(id="basis-prob-chart", config={"displaylogo": False}),
             dcc.Graph(id="basis-option-chart", config={"displaylogo": False}),
+            dcc.Graph(id="basis-timing-chart", config={"displaylogo": False}),
         ]),
         html.Div(className="note", children=[
             html.Strong("How to read it"),
@@ -46,6 +47,11 @@ def build_layout() -> html.Div:
                    "quality spread (switches from relative moves), and the timing options (wild card "
                    "and end of month). 'Observed' is the M0 fair price minus the market - it moves "
                    "with much more than the options (futures richness, cash marks), see the basis doc."),
+            html.P("Quality decays with the time to delivery but also moves with the gap between the CTD "
+                   "and the runner-up, like any option whose moneyness moves. The timing options sit in the "
+                   "delivery month (wild card) and after the last trading day (end of month), so they stay "
+                   "roughly flat until then. Dotted lines: the model's delivery day switched first <-> last "
+                   "(carry near zero) - the horizon jumps by about a month there."),
         ]),
     ])
 

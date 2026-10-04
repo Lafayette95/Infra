@@ -265,7 +265,11 @@ class OneFactorBasis(DeterministicBasis):
         g = b[(b["contract"] == c["contract"]) & (b["delivery_kind"] == "last")].dropna(subset=["fwd", "dv01"])
         if not np.isfinite(sigma) or g.empty:
             return {"wildcard_32": np.nan, "eom_32": np.nan}
-        bd = business_days(pd.Timestamp(c["day"]) - pd.Timedelta(days=10), c["delivery"] + pd.Timedelta(days=40))
+        # from well before the delivery month: a contract already INSIDE its delivery month
+        # (tracked to delivery with contracts="all") needs the month's first intention day,
+        # 2 business days before the month starts - a 10-day lookback ran out (found 2026-10-04)
+        bd = business_days(min(pd.Timestamp(c["day"]), pd.Timestamp(c["last_trading"]).replace(day=1)) - pd.Timedelta(days=45),
+                           c["delivery"] + pd.Timedelta(days=40))
         ltd, ld = pd.Timestamp(c["last_trading"]), g["delivery"].iloc[0]
         month_start = bd[bd >= ltd.replace(day=1)][0]
         first_intention = bd[bd < month_start][-2]

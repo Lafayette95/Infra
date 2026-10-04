@@ -20,7 +20,7 @@ def test_sample_is_global_not_per_chunk():
 def test_finished_months_are_skipped_on_rerun(tmp_path, monkeypatch):
     ran = []
 
-    def fake_chunk(spec, days, out_dir, label):
+    def fake_chunk(spec, days, out_dir, label, contracts="quoted"):
         ran.append(label)
         frame = pd.DataFrame({"day": pd.DatetimeIndex(days), "contract": "ZNH4"})
         frame.to_parquet(f"{out_dir}/{label}_bonds.parquet")

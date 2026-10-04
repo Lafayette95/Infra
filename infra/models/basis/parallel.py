@@ -45,10 +45,10 @@ def resolve_spec(name: str, overrides: dict | None = None) -> BasisSpec:
     return replace(spec, **(overrides or {})) if overrides else spec
 
 
-def _run_chunk(spec: BasisSpec, days: list, out_dir: str, label: str) -> tuple[str, int]:
+def _run_chunk(spec: BasisSpec, days: list, out_dir: str, label: str, contracts: str = "quoted") -> tuple[str, int]:
     from infra.models.basis import validate
     days = pd.DatetimeIndex(days)
-    res = validate.run(spec, days.min(), days.max(), days=days)
+    res = validate.run(spec, days.min(), days.max(), days=days, contracts=contracts)
     out = Path(out_dir)
     # bonds first, contracts last: the contracts file is the chunk's "done" marker
     res["bonds"].to_parquet(out / f"{label}_bonds.parquet")
@@ -61,7 +61,7 @@ def done(out_dir: Path, label: str) -> bool:
 
 
 def run_parallel(spec: BasisSpec, start, end, out_dir, *, every: int = 1, workers: int = 2,
-                 log=print) -> dict[str, pd.DataFrame]:
+                 contracts: str = "quoted", log=print) -> dict[str, pd.DataFrame]:
     """Run ``spec`` over ``[start, end]`` (every ``every``-th business day) in ``workers``
     processes, one month per task (one YEAR when ``every`` >= 5), skipping chunks already
     in ``out_dir``; returns the combined ``{"contracts", "bonds"}``."""
@@ -73,7 +73,7 @@ def run_parallel(spec: BasisSpec, start, end, out_dir, *, every: int = 1, worker
     if todo:
         ctx = mp.get_context("spawn")  # a clean interpreter per worker (no forked pandas/numpy state)
         with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
-            futs = [pool.submit(_run_chunk, spec, list(d), str(out), lab) for lab, d in todo]
+            futs = [pool.submit(_run_chunk, spec, list(d), str(out), lab, contracts) for lab, d in todo]
             for f in as_completed(futs):
                 lab, n = f.result()
                 log(f"  {lab}: {n} contract-days")
