@@ -194,3 +194,11 @@ def _no_positioning_network(monkeypatch):
     monkeypatch.setattr("infra.pipeline.primary_dealer.FETCH",
                         lambda: '"As Of Date","Time Series","Value (millions)"\n')
     monkeypatch.setattr("infra.pipeline.primary_dealer.CATALOG_FETCH", lambda: ([], []))
+
+
+@pytest.fixture(autouse=True)
+def _no_fed_gsw_network(monkeypatch):
+    """The Fed GSW curve file is never fetched in tests."""
+    def refuse():
+        raise RuntimeError("Fed GSW fetch blocked in tests")
+    monkeypatch.setattr("infra.pipeline.fed_gsw.FETCH", refuse)

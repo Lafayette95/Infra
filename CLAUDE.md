@@ -340,3 +340,11 @@ Stored/queried tickers are ABSOLUTE (Databento `raw_symbol`); relative tickers e
 *   **Saved runs:** `infra/storage/model_runs.py` (generic frames, no model import), `MODEL_RUNS_DIR` = `~/Database/Derived/ModelRuns/<name>/{params,predictions}.parquet` + `meta.json`, flat, ZSTD 5, replaced whole per run; written only by `scripts/run_walk_forward.py --save` (models never write storage).
 *   **Dashboard:** `infra/dashboard/models_{layout,callbacks,charts}.py` -> `/models` "Models", read-only like RND/WIRP; fits the defaults on load. Categorical series colours: `infra.dashboard.theme.series_colors` (fixed order).
 *   **Not scheduled:** like the CTA, nothing runs these in the daily cycle (`TOFIX.md`).
+
+## 25. Our US Treasury Curve (`infra/pipeline/treasury_curves.py`; sub-project `infra/models/curves`, own `CLAUDE.md`)
+*   **What:** a daily US Treasury zero curve fitted to FedInvest's per-CUSIP END OF DAY prices, two methods side by side (`spline` on the discount function - default for per-bond work, closed-form leave-one-out - and `svensson`), plus per CUSIP: z-spread (+ leave-one-out), curve carry and rolldown (bp, + = gain, `CURVE_HORIZON_DAYS`). Repo carry is not here: it comes from the funding layer (section 20). Built 2026-10-03/04; methodology and validation in `infra/models/curves/CLAUDE.md`.
+*   **Code:** `infra/analytics/treasury_curve.py` (pure), `infra/pipeline/treasury_curves.py` (`build_curves`, `read_curves`, `read_rv`), `scripts/build_treasury_curves.py`. Config `TREASURY_CURVES_DIR`, `TREASURY_RV_DIR`, `CURVE_*`.
+*   **Stores:** `~/Database/Derived/TreasuryCurves` (keys `timestamp`, `method`) and `~/Database/Derived/TreasuryRV` (keys `timestamp`, `cusip`, `method`), 2008-09-02 on; a rebuilt day replaces its rows. Disk only, point in time (a day's prices only).
+*   **Reference: the Fed's GSW curve** (`infra/api/fed_gsw_client.py`, `infra/pipeline/fed_gsw.py`; one CSV since 1961, stored at `RawData/FedGSW/feds200628.csv`, re-fetched only when 7 days old; tests stub `FETCH`). GSW is NOT the CMT curve: CMT is the Treasury's par curve on on-the-run issues, GSW a Fed Board staff Svensson fit on off-the-runs. Our Svensson reproduces GSW within ~1bp; our spline sits ~2-3bp above CMT (the on-the-run premium).
+*   **Not in the cycle yet** (joins `derived` with the other parked derived jobs, section 18).
+

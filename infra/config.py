@@ -93,6 +93,15 @@ SWAP_CLOSES_DIR = DERIVED_ROOT / "SwapCloses"
 # tickers as the CMT par curve (US_BOND_10y) - a consumer picks the series by ``source``
 # (BOND_YIELD_SOURCES) through infra.pipeline.bond_yields.read_bond_yields.
 OTR_YIELDS_DIR = DERIVED_ROOT / "OTRYields"
+# Our own US Treasury zero curve (sub-project infra/models/curves, methodology there):
+# per day x fit method - parameters, fit quality, zero / par grid; and per CUSIP - z-spread
+# (+ leave-one-out), curve carry and rolldown. infra/pipeline/treasury_curves.py.
+TREASURY_CURVES_DIR = DERIVED_ROOT / "TreasuryCurves"
+TREASURY_RV_DIR = DERIVED_ROOT / "TreasuryRV"
+CURVE_FIT_MIN_YEARS = 0.5      # bonds shorter than this aren't in the fit (still get metrics)
+CURVE_FIT_EXCLUDE_RANKS = 2    # on-the-run and first off-the-run out of the fit (Fed GSW practice)
+CURVE_HORIZON_DAYS = 91        # carry / rolldown horizon (calendar days)
+CURVE_GRID_YEARS = (1, 2, 3, 5, 7, 10, 20, 30)
 # Saved walk-forward runs of the statistical models (infra/models/stats, CLAUDE.md 25):
 # one folder per run name holding params.parquet (one tidy params frame per refit) and
 # predictions.parquet (the stitched out-of-sample rows), written by
