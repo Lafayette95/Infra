@@ -58,6 +58,15 @@ cash flows, also gives carry, rolldown and z-spreads, and a check on CMT.
     those same Treasury CMT yields (the Fed distributes them, the Treasury fits them). The
     Fed's GSW (`feds200628.csv`) is a separate Fed Board staff fit. CMT is fitted too ("constant
     maturity" = read off a fitted par curve at fixed tenors), mainly on the on-the-runs.
+*   **How the Treasury computes CMT** (its methodology page, checked 2026-10-04): inputs are
+    ONLY the on-the-run bills (4/6/8/13/17/26/52 weeks), notes (2/3/5/7/10y) and bonds (20/30y);
+    prices are indicative BID-side quotes (not trades) collected by the New York Fed at or near
+    15:30 New York; since 2021-12-06 the yields bootstrap instantaneous forwards at the input
+    maturities and a MONOTONE CONVEX interpolation of those forwards builds the curve (a
+    quasi-cubic Hermite spline before). It passes THROUGH the input points ("true par rates") -
+    an interpolation, not a smoothing fit. So at a benchmark tenor CMT ~ the on-the-run's own bid
+    yield (hence our OTR benchmark within +-0.3bp of it, root CLAUDE.md 18), and our curve minus
+    CMT measures the on-the-run premium. Same 15:30 bid timing as FedInvest's END OF DAY.
 *   **vs CMT** (the Treasury's par curve, fitted mainly to ON-THE-RUN issues; 2016+): the
     spline sits +2..+3bp above CMT at 2/5/20/30y (sd ~2bp) - the on-the-runs' liquidity
     premium; 10y -1bp (to look at).
