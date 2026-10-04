@@ -95,9 +95,9 @@ def event_paths(residuals: pd.DataFrame, events: pd.DataFrame, *, window: tuple[
         ok = np.isfinite(seg.to_numpy())
         rows.append(pd.DataFrame({"event_type": e.event_type, "tenor": e.tenor, "cusip": e.cusip,
                                   "event_day": pd.Timestamp(e.event_day), "rel_day": rel[ok],
-                                  "change_bp": seg.to_numpy()[ok] - base}))
+                                  "date": days[lo:hi + 1][ok], "change_bp": seg.to_numpy()[ok] - base}))
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(
-        columns=["event_type", "tenor", "cusip", "event_day", "rel_day", "change_bp"])
+        columns=["event_type", "tenor", "cusip", "event_day", "rel_day", "date", "change_bp"])
 
 
 def event_profiles(paths: pd.DataFrame) -> pd.DataFrame:

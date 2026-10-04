@@ -953,3 +953,14 @@ true Markov-switching regression (regimes defined by the regression's own fit: e
 residual density per regime, through `hmm.forward_backward`, M-step = the existing weighted
 estimators) are both still to build. Also queued by the user: Johansen / VECM and
 regression with autocorrelated errors (Prais-Winsten).
+
+---
+
+## Basis add-on MS: per-bond richness forecasts are contaminated by the global curve fit
+
+**Found:** 2026-10-03 (`infra/models/basis/CLAUDE.md` 3g).
+**Where:** `infra/analytics/event_study.py` (`curve_residuals`: one cubic regression spline per day, 1-30y), used by `infra/analytics/event_drift.py` (MS add-on, `BasisSpec.ms_calendar`, off).
+**Status:** open - MS off until fixed.
+
+Both MS modes hurt the bench (events: TN 0.050 -> 0.150; aging: UB 0.177 -> 0.392). The aging failure on UB - old 30y bonds whose true aging is ~0 - points at the measure: a bond's residual to ONE smooth curve changes as it rolls down the maturity axis through regions the spline fits systematically differently (the long end, near knots), and that fit error becomes fake "aging". **Options:** (1) local richness - each bond's yield minus a fit through its nearest neighbours EXCLUDING itself (leave-one-out local regression), so a slide along the curve doesn't change the reference; (2) matched pairs - richness relative to the adjacent issues of the same series; (3) a finer, more flexible curve (more knots, coupon effect) - helps but keeps the problem in thin sectors. Then re-estimate both profiles and re-bench; also add the profiles' dispersion as extra variance.
+

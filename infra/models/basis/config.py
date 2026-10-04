@@ -75,6 +75,12 @@ class BasisSpec:
     # M2+: the JOINT horizon PCA on total yield changes (factors.fit_joint_model) instead
     # of level + spread PCA; n_joint_factors components
     joint_pca: bool = False
+    # Add-on MS (calendar effects): shift each deliverable's forward yield by its expected
+    # richness drift to delivery (infra.analytics.event_drift, net event profiles)
+    ms_calendar: bool = False
+    # "aging" (v1 default: every deliverable drifts by its tenor's aging profile) or
+    # "events" (the first rules: new issue / outgoing on-the-run only - flipped TN's CTD)
+    ms_mode: str = "aging"
     n_joint_factors: int = 4
     timing_options: bool = False
     # T under NEGATIVE carry: True (default since 2026-10-03, user decision) = Bermudan over

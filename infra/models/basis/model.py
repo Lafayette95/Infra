@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from infra.analytics.delivery_timing import eom_switch_value, wildcard_value, window_kinds
+from infra.analytics.event_drift import aging_drift_bp, bond_drift_bp
 from infra.analytics.futures_iv import normal_vol_points_per_day, vol_at_horizon
 from infra.config import FOMC_MEETINGS
 from infra.analytics.futures_basis import (bachelier_exchange, basis_table, clean_price_from_yield, forward_yield,
@@ -117,6 +118,7 @@ class OneFactorBasis(DeterministicBasis):
         out = super().prepare(raw)
         out.attrs["levels"] = raw.meta.get("levels")
         out.attrs["iv"] = raw.meta.get("iv")
+        out.attrs["ms"] = raw.meta.get("ms")
         return out
 
     def fit(self, prepared, as_of=None) -> "OneFactorBasis":
@@ -170,6 +172,16 @@ class OneFactorBasis(DeterministicBasis):
             fy = np.array([forward_yield(r.fwd, r.coupon, r.maturity, r.delivery) for r in g.itertuples()])
             ok = np.isfinite(fy)
             g, fy = g[ok], fy[ok]
+            ms_drift = self._ms_drift(c, g) if self.spec.ms_calendar else None
+            if ms_drift is not None and np.any(ms_drift != 0):
+                # add-on MS: shift each bond's FORWARD by its expected richness drift to delivery
+                new_fy = fy + ms_drift / 100.0
+                g = g.copy()
+                g["fwd"] = [r.fwd + float(clean_price_from_yield(y1, r.coupon, r.maturity, r.delivery)
+                                          - clean_price_from_yield(y0, r.coupon, r.maturity, r.delivery))
+                            for r, y0, y1 in zip(g.itertuples(), fy, new_fy)]
+                g["implied_futures"] = g["fwd"] / g["cf"]
+                fy = new_fy
             extra = self._extra_bonds(c)  # deliverables not issued yet (M2+); empty for M1
             sim = pd.concat([g[["cusip", "fwd", "cf", "coupon", "maturity", "implied_futures"]],
                              extra[["cusip", "fwd", "cf", "coupon", "maturity", "implied_futures"]]], ignore_index=True)
@@ -208,6 +220,9 @@ class OneFactorBasis(DeterministicBasis):
                 "top_prob_bond": top, "top_prob": float(share_all.max()),
                 "option_value_margrabe_32": margrabe,
                 "prob_new_issues": float(share_all[len(g):].sum()), "n_new_issues": int(len(extra)),
+                "ms_bonds": 0 if ms_drift is None else int((ms_drift != 0).sum()),
+                "ms_drift_ctd_bp": 0.0 if ms_drift is None or c["ctd"] not in set(g["cusip"])
+                else float(ms_drift[list(g["cusip"]).index(c["ctd"])]),
             })
             if self.spec.timing_options:
                 out.update(self._timing(c, z))
@@ -277,6 +292,17 @@ class OneFactorBasis(DeterministicBasis):
         return {"wildcard_32": wild_32, "eom_32": eom_32, "wildcard_windows": n_windows, "eom_days": n_eom,
                 "wildcard_event_windows": sum(k != "ordinary" for k in kinds), "timing_32": wild_32 + eom_32,
                 "wildcard_wait_cost_32": wait_cost / cf[ctd] * TICKS}  # eom_32 is NET of its carry
+
+    def _ms_drift(self, c, g: pd.DataFrame) -> np.ndarray | None:
+        """Add-on MS: each deliverable's expected richness drift (bp) from the day to the
+        delivery day (``infra.analytics.event_drift``)."""
+        ms = self._prepared_bonds.attrs.get("ms") if hasattr(self, "_prepared_bonds") else None
+        if ms is None:
+            return None
+        day, target = pd.Timestamp(c["day"]), pd.Timestamp(c["delivery"])
+        rule = aging_drift_bp if self.spec.ms_mode == "aging" else bond_drift_bp
+        return np.array([rule(ms["states"][cu], day, target, ms["bdays"], ms["profiles"])[0]
+                         if cu in ms["states"] else 0.0 for cu in g["cusip"]])
 
     def _window_variance(self, root: str) -> tuple[float, dict]:
         """The root's ordinary-day window share and day-kind multipliers (spec)."""

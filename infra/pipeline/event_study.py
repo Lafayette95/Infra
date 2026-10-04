@@ -69,3 +69,73 @@ def in_study_profiles(start, end, *, res: pd.DataFrame | None = None) -> tuple[p
     paths = pd.concat([event_paths(res, ev[ev["event_type"] == k], window=w, anchor_offset=a)
                        for k, (w, a) in WINDOWS.items()], ignore_index=True)
     return event_profiles(paths), paths
+
+
+# ---------------------------------------------------------------- add-on MS provider
+_MEMO: dict = {}
+HISTORY_START = "2008-09-02"  # FedInvest's first day
+
+
+def net_paths_all(end=None) -> pd.DataFrame:
+    """Every event path since ``HISTORY_START``, netted of specialness carry
+    (``infra.analytics.event_netting``); memoised per process."""
+    from infra.analytics.event_netting import modified_duration, net_paths, specialness_carry_bp
+    from infra.pipeline.specialness import observed_specialness
+    end = pd.Timestamp(end or pd.Timestamp.today().normalize())
+    key = ("paths", end)
+    if key not in _MEMO:
+        res = residuals(HISTORY_START, end)
+        prof, paths = in_study_profiles(HISTORY_START, end, res=res)
+        paths["anchor_offset"] = paths["event_type"].map({k: a for k, (w, a) in WINDOWS.items()})
+        days = pd.DatetimeIndex(sorted(res["timestamp"].unique()))
+        y = read_prices(pd.Timestamp(HISTORY_START), end + pd.Timedelta(days=1))[["timestamp", "cusip", "yield_eod"]]
+        y["cusip"] = y["cusip"].astype(str)
+        d = res.merge(y, on=["timestamp", "cusip"])
+        keep = set(paths["cusip"])
+        d = d[d["cusip"].isin(keep)]
+        dur = d.assign(dur=modified_duration(d["maturity_years"], d["yield_eod"])).set_index(["timestamp", "cusip"])["dur"]
+        sp = observed_specialness(HISTORY_START, end + pd.Timedelta(days=1))
+        sp = sp[sp.index.get_level_values("cusip").isin(keep)]
+        _MEMO[key] = (net_paths(paths, specialness_carry_bp(paths, sp, dur, days)), days)
+    return _MEMO[key]
+
+
+def net_profiles_as_of(as_of, *, end=None) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
+    """The event-profile interface, NET of specialness carry, from path observations
+    dated BEFORE ``as_of`` only (point in time) - ``mean_bp`` = mean net change; and the
+    business-day calendar the paths use."""
+    paths, days = net_paths_all(end)
+    p = paths[pd.to_datetime(paths["date"]) < pd.Timestamp(as_of)]
+    g = p.groupby(["event_type", "tenor", "rel_day"])["net_change_bp"]
+    prof = pd.DataFrame({"mean_bp": g.mean(), "median_bp": g.median(), "sd_bp": g.std(), "n": g.size()}).reset_index()
+    return prof, days
+
+
+def aging_profiles_as_of(as_of, *, end=None) -> pd.DataFrame:
+    """Add-on MS (v1 default): the aging profile per tenor (``infra.analytics.event_drift.
+    aging_profile``) from bond-days BEFORE ``as_of`` only, each daily residual change net
+    of that day's specialness carry; memoised inputs."""
+    from infra.analytics.event_drift import aging_profile
+    from infra.analytics.event_netting import modified_duration
+    from infra.pipeline.specialness import observed_specialness, successors
+    end = pd.Timestamp(end or pd.Timestamp.today().normalize())
+    key = ("aging_daily", end)
+    if key not in _MEMO:
+        res = residuals(HISTORY_START, end)
+        succ = successors(read_securities()).set_index("cusip")
+        r = res[res["cusip"].isin(succ.index)].sort_values(["cusip", "timestamp"]).copy()
+        r["tenor"] = r["cusip"].map(succ["tenor"])
+        days = pd.DatetimeIndex(sorted(res["timestamp"].unique()))
+        pos = pd.Series(range(len(days)), index=days)
+        r["age_bd"] = r["timestamp"].map(pos) - days.searchsorted(pd.to_datetime(r["cusip"].map(succ["issue_date"])))
+        y = read_prices(pd.Timestamp(HISTORY_START), end + pd.Timedelta(days=1))[["timestamp", "cusip", "yield_eod"]]
+        y["cusip"] = y["cusip"].astype(str)
+        r = r.merge(y, on=["timestamp", "cusip"], how="left")
+        sp = observed_specialness(HISTORY_START, end + pd.Timedelta(days=1)).rename("sp").reset_index()
+        sp["cusip"] = sp["cusip"].astype(str)
+        r = r.merge(sp, on=["timestamp", "cusip"], how="left")
+        carry = r["sp"].fillna(0.0) / 360.0 / modified_duration(r["maturity_years"], r["yield_eod"].fillna(3.0))
+        r["d1_bp"] = r.groupby("cusip")["residual_bp"].diff() - carry
+        _MEMO[key] = r.dropna(subset=["d1_bp"])[["timestamp", "tenor", "age_bd", "d1_bp"]]
+    d = _MEMO[key]
+    return aging_profile(d[d["timestamp"] < pd.Timestamp(as_of)])

@@ -434,10 +434,38 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     largest at 2y / 5y; (4) 10y reopenings cheapen the reopened bond +0.6bp over 20 days.
     The 10y outgoing-roll sign (-0.4bp) is the exception, n = 42, unexplained. Sizes matter
     where CTD gaps are small: 1.4bp on a new 10y is ~0.12 points, ~4/32 of TN futures.
-*   **Not yet:** the specialness side-by-side (to net what funding's lifecycle layer
-    already puts in carry, so the same richness isn't counted twice), and the add-on
-    itself (expected residual drift applied to each affected deliverable's forward yield
-    to delivery, + the profile's dispersion as extra variance).
+*   **Netted of specialness carry (step 2a):** `infra/analytics/event_netting.py` - a
+    special bond's richness bleeds out AS carry (s / 360 / modified duration bp of yield a
+    day), which funding already credits. Along the event paths it is only 0-0.3bp: the
+    drift is mostly the on-the-run LIQUIDITY premium decaying, which funding doesn't carry
+    (net: new issue 60d 2y +0.92, 5y +1.41, 10y +1.16, 20y +1.10bp; outgoing on-the-run
+    40d 2y +0.50, 5y +0.89, 30y +0.57bp; t 4-12).
+*   **The add-on (step 2b, `BasisSpec.ms_calendar`, OFF - neither version helps):** each
+    deliverable's forward yield shifted by its expected residual drift to delivery
+    (`infra/analytics/event_drift.py`; profiles point in time, per model year, from path
+    observations / bond-days before 1 January; `infra.pipeline.event_study.
+    net_profiles_as_of` / `aging_profiles_as_of`; bond states in `inputs.ms_for_day`).
+    Bench (14-day sample, Brier vs M2):
+    | Root | M2 | MS events | MS aging |
+    |---|---|---|---|
+    | TN | **0.050** | 0.150 | 0.062 |
+    | UB | **0.177** | 0.177 | 0.392 |
+    | ZB | **0.350** | 0.352 | 0.371 |
+    | ZN | 0.326 | **0.320** | 0.327 |
+    | ZT | 0.262 | 0.258 | **0.257** |
+
+    (1) `ms_mode="events"` (new issue for 60 business days / outgoing on-the-run only)
+    gave TN's newest 10y +2.0bp and the 1-old 0 - outside both rules - flipping TN's CTD;
+    the realised pair moved -0.11 / +0.05bp (2024-06..09). Only RELATIVE drift matters, so
+    (2) `ms_mode="aging"` (default): every deliverable drifts by its tenor's AGING profile
+    (cumulative mean daily residual change by age since issue, net) - but UB doubled
+    (0.177 -> 0.392) although true aging of old 30y bonds is ~0. **Diagnosis:** the
+    richness measure is contaminated by the fitted curve - as a bond ages it slides down
+    the maturity axis through regions where one global spline fits systematically better
+    or worse (the 25-30y end, around knots), and per-bond forecasts pick that up; the
+    event study's AVERAGES stay meaningful (large, short effects). **Next (`TOFIX.md`):** a
+    cleaner richness measure - each bond against its immediate maturity neighbours
+    (matched pairs / a local fit excluding the bond) - then re-run both modes.
 
 ## 4. The models
 *   **M0 (`DeterministicBasis`)**: no fitting. Per contract: CTD, delivery day, fair futures,
