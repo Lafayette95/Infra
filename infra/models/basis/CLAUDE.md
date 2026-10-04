@@ -488,6 +488,19 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     is a valid DESCRIPTIVE result (average effects real and significant), but not a per-bond
     forecast of relative richness between deliverables - MS stays off. Possible narrow
     follow-up: a UB-only beta (small gain: UB Brier 0.177 vs 0.184 with aging).
+*   **Why "real on average" yet "no per-bond forecast" (user question, 2026-10-04) - two tests:**
+    (a) an event bond vs the CURVE over its event window, predicted from earlier years only:
+    direction right 61-68% of the time (auction 68%, new issue 65%, roll 63%, reopening 61%),
+    mean realised ~ mean predicted; OOS R^2 vs zero small (auction +0.14, reopening +0.07,
+    new issue 0.00, roll -0.12) because each event's SIZE is noisy - real and partly
+    forecastable. (b) a deliverable vs its basket's CTD to the delivery day, only pairs with
+    |predicted| > 1bp: direction right 47-51% - a coin flip. **The effect doesn't TRANSLATE**:
+    the competing deliverable (usually a close neighbour) shares the sector-wide effects
+    (auction concession, supply; in TN the CTD is often the 1-old 10y, which cheapens too
+    after its successor's issue), and the effects are short-lived (the concession partly
+    reverses after +5 days) against 1-3 month delivery horizons. **So MS targets the wrong
+    quantity** (a bond's drift vs the curve). A version that could work: the event study run
+    on deliverable PAIRS directly (a deliverable's richness vs its basket's CTD around events).
 
 ## 4. The models
 *   **M0 (`DeterministicBasis`)**: no fitting. Per contract: CTD, delivery day, fair futures,
