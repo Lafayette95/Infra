@@ -30,11 +30,11 @@ def test_finished_months_are_skipped_on_rerun(tmp_path, monkeypatch):
     monkeypatch.setattr(parallel, "_run_chunk", fake_chunk)
     monkeypatch.setattr(parallel, "ProcessPoolExecutor", _InlinePool)
     spec = parallel.resolve_spec("M0")
-    parallel.run_parallel(spec, "2024-01-02", "2024-03-29", tmp_path, every=5, log=lambda *_: None)
+    parallel.run_parallel(spec, "2024-01-02", "2024-03-29", tmp_path, every=1, log=lambda *_: None)
     assert sorted(ran) == ["2024-01", "2024-02", "2024-03"]
     (tmp_path / "2024-02_contracts.parquet").unlink()  # "interrupted" mid-run
     ran.clear()
-    res = parallel.run_parallel(spec, "2024-01-02", "2024-03-29", tmp_path, every=5, log=lambda *_: None)
+    res = parallel.run_parallel(spec, "2024-01-02", "2024-03-29", tmp_path, every=1, log=lambda *_: None)
     assert ran == ["2024-02"] and res["contracts"]["day"].is_monotonic_increasing
 
 
@@ -60,3 +60,8 @@ class _InlinePool:
         f = Future()
         f.set_result(fn(*args))
         return f
+
+
+def test_sparse_samples_run_in_year_chunks():
+    days = parallel.sample_days("2023-01-02", "2024-12-31", every=5)
+    assert [lab for lab, _ in parallel.chunks(days, "Y")] == ["2023", "2024"]

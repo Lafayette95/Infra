@@ -30,10 +30,13 @@ def sample_days(start, end, every: int = 1) -> pd.DatetimeIndex:
     return business_days(pd.Timestamp(start), pd.Timestamp(end))[::max(int(every), 1)]
 
 
-def chunks(days: pd.DatetimeIndex) -> list[tuple[str, pd.DatetimeIndex]]:
-    """``(YYYY-MM, days)`` per calendar month."""
+def chunks(days: pd.DatetimeIndex, period: str = "M") -> list[tuple[str, pd.DatetimeIndex]]:
+    """``(label, days)`` per calendar ``period`` ("M" month -> "YYYY-MM", "Y" year -> "YYYY").
+    Each chunk loads its inputs once, which costs about as much as running a few days, so
+    a SPARSE sample (``every`` >= 5) wants year chunks: found 2026-10-03, every 5th day in
+    month chunks spent ~75s a day on loading (93 chunks, ~4 hours) for ~4 days each."""
     s = pd.Series(days, index=days)
-    return [(str(p), pd.DatetimeIndex(g.values)) for p, g in s.groupby(s.index.to_period("M"))]
+    return [(str(p), pd.DatetimeIndex(g.values)) for p, g in s.groupby(s.index.to_period(period))]
 
 
 def resolve_spec(name: str, overrides: dict | None = None) -> BasisSpec:
@@ -60,12 +63,13 @@ def done(out_dir: Path, label: str) -> bool:
 def run_parallel(spec: BasisSpec, start, end, out_dir, *, every: int = 1, workers: int = 2,
                  log=print) -> dict[str, pd.DataFrame]:
     """Run ``spec`` over ``[start, end]`` (every ``every``-th business day) in ``workers``
-    processes, one month per task, skipping months already in ``out_dir``; returns the
-    combined ``{"contracts", "bonds"}``."""
+    processes, one month per task (one YEAR when ``every`` >= 5), skipping chunks already
+    in ``out_dir``; returns the combined ``{"contracts", "bonds"}``."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    todo = [(lab, d) for lab, d in chunks(sample_days(start, end, every)) if not done(out, lab)]
-    log(f"{spec.name}: {len(todo)} month(s) to run, {workers} worker(s), out {out}")
+    period = "Y" if every >= 5 else "M"
+    todo = [(lab, d) for lab, d in chunks(sample_days(start, end, every), period) if not done(out, lab)]
+    log(f"{spec.name}: {len(todo)} chunk(s) to run ({period}), {workers} worker(s), out {out}")
     if todo:
         ctx = mp.get_context("spawn")  # a clean interpreter per worker (no forked pandas/numpy state)
         with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
@@ -79,7 +83,7 @@ def run_parallel(spec: BasisSpec, start, end, out_dir, *, every: int = 1, worker
 def collect(out_dir) -> dict[str, pd.DataFrame]:
     """Every finished chunk in ``out_dir``, combined."""
     out = Path(out_dir)
-    labs = sorted(p.name[:7] for p in out.glob("*_contracts.parquet"))
+    labs = sorted(p.name[: -len("_contracts.parquet")] for p in out.glob("*_contracts.parquet"))
     if not labs:
         return {"contracts": pd.DataFrame(), "bonds": pd.DataFrame()}
     return {"contracts": pd.concat([pd.read_parquet(out / f"{l}_contracts.parquet") for l in labs], ignore_index=True),
