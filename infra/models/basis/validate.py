@@ -22,6 +22,13 @@ from infra.models.basis.inputs import basis_days
 from infra.models.basis.model import TIERS, make_model  # noqa: F401 (make_model: callers)
 
 
+# per-bond output kept from a run (the basis dashboard reads these): identity, the basis
+# metrics, the model's delivery probability
+BOND_COLUMNS = ["day", "root", "contract", "cusip", "delivery_kind", "delivery", "coupon", "maturity", "cf",
+                "price", "price_bid", "yield_eod", "dv01", "repo", "carry", "fwd", "implied_futures", "gross_basis",
+                "net_basis", "irr", "futures", "prob"]
+
+
 def run(name, start, end, *, contracts: str = "quoted", log_every: int = 0, days=None) -> dict[str, pd.DataFrame]:
     """Fit (point in time, per day) and predict ``name`` (a registered spec name, or a
     ``BasisSpec``) over ``[start, end]`` - every day, or only ``days`` (a sample)."""
@@ -31,8 +38,8 @@ def run(name, start, end, *, contracts: str = "quoted", log_every: int = 0, days
         prepared = model.prepare(raw)
         pred = model.fit(prepared, as_of=raw.day).predict(prepared)
         out_c.append(pred["contracts"])
-        out_b.append(pred["bonds"][["day", "root", "contract", "cusip", "delivery_kind", "prob", "implied_futures"]]
-                     if len(pred["bonds"]) else pd.DataFrame())
+        b = pred["bonds"]
+        out_b.append(b[[c for c in BOND_COLUMNS if c in b.columns]] if len(b) else pd.DataFrame())
         if log_every and i % log_every == 0:
             print(f"{raw.day.date()}", flush=True)
     if not out_c:

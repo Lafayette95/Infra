@@ -26,8 +26,27 @@ WINDOWS = {"new_issue": ((0, 60), 0), "otr_roll": ((-20, 40), -1), "reopening": 
            "auction": ((-5, 5), -6)}  # (window, anchor offset); auction anchored a week before
 
 
-def residuals(start, end) -> pd.DataFrame:
-    """Daily curve residuals (bp) of every note and bond."""
+RICHNESS_SOURCE = "zspread"  # "zspread" (default since 2026-10-04) | "ytm_spline" (the first measure)
+
+
+def residuals(start, end, *, source: str | None = None) -> pd.DataFrame:
+    """Daily richness (bp; negative = rich) of every note and bond, as ``timestamp, cusip,
+    maturity_years, residual_bp``. ``source``:
+    * ``zspread`` - the LEAVE-ONE-OUT z-spread to our own Treasury curve (spline on the
+      discount function, cash-flow based; root CLAUDE.md 25, ``Derived/TreasuryRV``).
+    * ``ytm_spline`` - the first measure: yield-to-maturity minus one smooth spline of YTM on
+      maturity. Kept for comparison only: coupon effects, each bond pulling the curve to
+      itself, and a bond's residual drifting with the fit error as it ages made it a poor
+      per-bond signal (the MS add-on doubled UB's CTD error on it, 2026-10-03)."""
+    source = source or RICHNESS_SOURCE
+    if source == "zspread":
+        from infra.pipeline.treasury_curves import read_rv
+        from infra.config import CURVE_FIT_MIN_YEARS
+        r = read_rv(start, end, method="spline")
+        # inside the curve's fit range only: a bond with < 0.5y left is priced off the
+        # curve's extrapolated short end (a 2y note near maturity showed +32bp of "aging")
+        r = r[r["maturity_years"] >= CURVE_FIT_MIN_YEARS]
+        return r.rename(columns={"zspread_loo_bp": "residual_bp"})[["timestamp", "cusip", "maturity_years", "residual_bp"]]
     p = read_prices(pd.Timestamp(start), pd.Timestamp(end) + pd.Timedelta(days=1))
     p = p[p["security_type"].astype(str).isin(["Note", "Bond"])]
     sec = read_securities().drop_duplicates("cusip").set_index("cusip")
@@ -82,7 +101,7 @@ def net_paths_all(end=None) -> pd.DataFrame:
     from infra.analytics.event_netting import modified_duration, net_paths, specialness_carry_bp
     from infra.pipeline.specialness import observed_specialness
     end = pd.Timestamp(end or pd.Timestamp.today().normalize())
-    key = ("paths", end)
+    key = ("paths", end, RICHNESS_SOURCE)
     if key not in _MEMO:
         res = residuals(HISTORY_START, end)
         prof, paths = in_study_profiles(HISTORY_START, end, res=res)
@@ -119,7 +138,7 @@ def aging_profiles_as_of(as_of, *, end=None) -> pd.DataFrame:
     from infra.analytics.event_netting import modified_duration
     from infra.pipeline.specialness import observed_specialness, successors
     end = pd.Timestamp(end or pd.Timestamp.today().normalize())
-    key = ("aging_daily", end)
+    key = ("aging_daily", end, RICHNESS_SOURCE)
     if key not in _MEMO:
         res = residuals(HISTORY_START, end)
         succ = successors(read_securities()).set_index("cusip")

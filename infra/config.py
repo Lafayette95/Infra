@@ -98,6 +98,9 @@ OTR_YIELDS_DIR = DERIVED_ROOT / "OTRYields"
 # (+ leave-one-out), curve carry and rolldown. infra/pipeline/treasury_curves.py.
 TREASURY_CURVES_DIR = DERIVED_ROOT / "TreasuryCurves"
 TREASURY_RV_DIR = DERIVED_ROOT / "TreasuryRV"
+# Basis model runs per model spec (M2, M2T, ...): per day x contract and per day x contract x
+# bond - written by scripts/run_basis.py --persist, read by the basis dashboard page.
+BASIS_RUNS_DIR = DERIVED_ROOT / "BasisRuns"
 CURVE_FIT_MIN_YEARS = 0.5      # bonds shorter than this aren't in the fit (still get metrics)
 CURVE_FIT_EXCLUDE_RANKS = 2    # on-the-run and first off-the-run out of the fit (Fed GSW practice)
 CURVE_HORIZON_DAYS = 91        # carry / rolldown horizon (calendar days)

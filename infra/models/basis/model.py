@@ -193,6 +193,11 @@ class OneFactorBasis(DeterministicBasis):
             args = (sim["fwd"].to_numpy(), sim["cf"].to_numpy(), sim_fy, sim["coupon"].to_numpy(), list(sim["maturity"]),
                     c["delivery"], shocks)
             _, fair, share_all = simulate_delivery(*args)
+            # the quality option split (the basis dashboard, 2026-10-04): MACRO = the same
+            # simulation with the LEVEL shock only (every bond moves in parallel - only DV01 /
+            # CF differences switch the CTD), SPREAD = the rest (relative moves); same draws
+            lvl = self._level_shocks(c, n_bd, z)
+            fair_level = simulate_delivery(*args[:-1], lvl)[1] if lvl is not None else np.nan
             _, fair_dn, _ = simulate_delivery(*args, bump_bp=-0.5)
             _, fair_up, _ = simulate_delivery(*args, bump_bp=0.5)
             share = share_all[:len(g)]
@@ -215,6 +220,8 @@ class OneFactorBasis(DeterministicBasis):
             out.update({
                 "fair_futures": fair,
                 "option_value_model_32": (c["fair_futures"] - fair) * TICKS,
+                "quality_macro_32": (c["fair_futures"] - fair_level) * TICKS,
+                "quality_spread_32": (fair_level - fair) * TICKS,
                 "futures_dv01": fair_dn - fair_up,
                 "ctd_prob": float(share[list(g["cusip"]).index(c["ctd"])]) if c["ctd"] in set(g["cusip"]) else 0.0,
                 "top_prob_bond": top, "top_prob": float(share_all.max()),
@@ -317,6 +324,11 @@ class OneFactorBasis(DeterministicBasis):
 
     def _shocks(self, c, g: pd.DataFrame, n_bd: int, z: np.ndarray):
         """Yield shocks (bp) at delivery: one per path, shared by the basket."""
+        return self.fitted_["vol_bp_day"][c["root"]] * self._vol_scale(c) * np.sqrt(max(n_bd, 0)) * z
+
+    def _level_shocks(self, c, n_bd: int, z: np.ndarray):
+        """The LEVEL part of the shocks alone (one per path, shared by every bond) - for the
+        macro / spread split of the quality option. M1: its whole model."""
         return self.fitted_["vol_bp_day"][c["root"]] * self._vol_scale(c) * np.sqrt(max(n_bd, 0)) * z
 
     def _pair_sd(self, c, g: pd.DataFrame, fdv: np.ndarray, i: int, j: int, n_bd: int) -> float:
@@ -447,6 +459,14 @@ class FactorBasis(OneFactorBasis):
             fm = replace(fm, sigma_level=fm.sigma_level * self._vol_scale(c))  # add-on IV scales the LEVEL only
         shocks = simulate_shocks(fm, n_bd, z, rng, spread_df=self.spec.spread_df, idio_scale=self.spec.idio_scale)
         return shocks[:, idx]
+
+    def _level_shocks(self, c, n_bd: int, z: np.ndarray):
+        fm = self.fitted_["factor_models"].get(c["contract"])
+        if fm is None:
+            return None
+        if fm.joint:  # PC1 is the level-like component
+            return None
+        return fm.sigma_level * self._vol_scale(c) * np.sqrt(max(n_bd, 0)) * z
 
     def _pair_sd(self, c, g: pd.DataFrame, fdv: np.ndarray, i: int, j: int, n_bd: int) -> float:
         fm = self.fitted_["factor_models"].get(c["contract"])

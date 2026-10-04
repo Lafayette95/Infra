@@ -50,6 +50,8 @@ def main() -> int:
     p.add_argument("--workers", type=int, help="run in parallel (a month per process) - needs --out-dir")
     p.add_argument("--out-dir", help="checkpoint directory: one file pair per month, finished months skipped")
     p.add_argument("--every", type=int, default=1, help="every Nth business day (a sample), with --out-dir")
+    p.add_argument("--persist", action="store_true",
+                   help="store the run's contracts and bonds in Derived/BasisRuns/<model> (the dashboard reads it)")
     p.add_argument("--set", action="append", default=[], metavar="FIELD=VALUE",
                    help="override a spec field, e.g. --set level_betas=true (repeatable)")
     a = p.parse_args()
@@ -59,6 +61,11 @@ def main() -> int:
         spec = resolve_spec(a.model, dict(_parse_set(x) for x in a.set))
         res = run_parallel(spec, a.start, a.end, a.out_dir, every=a.every, workers=a.workers or 1)
         print(f"{len(res['contracts'])} contract-days in {time.time() - t0:.0f}s")
+        if a.persist:
+            from infra.storage import basis_runs
+            basis_runs.save(spec.name, res["contracts"], res["bonds"])
+            print(f"persisted to Derived/BasisRuns/{spec.name}")
+            return 0
     elif a.scores_from:
         res = {"contracts": pd.read_parquet(a.scores_from),
                "bonds": pd.read_parquet(a.scores_from.replace(".parquet", "_bonds.parquet"))}
