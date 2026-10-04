@@ -466,6 +466,17 @@ way, and how to run it. Open issues live in the root `TOFIX.md` ("Basis: ..." en
     event study's AVERAGES stay meaningful (large, short effects). **Next (`TOFIX.md`):** a
     cleaner richness measure - each bond against its immediate maturity neighbours
     (matched pairs / a local fit excluding the bond) - then re-run both modes.
+*   **Re-run on the clean measure (2026-10-04):** richness = the LEAVE-ONE-OUT z-spread to
+    our own curve (`infra/models/curves`; `event_study.RICHNESS_SOURCE = "zspread"`, bonds
+    inside the curve's fit range only). The fake aging is gone (30y aging 6-8bp -> 1-3bp; the
+    10y outgoing-roll sign anomaly was the old measure, now +0.77bp like the other tenors).
+    Bench (Brier vs M2): aging TN 0.073 (0.050), UB 0.184 (0.177 - was 0.392 on the old
+    measure), ZB 0.363 (0.350), ZN 0.327, ZT 0.267; events TN 0.173, UB 0.177, ZB 0.352, ZN
+    0.319, ZT 0.257. Still no net skill: the profiles are real on AVERAGE but too noisy per
+    bond for tight CTD margins (TN's newest 10y gets +2bp of expected cheapening, ~7/32,
+    while individual pairs scatter widely). **Next:** shrink the drift by its out-of-sample
+    predictive slope (realised relative z-spread change of deliverable pairs on the
+    predicted one) before applying it. MS stays off.
 
 ## 4. The models
 *   **M0 (`DeterministicBasis`)**: no fitting. Per contract: CTD, delivery day, fair futures,
