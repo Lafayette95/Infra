@@ -964,3 +964,13 @@ regression with autocorrelated errors (Prais-Winsten).
 
 Both MS modes hurt the bench (events: TN 0.050 -> 0.150; aging: UB 0.177 -> 0.392). The aging failure on UB - old 30y bonds whose true aging is ~0 - points at the measure: a bond's residual to ONE smooth curve changes as it rolls down the maturity axis through regions the spline fits systematically differently (the long end, near knots), and that fit error becomes fake "aging". **Options:** (1) local richness - each bond's yield minus a fit through its nearest neighbours EXCLUDING itself (leave-one-out local regression), so a slide along the curve doesn't change the reference; (2) matched pairs - richness relative to the adjacent issues of the same series; (3) a finer, more flexible curve (more knots, coupon effect) - helps but keeps the problem in thin sectors. Then re-estimate both profiles and re-bench; also add the profiles' dispersion as extra variance.
 
+---
+
+## Basis: the observed option value doesn't move with the delivery options - no target can test vol inputs
+
+**Found:** 2026-10-03, the spread study's change-based IV test (`infra/models/basis/CLAUDE.md`, the IV row).
+**Where:** the bench's target, `option_value_obs_32` = M0 fair (15:30 cash) - futures (`infra/models/basis/model.py`, `validate.option_value_bench`).
+**Status:** open - research; add-on IV stays off meanwhile.
+
+Over 2,100 consecutive same-contract changes (5 business days apart, 2019-2026) the models' option-value changes barely correlate with the observed changes (-0.42 UB .. +0.21 TN), so neither EWMA nor implied vol can be judged against it. UB's -0.42 looks systematic: a candidate is the TAIL (CF ~0.6) - a level move changes the measured fair-minus-market with the opposite sign to the model's response. **Options:** (1) a vol-responsive target - Treasury futures options' implied delivery-option value, or the P&L of a DV01-hedged basis position held to delivery; (2) decompose the observed change into level (beta to the futures move), carry and residual, and check UB's tail hypothesis; (3) a denser 15:00 / 15:30 cash source to cut snap noise (TRACE is paid - see memory).
+

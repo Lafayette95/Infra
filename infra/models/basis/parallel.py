@@ -77,13 +77,19 @@ def run_parallel(spec: BasisSpec, start, end, out_dir, *, every: int = 1, worker
             for f in as_completed(futs):
                 lab, n = f.result()
                 log(f"  {lab}: {n} contract-days")
-    return collect(out)
+    return collect(out, period)
 
 
-def collect(out_dir) -> dict[str, pd.DataFrame]:
-    """Every finished chunk in ``out_dir``, combined."""
+def collect(out_dir, period: str | None = None) -> dict[str, pd.DataFrame]:
+    """Every finished chunk in ``out_dir``, combined - only chunks of ``period`` ("M" /
+    "Y") when given: found 2026-10-03, killing a run's parent left its spawned workers
+    alive, and they wrote MONTH chunks into a folder later re-run in YEAR chunks, which
+    would double-count those days. (Kill the workers too - ``pkill -f multiprocessing``
+    - or use a fresh folder.)"""
     out = Path(out_dir)
     labs = sorted(p.name[: -len("_contracts.parquet")] for p in out.glob("*_contracts.parquet"))
+    if period is not None:
+        labs = [l for l in labs if len(l) == (4 if period == "Y" else 7)]
     if not labs:
         return {"contracts": pd.DataFrame(), "bonds": pd.DataFrame()}
     return {"contracts": pd.concat([pd.read_parquet(out / f"{l}_contracts.parquet") for l in labs], ignore_index=True),
