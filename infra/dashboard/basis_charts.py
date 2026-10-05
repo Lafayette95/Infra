@@ -45,6 +45,41 @@ def probability_figure(bonds: pd.DataFrame, theme: str = "light") -> go.Figure:
     return fig
 
 
+def net_basis_figure(bonds: pd.DataFrame, contracts: pd.DataFrame, theme: str = "light") -> go.Figure:
+    """Net basis over time (32nds), one line per bond that ever reaches ``MIN_PROB`` of
+    CTD probability (each day at its own delivery day), with the model's option value dotted:
+    the CTD's net basis ~ the option value in theory, so the gap is the futures' richness /
+    cheapness to the model."""
+    t = tokens(theme)
+    if bonds.empty or "net_basis" not in bonds.columns:
+        return empty_figure("No net basis stored for this contract", theme)
+    traded = bonds.dropna(subset=["net_basis"])  # expected new issues have no basis until they exist
+    keep = traded.groupby("cusip")["prob"].max()
+    keep = keep[keep >= MIN_PROB].index
+    b = traded[traded["cusip"].isin(keep)]
+    if b.empty:
+        return empty_figure("No deliverable with a net basis reached 2% CTD probability", theme)
+    labels = b.drop_duplicates("cusip").set_index("cusip").apply(lambda r: bond_label(r.name, r["coupon"], r["maturity"]), axis=1)
+    order = b.groupby("cusip")["prob"].mean().sort_values(ascending=False).index
+    colors = series_colors(theme)
+    fig = go.Figure()
+    for k, c in enumerate(order):
+        s = b[b["cusip"] == c].groupby("day")["net_basis"].first() * 32.0
+        fig.add_trace(go.Scatter(x=s.index, y=s.values, name=labels[c], mode="lines",
+                                 line=dict(width=1.5, color=colors[k % len(colors)]),
+                                 hovertemplate="%{y:.2f}/32<extra>" + labels[c] + "</extra>"))
+    if not contracts.empty and "option_value_model_32" in contracts.columns:
+        cc = contracts.sort_values("day")
+        fig.add_trace(go.Scatter(x=cc["day"], y=cc["option_value_model_32"], name="Model option value", mode="lines",
+                                 line=dict(color=t["ink"], width=1.5, dash="dot"),
+                                 hovertemplate="%{y:.2f}/32<extra>Model option value</extra>"))
+    fig.add_hline(y=0, line=dict(color=t["axis"], width=1))
+    fig = _style(fig, t, 340)
+    fig.update_layout(title="Net basis by bond (32nds), with the model's option value", showlegend=True,
+                      legend=dict(orientation="h", y=-0.18))
+    return fig
+
+
 QUALITY = COMPONENTS[:2]
 TIMING = COMPONENTS[2:]
 

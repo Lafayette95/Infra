@@ -42,6 +42,7 @@ def test_figures_and_table_render():
     sw = c.assign(delivery_kind=["first", "first", "last", "last"])
     assert basis_charts._switch_days(sw) == [sw["day"].iloc[2]]
     assert len(basis_charts.probability_figure(b).data) == 2
+    assert len(basis_charts.net_basis_figure(b, c).data) == 3  # two bonds + the model option value
     t = bond_table(b[b["day"] == b["day"].iloc[0]], pd.DataFrame())
     rows = t.children[1].children
     assert len(rows) == 2 and rows[0].children[0].children.endswith("(A)")  # most likely CTD first

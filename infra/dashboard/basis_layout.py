@@ -32,6 +32,7 @@ def build_layout() -> html.Div:
         html.Div(id="basis-table", className="table-wrap"),
         dcc.Loading(children=[
             dcc.Graph(id="basis-prob-chart", config={"displaylogo": False}),
+            dcc.Graph(id="basis-netbasis-chart", config={"displaylogo": False}),
             dcc.Graph(id="basis-option-chart", config={"displaylogo": False}),
             dcc.Graph(id="basis-timing-chart", config={"displaylogo": False}),
         ]),
