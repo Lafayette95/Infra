@@ -100,13 +100,16 @@ def as_of(df: pd.DataFrame, instant) -> pd.DataFrame:
 
 def calendar_rows(df: pd.DataFrame, observed: pd.Timestamp) -> pd.DataFrame:
     """Release-calendar rows (infra.processing.release_calendar.COLUMNS) for nominal coupon
-    auctions: at the exact close, known from the announcement day."""
+    auctions: at the exact close, known from the announcement day; stage ``new_issue`` /
+    ``reopening``."""
     nc = nominal_coupons(df)
     observed = pd.Timestamp(observed).normalize()
     return pd.DataFrame({
         "timestamp": nc["timestamp"].astype("datetime64[ms]"),
         "event": [f"US_TSY_AUCTION_{int(t)}Y" for t in nc["tenor_years"]],
-        "source": "fiscal_data", "stage": "", "time_source": "source",
+        "source": "fiscal_data",
+        "stage": ["reopening" if str(r).lower() == "yes" else "new_issue" for r in nc["reopening"]],
+        "time_source": "source",
         "known_from": nc["announcemt_date"].fillna(nc["auction_date"]).astype("datetime64[ms]"),
         "last_seen": pd.DatetimeIndex([observed] * len(nc)).astype("datetime64[ms]"),
     })

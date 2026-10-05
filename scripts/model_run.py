@@ -78,9 +78,13 @@ def _prepared(config: RunConfig, through: pd.Timestamp):
 
 def do_predict(config: RunConfig, prepared, through, root: Path) -> dict:
     params = store.read_params(config.name, root=root)
-    after = runs.predict_window_after(params, store.read_predictions(config.name, root=root))
+    meta = store.read_meta(config.name, root=root)
+    after = runs.predict_window_after(params, store.read_predictions(config.name, root=root),
+                                      last_through=meta.get("last_predict_through"))
     rows = runs.predict_rows(config, prepared, params, after, through)
     res = store.upsert_predictions(config.name, rows, root=root)
+    store.write_meta(config.name, {**store.read_meta(config.name, root=root),
+                                   "last_predict_through": str(pd.Timestamp(through).date())}, root=root)
     if res["changed"]:
         log.warning("%s: %d stored prediction row(s) changed on recompute (data revision, or a fit appended "
                     "after they were first predicted)", config.name, res["changed"])

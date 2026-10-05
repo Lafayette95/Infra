@@ -990,6 +990,79 @@ FOMC_MEETINGS: tuple[FOMCMeeting, ...] = (
     FOMCMeeting("2027-12-07", "2027-12-08", True),
 )
 
+
+@dataclass(frozen=True)
+class CentralBankMeeting:
+    """One policy DECISION of a central bank other than the Fed (the Fed: ``FOMC_MEETINGS``)."""
+    decision: str  # "YYYY-MM-DD", the day the decision is announced
+    published: str  # "YYYY-MM-DD", when this date was first published (point-in-time known_from)
+    scheduled: bool = True  # False = unscheduled (known only on the day)
+    time_local: str | None = None  # announcement time if it differs from the registry's (bank's zone)
+    note: str = ""
+
+
+def _cb(year_dates: dict[str, tuple[str, tuple[str, ...]]], time_by_date=lambda d: None):
+    """{year: (published, (MM-DD, ...))} -> meetings."""
+    return tuple(CentralBankMeeting(f"{y}-{md}", pub, True, time_by_date(f"{y}-{md}"))
+                 for y, (pub, mds) in year_dates.items() for md in mds)
+
+
+# ECB monetary policy decisions (day 2 of each 2-day meeting), verified 2026-10-05: each
+# year's dates from the ECB's "indicative calendars ... reserve maintenance periods" press
+# release (which lists the Governing Council's monetary policy meetings; ``published`` = that
+# release's date: pr160914 for 2017-18, 11 Jul 2018, 9 Aug 2019, 10 Jun 2020, 23 Jul 2021,
+# 18 Jul 2022 (pr220718), 15 Sep 2023 (pr230915), 19 Jul 2024 (pr240719_1), 24 Apr 2025
+# (pr250424), 30 Jun 2026 (pr260630)), cross-checked against the monetary policy meeting
+# ACCOUNTS ("Meeting of 21-22 July 2021" ...), the decision press releases (2019, 2022) and
+# the ECB's own Governing Council calendar (2026-27). Times: 13:45 CET up to the 9 Jun 2022
+# meeting, 14:15 from 21 Jul 2022 (ECB press release 27 Jun 2022); the registry carries 14:15.
+# Unscheduled: 18 Mar 2020 (PEPP, an evening Governing Council meeting - time not verified)
+# and 15 Jun 2022 (ad hoc meeting on fragmentation; no rate decision - kept as a policy event).
+ECB_MEETINGS: tuple[CentralBankMeeting, ...] = _cb({
+    "2018": ("2016-09-14", ("01-25", "03-08", "04-26", "06-14", "07-26", "09-13", "10-25", "12-13")),
+    "2019": ("2018-07-11", ("01-24", "03-07", "04-10", "06-06", "07-25", "09-12", "10-24", "12-12")),
+    "2020": ("2019-08-09", ("01-23", "03-12", "04-30", "06-04", "07-16", "09-10", "10-29", "12-10")),
+    "2021": ("2020-06-10", ("01-21", "03-11", "04-22", "06-10", "07-22", "09-09", "10-28", "12-16")),
+    "2022": ("2021-07-23", ("02-03", "03-10", "04-14", "06-09", "07-21", "09-08", "10-27", "12-15")),
+    "2023": ("2022-07-18", ("02-02", "03-16", "05-04", "06-15", "07-27", "09-14", "10-26", "12-14")),
+    "2024": ("2023-09-15", ("01-25", "03-07", "04-11", "06-06", "07-18", "09-12", "10-17", "12-12")),
+    "2025": ("2024-07-19", ("01-30", "03-06", "04-17", "06-05", "07-24", "09-11", "10-30", "12-18")),
+    "2026": ("2025-04-24", ("02-05", "03-19", "04-30", "06-11", "07-23", "09-10", "10-29", "12-17")),
+    "2027": ("2026-06-30", ("02-04", "03-18", "04-29", "06-10", "07-22", "09-09", "10-28", "12-16")),
+}, time_by_date=lambda d: "13:45" if d <= "2022-06-09" else None) + (
+    CentralBankMeeting("2020-03-18", "2020-03-18", False, None, "PEPP announced after an evening meeting"),
+    CentralBankMeeting("2022-06-15", "2022-06-15", False, None, "ad hoc meeting on fragmentation, no rate change"),
+)
+
+# Bank of England MPC announcements (12:00 UK), verified 2026-10-05 against the Bank's
+# annual notices "Monetary Policy Committee dates for <year>" (``published`` = the notice's
+# date: 19 Oct 2017 for 2018 - the updated 2018 notice that confirmed 1 November -, 13 Sep
+# 2018, 19 Sep 2019, 17 Sep 2020, 23 Sep 2021, 22 Sep 2022, 21 Sep 2023, 19 Sep 2024, 18 Sep
+# 2025; 2027 from the "upcoming MPC dates" page, last updated 21 Sep 2026 - taken as known
+# from then). September 2022 moved from the 15th to the 22nd for the Queen's death (notice
+# of 9 Sep 2022, "announced at 12pm on 22 September"). Unscheduled: 11 Mar 2020 (special
+# meeting ending 10 Mar, cut to 0.25%, announced with the Bank's Covid package) and 19 Mar
+# 2020 (special meeting, cut to 0.1%) - times not verified.
+BOE_MEETINGS: tuple[CentralBankMeeting, ...] = _cb({
+    "2018": ("2017-10-19", ("02-08", "03-22", "05-10", "06-21", "08-02", "09-13", "11-01", "12-20")),
+    "2019": ("2018-09-13", ("02-07", "03-21", "05-02", "06-20", "08-01", "09-19", "11-07", "12-19")),
+    "2020": ("2019-09-19", ("01-30", "03-26", "05-07", "06-18", "08-06", "09-17", "11-05", "12-17")),
+    "2021": ("2020-09-17", ("02-04", "03-18", "05-06", "06-24", "08-05", "09-23", "11-04", "12-16")),
+    "2022": ("2021-09-23", ("02-03", "03-17", "05-05", "06-16", "08-04", "11-03", "12-15")),
+    "2023": ("2022-09-22", ("02-02", "03-23", "05-11", "06-22", "08-03", "09-21", "11-02", "12-14")),
+    "2024": ("2023-09-21", ("02-01", "03-21", "05-09", "06-20", "08-01", "09-19", "11-07", "12-19")),
+    "2025": ("2024-09-19", ("02-06", "03-20", "05-08", "06-19", "08-07", "09-18", "11-06", "12-18")),
+    "2026": ("2025-09-18", ("02-05", "03-19", "04-30", "06-18", "07-30", "09-17", "11-05", "12-17")),
+    "2027": ("2026-09-21", ("02-04", "03-18", "04-29", "06-17", "07-29", "09-16", "11-04", "12-16")),
+}) + (
+    CentralBankMeeting("2022-09-22", "2022-09-09", True, None, "moved from 15 Sep (national mourning)"),
+    CentralBankMeeting("2020-03-11", "2020-03-11", False, None, "special meeting ending 10 Mar: cut to 0.25%"),
+    CentralBankMeeting("2020-03-19", "2020-03-19", False, None, "special meeting: cut to 0.1%"),
+)
+CENTRAL_BANK_MEETINGS: dict[str, tuple[CentralBankMeeting, ...]] = {
+    "EA_ECB_DECISION": ECB_MEETINGS, "GB_BOE_DECISION": BOE_MEETINGS,
+}
+
 # ------------------------------------------------------------------ macro releases
 # The nowcast's release universe (infra/models/nowcast), transcribed 2026-09-30 from the
 # user's "Data Releases" table (OneNote, a photo read at full resolution - every cell

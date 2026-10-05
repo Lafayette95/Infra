@@ -111,6 +111,7 @@ specification). Use case (a) of 0a, run live.
     | Kalman regression | MLE of (q, r) on the window, warm-started from the previous fit's (q, r): 55 vs 90 likelihood evaluations, same result to 1e-5 | STATEFUL: filters forward from the fit's final state; the daily job re-filters the few rows since the fit (deterministic - no daily state stored) | optimiser start only (tolerance-level) |
     | PCA (plain / weighted / missing-data) | window only | stateless projection | sign alignment only (score signs, never residuals) |
     | HMM regimes, regime PCA | EM, warm-started from the previous fit (`RegimeSpec.warm_start`) | STATEFUL: forward filter from the fit's final filtered probability; re-filtered daily from the fit, like Kalman | PATH-DEPENDENT (below) |
+    | Event study | the tests on events ENDED by the fit date | stateless: each new event's window P&L and the fitted signal; a window still open when stored is recomputed by the next predict (`last_predict_through`) | independent |
     | CTA | its own `walk_forward` (recursive state) | - | not on this machinery yet |
 
 *   **Markov / HMM state, the two kinds:**
@@ -484,3 +485,10 @@ specification). Use case (a) of 0a, run live.
     by sub-period, eigenvector stability, parallel analysis, bootstrap loadings,
     coefficient stability), input-agnostic, serving both use cases of 0a. Read that file
     before touching it.
+
+## 12. Event studies
+*   **Its own sub-project, `infra/models/event_study/`, with its own `CLAUDE.md`**: windows
+    defined by an event code (date+time events from the central registry, time-only events,
+    day and grid-step lags, a trading grid), window P&L from a pluggable source, per-instrument
+    tests against placebo windows, families of codes with false-discovery control; a run kind
+    on the 0b operating model. Read that file before touching it.

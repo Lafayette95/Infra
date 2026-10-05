@@ -34,7 +34,7 @@ from infra.models.walk_forward import WalkForwardResult, refit_dates, walk_forwa
 
 log = logging.getLogger(__name__)
 
-KINDS = ("regression", "pca", "regime_pca")
+KINDS = ("regression", "pca", "regime_pca", "event_study")
 
 
 def _tuplify(x):
@@ -50,9 +50,10 @@ def _tuplify(x):
 class RunConfig:
     """Everything that defines a run - stored as the run's ``meta.json``."""
     name: str
-    kind: str                                   # regression | pca | regime_pca
+    kind: str                                   # regression | pca | regime_pca | event_study
     spec: str | None
-    series: tuple[str, ...]                     # regression: y first; pca / regime_pca: the K
+    series: tuple[str, ...]                     # regression: y first; pca / regime_pca: the K;
+                                                # event_study: the instruments
     start: str                                  # first refit date
     history_start: str                          # first day read (prep always starts here)
     refit: str | int = "W-FRI"
@@ -70,8 +71,8 @@ class RunConfig:
     @classmethod
     def from_json(cls, d: dict) -> "RunConfig":
         d = dict(d)
-        d.pop("failures", None)
-        d.pop("last_rebuild", None)
+        for k in ("failures", "last_rebuild", "last_predict_through"):
+            d.pop(k, None)
         d["series"], d["regime_series"] = tuple(d["series"]), tuple(d.get("regime_series", ()))
         d["overrides"] = _tuplify(d.get("overrides", {}))
         d["regime_overrides"] = _tuplify(d.get("regime_overrides", {}))
@@ -84,6 +85,9 @@ class RunConfig:
 
     def model_kwargs(self) -> dict:
         kw = dict(self.overrides)
+        if self.kind == "event_study":
+            kw["instruments"] = tuple(self.series)
+            return kw
         if self.kind == "regression":
             kw.update(y=self.series[0], x=tuple(self.series[1:]))
         else:
@@ -96,16 +100,22 @@ class RunConfig:
         return kw
 
     def make_model(self):
-        maker = {"regression": make_regression, "pca": make_pca, "regime_pca": make_regime_pca}[self.kind]
+        from infra.models.event_study.model import make_event_study
+        maker = {"regression": make_regression, "pca": make_pca, "regime_pca": make_regime_pca,
+                 "event_study": make_event_study}[self.kind]
         return maker(self.spec, **self.model_kwargs())
 
     def from_params(self, params: pd.DataFrame):
-        cls = {"regression": Regression, "pca": PCA, "regime_pca": RegimePCA}[self.kind]
+        from infra.models.event_study.model import EventStudy
+        cls = {"regression": Regression, "pca": PCA, "regime_pca": RegimePCA, "event_study": EventStudy}[self.kind]
         return cls.from_params(params, self.spec, **self.model_kwargs())
 
 
 def read_inputs(config: RunConfig, through) -> pd.DataFrame:
-    """The run's input panel from disk, ``history_start`` .. ``through``."""
+    """The run's input panel from disk, ``history_start`` .. ``through`` (an event study:
+    the grid step P&L of its instruments from its source, on its code's cycle)."""
+    if config.kind == "event_study":
+        return config.make_model().read_panel(config.history_start, through)
     from infra.pipeline.series_panel import read_panel
     return read_panel(config.all_series, config.history_start, through)
 
@@ -193,7 +203,7 @@ def expected_fit(fits: list[pd.Timestamp], index: pd.DatetimeIndex) -> pd.Series
     return pd.Series([f[p] if p >= 0 else pd.NaT for p in pos], index=index)
 
 
-def predict_window_after(params: pd.DataFrame, predictions: pd.DataFrame):
+def predict_window_after(params: pd.DataFrame, predictions: pd.DataFrame, last_through=None):
     """Where the daily predict starts (rows AFTER this are recomputed): the earliest of
     * the last fit - the current segment is always redone, so a revised day shows up as a
       changed row;
@@ -202,7 +212,10 @@ def predict_window_after(params: pd.DataFrame, predictions: pd.DataFrame):
       from that row's correct fit on: a run catching up several days appends several fits
       after predicting those days with the old one (found 2026-10-03: catching up from 09-08
       to 09-18 left the 09-11 segment on the 09-04 fit when only the last new fit's rows were
-      redone).
+      redone);
+    * with ``last_through`` (the previous predict's cut-off) and an ``end`` column (event
+      studies): the first stored row whose window ended after that cut-off - it was still
+      open (P&L incomplete) when stored.
     None = from the first fit (nothing stored yet)."""
     fits = fit_dates(params)
     if not fits or predictions is None or predictions.empty:
@@ -213,6 +226,12 @@ def predict_window_after(params: pd.DataFrame, predictions: pd.DataFrame):
         wrong = exp.notna() & (pd.to_datetime(predictions["fit_as_of"]) != exp)
         if wrong.any():
             candidates.append(exp[wrong].min())
+    if last_through is not None and "end" in predictions.columns:
+        cut = pd.Timestamp(last_through)
+        cut = cut + pd.Timedelta(days=1) if cut == cut.normalize() else cut
+        still_open = pd.to_datetime(predictions["end"]) >= cut
+        if still_open.any():
+            candidates.append(predictions.index[still_open.to_numpy()].min() - pd.Timedelta(microseconds=1))
     return min(candidates)
 
 

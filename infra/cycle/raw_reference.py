@@ -57,7 +57,8 @@ def backfill_daily_release_calendar(start, end, *, paths: CyclePaths | None = No
         n = prc.refresh_release_calendar(root=paths.release_calendar_dir, calendar_root=paths.econ_calendar_dir,
                                          fetch=FRED_DATES_FETCH, nar_fetch=NAR_FETCH,
                                          treasury_fetch=TREASURY_SCHEDULE_FETCH, with_fred=have_key,
-                                         errors=errors)
+                                         auctions_root=paths.tsy_auctions_dir, contracts_file=paths.contracts_file,
+                                         daily_root=paths.daily_futures_dir, errors=errors)
     except Exception as exc:
         n, errors["calendar"] = 0, f"{type(exc).__name__}: {exc}"
     if not have_key:

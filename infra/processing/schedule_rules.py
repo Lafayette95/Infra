@@ -19,16 +19,21 @@ import re
 import numpy as np
 import pandas as pd
 from pandas.tseries.holiday import (AbstractHolidayCalendar, GoodFriday, Holiday, USFederalHolidayCalendar,
-                                    nearest_workday)
+                                    nearest_workday, sunday_to_monday)
 
 _WEEKDAYS = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
 
 
 class _MarketCalendar(AbstractHolidayCalendar):
     """NYSE-style: federal holidays minus Columbus and Veterans Day, plus Good Friday (and
-    Juneteenth from 2022, the year the exchange first closed for it)."""
+    Juneteenth from 2022, the year the exchange first closed for it). New Year's Day on a
+    SATURDAY is not observed (markets open on Friday 31 December - 2010, 2021; pandas'
+    federal rule observes it on the Friday): found 2026-10-05 when CME's Dec-2021 Treasury
+    futures last trading days (stored expiries) disagreed with the rule by one day."""
     rules = [r for r in USFederalHolidayCalendar.rules
-             if r.name not in ("Columbus Day", "Veterans Day", "Juneteenth National Independence Day")] + [
+             if r.name not in ("Columbus Day", "Veterans Day", "Juneteenth National Independence Day",
+                               "New Year's Day")] + [
+        Holiday("New Year's Day", month=1, day=1, observance=sunday_to_monday),
         GoodFriday, Holiday("Juneteenth", month=6, day=19, start_date="2022-01-01", observance=nearest_workday)]
 
 

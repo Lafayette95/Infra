@@ -2,9 +2,10 @@
 
 Two levels, because one release carries several numbers:
 
-* ``EconEvent`` - a scheduled publication: agency, country, kind (``release`` /
-  ``auction`` / ``policy``), frequency, usual time (New York wall clock), estimate
-  stages, schedule rule, and the identifiers that find it elsewhere (FRED release id).
+* ``EconEvent`` - a scheduled event: agency, country, kind (``release`` / ``auction`` /
+  ``policy`` / ``treasury`` (security lifecycle) / ``futures`` (contract calendar)),
+  frequency, usual LOCAL time and its IANA zone, estimate stages, schedule rule, and the
+  identifiers that find it elsewhere (FRED release id).
 * ``EventSeries`` - one number inside an event: Bloomberg ticker, FRED series id, units
   as published, seasonal adjustment.
 
@@ -14,10 +15,21 @@ series stays in that model's own config (``infra.config.MACRO_RELEASES`` for the
 nowcast: transform, sign, categories). ``tests/test_event_registry.py`` keeps the three
 consistent (every nowcast release is a registry series with the same FRED id).
 
-**Usual times** (``time_et``, the New York wall-clock time of the release; tz-aware
-conversion happens at the pipeline layer, never here) are MEASURED, not remembered:
-the modal time of each event's rows in the harvested MarketWatch calendar, 2015 onward
-(2026-10-01; share of rows at that time in the comment). ``None`` = not yet verified.
+**Usual times** (``time_local`` in the event's own ``timezone``: the venue's wall clock,
+the only form that stays right across DST - root CLAUDE.md 7) are MEASURED or VERIFIED,
+not remembered: for US releases the modal time of each event's rows in the harvested
+MarketWatch calendar, 2015 onward (2026-10-01; share of rows at that time in the comment);
+for the others the source named in the entry. ``None`` = not verified, or a day-level event
+(an issue date, a futures delivery day). They are converted to UTC instants at the FIRST
+step that reads them (``infra.trading_calendar.snap_instants``, in
+``infra.processing.release_calendar``); only UTC is ever stored or passed on.
+
+**WHEN** an event happens is data (the release-calendar store), never here: dates come from
+the sources (FRED, the economic calendar, Treasury), from config lists verified against
+the official calendars (``infra.config.FOMC_MEETINGS``, ``ECB_MEETINGS``, ``BOE_MEETINGS``)
+or are DERIVED from stored data (Treasury lifecycle from the auctions store, futures
+calendars from the contracts table and CME's delivery rules) - see
+``infra.pipeline.release_calendar.derived_schedules``.
 """
 from __future__ import annotations
 
@@ -30,9 +42,9 @@ class EconEvent:
     name: str
     country: str  # ISO-2
     agency: str
-    kind: str  # "release" | "auction" | "policy"
+    kind: str  # "release" | "auction" | "policy" | "treasury" | "futures"
     frequency: str  # "W" | "M" | "Q" | "8/yr" | "irregular"
-    time_et: str | None  # "HH:MM", New York wall clock; None = not verified
+    time_local: str | None  # "HH:MM" wall clock in ``timezone``; None = not verified / day-level
     stages: tuple[str, ...] = ("first",)  # scheduled estimates in publication order
     # Where FUTURE dates come from: "fred_release" (FRED's release-dates API, ~3 months),
     # "treasury_announcement" (auctions: announced ~1 week ahead), "rule" (``rule`` below,
@@ -48,6 +60,7 @@ class EconEvent:
     rule: str | None = None
     rule_stage: str = ""
     rule_evidence: str = ""
+    timezone: str = "America/New_York"  # IANA zone of ``time_local``
 
 
 MIN_RULE_HIT = 0.90  # a rule is only kept (and projected) if it matched at least this often
@@ -88,6 +101,16 @@ class EventSeries:
     def available(self) -> bool:
         return self.source is not None
 
+
+# Futures roots with a contract calendar here: (root, country, exchange, exchange time zone).
+# Kept here (not read from infra.config, which imports this module).
+_CME_TREASURY_ROOTS = ("ZT", "ZF", "ZN", "TN", "ZB", "UB")
+_FUTURES_ROOTS = (
+    *((r, "US", "CME", "America/Chicago") for r in ("SR3", "SR1", "ZQ", *_CME_TREASURY_ROOTS)),
+    ("ESR", "EA", "CME", "America/Chicago"),
+    ("SO3", "GB", "ICE Futures Europe", "Europe/London"), ("R", "GB", "ICE Futures Europe", "Europe/London"),
+    *((r, "DE", "Eurex", "Europe/Berlin") for r in ("FGBL", "FGBM", "FGBS", "FBTP")),
+)
 
 _E = EconEvent
 EVENTS: dict[str, EconEvent] = {e.id: e for e in (
@@ -150,6 +173,27 @@ EVENTS: dict[str, EconEvent] = {e.id: e for e in (
     # ---------------------------------------------------------------- US policy
     _E("US_FOMC_DECISION", "FOMC statement", "US", "Federal Reserve", "policy", "8/yr", "14:00",
        schedule="agency_schedule", note="dates: infra.config.FOMC_MEETINGS (verified against the Fed's calendar)"),
+    # ---------------------------------------------------------------- other central banks
+    # Dates: infra.config.ECB_MEETINGS / BOE_MEETINGS, verified 2026-10-05 against each
+    # bank's own published calendars (sources there). The time here is the CURRENT one;
+    # a meeting with a different time carries its own (ECB before 21 Jul 2022: 13:45).
+    _E("EA_ECB_DECISION", "ECB monetary policy decisions", "EA", "European Central Bank", "policy", "8/yr",
+       "14:15", schedule="agency_schedule", timezone="Europe/Berlin",
+       note="14:15 CET from 21 Jul 2022, 13:45 before (ECB press release 27 Jun 2022, 'New times for "
+            "ECB's monetary policy decisions and press conference'); decided on day 2 of a 2-day meeting"),
+    _E("GB_BOE_DECISION", "Bank of England MPC announcement", "GB", "Bank of England", "policy", "8/yr",
+       "12:00", schedule="agency_schedule", timezone="Europe/London",
+       note="12:00 UK (e.g. BoE notice 9 Sep 2022: 'announced at 12pm on 22 September')"),
+    # ---------------------------------------------------------------- US Treasury debt management
+    # Verified 2026-10-05: financing estimates at 3:00 PM on the Monday, the refunding
+    # policy statement at 8:30 AM the following Wednesday (home.treasury.gov, "most recent
+    # quarterly refunding documents"). Dated from the auctions store: the refunding
+    # auctions' (Feb/May/Aug/Nov 3y/10y/30y) announcement date IS the statement's date
+    # (every quarter 2023-2026, e.g. 2025-07-30 for August 2025).
+    _E("US_TSY_REFUNDING", "Treasury Quarterly Refunding statement", "US", "US Treasury", "policy", "Q", "08:30",
+       schedule="derived", note="derived: announcement date of the refunding auctions"),
+    _E("US_TSY_BORROWING_ESTIMATES", "Treasury marketable borrowing estimates", "US", "US Treasury", "policy", "Q",
+       "15:00", schedule="derived", note="derived: the Monday two days before the refunding statement"),
     # ---------------------------------------------------------------- US Treasury auctions
     # Nominal coupons only for now (user, 2026-10-01: 2y-30y notes and bonds, no TIPS/FRNs/
     # bills). Time = close of competitive bidding, verified 2026-10-01 on TreasuryDirect's
@@ -160,6 +204,36 @@ EVENTS: dict[str, EconEvent] = {e.id: e for e in (
          note="reopenings carry their REMAINING term (e.g. '9-Year 10-Month' = a 10y reopening): match on "
               "the original security term")
       for t in (2, 3, 5, 7, 10, 20, 30)),
+    # ---------------------------------------------------------------- US Treasury lifecycle
+    # Day-level events (no time), derived from the auctions store: each auction's issue
+    # (settlement) date - stage "new_issue" / "reopening" - and the day a new issue becomes
+    # on the run (its issue date: the project's default "issue" convention, CLAUDE.md 18;
+    # the market's "auction" convention is the new-issue auction itself).
+    *(_E(f"US_TSY_ISSUE_{t}Y", f"US Treasury {t}-year issue (settlement)", "US", "US Treasury", "treasury", "M",
+         None, schedule="derived", note="derived: auctions store issue_date; known from the announcement")
+      for t in (2, 3, 5, 7, 10, 20, 30)),
+    *(_E(f"US_TSY_OTR_ROLL_{t}Y", f"US Treasury {t}-year on-the-run roll", "US", "US Treasury", "treasury",
+         "irregular", None, schedule="derived",
+         note="derived: issue date of each new original issue; known from its announcement")
+      for t in (2, 3, 5, 7, 10, 20, 30)),
+    # ---------------------------------------------------------------- futures contract calendars
+    # Day-level (no time), one occurrence per contract (the release-calendar row's ``stage``
+    # holds the contract). Derived: last trading day = the contract's expiry in the contracts
+    # table (Databento definitions) for every root; the delivery days of the CME Treasury
+    # roots from CME's rules (infra.analytics.futures_basis.delivery_window); the v.0
+    # (volume) roll = the first day ``<root>.v.0`` maps to a new contract.
+    *(_E(f"FUT_{r}_LAST_TRADE", f"{r} futures last trading day", c, x, "futures", "irregular", None,
+         schedule="derived", timezone=tz, note="derived: contracts table expiry; known from listing")
+      for r, c, x, tz in _FUTURES_ROOTS),
+    *(_E(f"FUT_{r}_{k}", f"{r} futures {k.lower().replace('_', ' ')} day", "US", "CME", "futures", "Q", None,
+         schedule="derived", timezone="America/Chicago",
+         note="derived: CME delivery rules (first notice = the business day before the first delivery day)")
+      for r in _CME_TREASURY_ROOTS for k in ("FIRST_NOTICE", "FIRST_DELIVERY", "LAST_DELIVERY")),
+    *(_E(f"FUT_{r}_ROLL_V0", f"{r} futures volume roll (v.0 changes contract)", "US", "CME", "futures", "Q",
+         None, schedule="derived", timezone="America/Chicago",
+         note="derived: stored daily relative series; the ranking uses prior days' volume, so it is known "
+              "before the day")
+      for r in _CME_TREASURY_ROOTS),
 )}
 
 # Validated date rules (2026-10-01, against the harvested MarketWatch CONFIRMED release

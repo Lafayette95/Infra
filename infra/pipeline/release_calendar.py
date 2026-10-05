@@ -5,7 +5,8 @@ Sources: FRED's release dates (``fetch_fred_schedules``, every event with a
 ahead, no times); the harvested economic calendar (``calendar_schedules``, local: dates
 AND times, stages where named - the only date source for ISM, the PMIs, MNI, the
 Conference Board, NFIB, NAR); Treasury auctions (infra.pipeline.tsy_auctions, exact
-close times). Agency schedules come next.
+close times); and DERIVED dates (``derived_schedules``: central-bank decisions from verified
+config lists, the Treasury lifecycle from the auctions store, futures contract calendars).
 
 Store ``~/Database/RawData/ReleaseCalendar`` (flat, hive year/quarter on the release
 instant). No coverage manifest: a fetch is ONE observation of the whole schedule, folded
@@ -117,6 +118,74 @@ def treasury_schedule(*, observed=None, fetch=None) -> pd.DataFrame:
     return out
 
 
+def derived_schedules(*, observed=None, auctions_root: Path | None = None, contracts_file: Path | None = None,
+                      daily_root: Path | None = None, roll_start="2015-01-01", with_rolls: bool = True,
+                      errors: dict | None = None) -> pd.DataFrame:
+    """LOCAL (disk + config, no network): the registry events no publisher dates for us
+    (``infra.processing.event_dates``) - FOMC / ECB / BoE decisions from the verified config
+    lists, the Treasury lifecycle and refunding dates from the auctions store, the futures
+    contract calendars from the contracts table and CME's rules, and the v.0 roll days from
+    the stored daily relative series. Each part fails alone (``errors``)."""
+    from infra.config import (CENTRAL_BANK_MEETINGS, DAILY_FUTURES_DIR, FOMC_MEETINGS, FUTURES_CONTRACTS_FILE,
+                              TSY_AUCTIONS_DIR)
+    from infra.processing import event_dates as ed
+
+    errors = {} if errors is None else errors
+    observed = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize() if observed is None else pd.Timestamp(observed)
+    frames = []
+
+    def part(name, build):
+        try:
+            frames.append(build())
+        except Exception as exc:  # one derivation never blocks the others
+            errors[name] = f"{type(exc).__name__}: {exc}"
+            log.warning("derived event dates %s failed: %s", name, exc)
+
+    part("fomc", lambda: ed.fomc_rows(EVENTS["US_FOMC_DECISION"], FOMC_MEETINGS, observed))
+    for event_id, meetings in CENTRAL_BANK_MEETINGS.items():
+        part(event_id, lambda e=event_id, m=meetings: ed.central_bank_rows(EVENTS[e], m, observed))
+
+    def treasury():
+        from infra.pipeline.tsy_auctions import read_auctions
+        from infra.processing.tsy_auctions import nominal_coupons
+        auctions = read_auctions(root=auctions_root or TSY_AUCTIONS_DIR)
+        return ed.treasury_rows(nominal_coupons(auctions) if len(auctions) else auctions, EVENTS, observed)
+    part("treasury", treasury)
+
+    def futures():
+        from infra.processing.schedule_rules import business_days
+        f = contracts_file or FUTURES_CONTRACTS_FILE
+        if not Path(f).exists():
+            return rc.empty()
+        contracts = pd.read_parquet(f)
+        rows, check = ed.futures_rows(contracts, EVENTS, business_days("2000-01-01", "2045-12-31", "market"),
+                                         observed)
+        if len(check) and not check["match"].all():
+            bad = check[~check["match"]]
+            errors["futures_rule_mismatch"] = (f"{len(bad)} CME Treasury contract(s) whose stored expiry differs "
+                                               f"from CME's last-trading rule: "
+                                               + ", ".join(f"{r.ticker} {r.expiry.date()}" for r in bad.head(5).itertuples()))
+        return rows
+    part("futures", futures)
+
+    if with_rolls:
+        def rolls():
+            from infra.relative.symbology import parse_relative
+            from infra.pipeline.relative_daily import load_relative_daily
+            roots = [e.id.split("_")[1] for e in EVENTS.values() if e.id.endswith("_ROLL_V0")]
+            kw = {"fetch_missing": False}
+            if daily_root is not None:
+                kw["daily_root"] = daily_root
+            if contracts_file is not None:
+                kw["contracts_file"] = contracts_file
+            rel = load_relative_daily([parse_relative(f"{r}.v.0") for r in roots], roll_start,
+                                      observed + pd.Timedelta(days=1), **kw)
+            return ed.roll_rows(rel, EVENTS, observed)
+        part("rolls", rolls)
+    frames = [f for f in frames if f is not None and not f.empty]
+    return pd.concat(frames, ignore_index=True) if frames else rc.empty()
+
+
 def validate_rules(events: dict[str, EconEvent] = EVENTS, *, since: int = 2018, root: Path = RELEASE_CALENDAR_DIR):
     """Every registry rule re-scored against the release days the economic calendar
     OBSERVED (its stage only): ``event, rule, n, hit`` over years >= ``since``."""
@@ -195,7 +264,9 @@ def store_observation(observed_rows: pd.DataFrame, *, root: Path = RELEASE_CALEN
 def refresh_release_calendar(*, root: Path = RELEASE_CALENDAR_DIR, observed=None, fetch=None,
                              with_calendar: bool = True, calendar_root=None, with_rules: bool = True,
                              with_agencies: bool = True, with_fred: bool = True, nar_fetch=None,
-                             treasury_fetch=None, errors: dict | None = None) -> int:
+                             treasury_fetch=None, with_derived: bool = True, auctions_root: Path | None = None,
+                             contracts_file: Path | None = None, daily_root: Path | None = None,
+                             errors: dict | None = None) -> int:
     """Parent: observe every source's schedule now (FRED's release dates; the harvested
     economic calendar, local; the validated rules' projections) and fold it in."""
     errors = {} if errors is None else errors
@@ -226,6 +297,12 @@ def refresh_release_calendar(*, root: Path = RELEASE_CALENDAR_DIR, observed=None
         except Exception as exc:
             errors["treasury_schedule"] = f"{type(exc).__name__}: {exc}"
             log.warning("Treasury tentative auction schedule failed: %s", exc)
+    if with_derived:
+        derived_errors: dict = {}
+        rows = pd.concat([rows, derived_schedules(observed=observed, auctions_root=auctions_root,
+                                                  contracts_file=contracts_file, daily_root=daily_root,
+                                                  errors=derived_errors)], ignore_index=True)
+        errors.update({f"derived:{k}": v for k, v in derived_errors.items()})
     n = store_observation(rows, root=root)
     log.info("release calendar: %d rows observed, %d stored", len(rows), n)
     return n

@@ -42,9 +42,9 @@ def test_fetch_store_read(tmp_path):
     dates = {50: pd.DatetimeIndex(["2026-09-04", "2026-10-02", "2026-11-06"])}
     fetch = lambda rid: dates.get(rid, pd.DatetimeIndex([]))  # noqa: E731
     prc.refresh_release_calendar(root=tmp_path, observed=D("2026-10-01"), fetch=fetch, with_calendar=False,
-                                 with_rules=False, with_agencies=False)
+                                 with_rules=False, with_agencies=False, with_derived=False)
     prc.refresh_release_calendar(root=tmp_path, observed=D("2026-10-02"), fetch=fetch, with_calendar=False,
-                                 with_rules=False, with_agencies=False)
+                                 with_rules=False, with_agencies=False, with_derived=False)
     cal = prc.read_release_calendar(root=tmp_path, events=["US_EMPLOYMENT_SITUATION"])
     assert len(cal) == 3 and (cal["last_seen"] == D("2026-10-02")).all()
     # as of Sep 5 only Sep 4 is known: Oct/Nov were first seen on Oct 1 (no look-ahead)

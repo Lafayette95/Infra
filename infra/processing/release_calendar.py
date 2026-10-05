@@ -3,11 +3,15 @@
 One row per (event, release instant, source):
 
 * ``timestamp`` - the release instant, tz-naive UTC (CLAUDE.md 7): the release DAY from
-  the source, at the event's usual New York time (``EconEvent.time_et``) unless the source
-  gives its own time; converted once, by ``infra.trading_calendar.snap_instants``;
+  the source, at the event's usual LOCAL time in its own zone (``EconEvent.time_local`` /
+  ``timezone``) unless the source gives its own time; converted once, by
+  ``infra.trading_calendar.snap_instants``. A day-level event (no time) sits at 00:00 in its
+  zone with ``time_source="unknown"``;
 * ``event`` - ``infra.reference.events`` id; ``source`` - where the date came from;
-* ``stage`` - the estimate stage when the source says it (``flash``, ``final``,
-  ``preliminary``, ``second`` ...), "" otherwise;
+* ``stage`` - the occurrence's QUALIFIER: the estimate stage of a release (``flash``,
+  ``final``, ``preliminary``, ``second`` ...), ``new_issue`` / ``reopening`` for Treasury
+  auctions and issues, the contract (``ZNZ6``) for a futures-calendar event,
+  ``unscheduled`` for an unscheduled central-bank decision; "" otherwise;
 * ``time_source`` - ``"registry"`` (the usual time), ``"source"`` (the source's own) or
   ``"unknown"``;
 * ``known_from`` - the first day this release was KNOWN to be scheduled then. A date
@@ -39,19 +43,43 @@ def empty() -> pd.DataFrame:
 def schedule_rows(event, days: pd.DatetimeIndex, *, source: str, observed: pd.Timestamp) -> pd.DataFrame:
     """Rows for ``event`` on ``days`` as observed on day ``observed``: a day already past
     is known from itself, a future one from ``observed``. Events with no verified time
-    (``time_et`` None) sit at 00:00 New York with ``time_source="unknown"``."""
+    (``time_local`` None) sit at 00:00 in their zone with ``time_source="unknown"``."""
     days = pd.DatetimeIndex(days).normalize()
     if days.empty:
         return empty()
-    time_et = event.time_et or "00:00"
-    instants = snap_instants(days, time_et, NEW_YORK)
+    time_local = event.time_local or "00:00"
+    instants = snap_instants(days, time_local, event.timezone)
     observed = pd.Timestamp(observed).normalize()
     return pd.DataFrame({
         "timestamp": instants.astype("datetime64[ms]"),
         "event": event.id, "source": source, "stage": "",
-        "time_source": "registry" if event.time_et else "unknown",
+        "time_source": "registry" if event.time_local else "unknown",
         "known_from": pd.DatetimeIndex([min(d, observed) for d in days]).astype("datetime64[ms]"),
         "last_seen": pd.DatetimeIndex([observed] * len(days)).astype("datetime64[ms]"),
+    })
+
+
+def event_rows(event, days, *, source: str, known_from, observed, stage="", times=None) -> pd.DataFrame:
+    """Rows for ``event`` on ``days`` with explicit ``known_from`` (one per day, or one for
+    all) and ``stage`` (one per day, or one for all). ``times``: a per-day local time
+    overriding the registry's (None entries = the registry's), in the event's zone. The
+    local -> UTC conversion happens HERE, once (root CLAUDE.md 7)."""
+    days = pd.DatetimeIndex(pd.to_datetime(days)).normalize()
+    if days.empty:
+        return empty()
+    n = len(days)
+    times = [None] * n if times is None else list(times)
+    local = [t or event.time_local for t in times]
+    instants = pd.DatetimeIndex([snap_instants([d], t or "00:00", event.timezone)[0] for d, t in zip(days, local)])
+    kf = pd.DatetimeIndex(pd.to_datetime(known_from if pd.api.types.is_list_like(known_from) else [known_from] * n))
+    observed = pd.Timestamp(observed).normalize()
+    return pd.DataFrame({
+        "timestamp": instants.astype("datetime64[ms]"),
+        "event": event.id, "source": source,
+        "stage": list(stage) if pd.api.types.is_list_like(stage) else [stage] * n,
+        "time_source": ["source" if t else ("registry" if l else "unknown") for t, l in zip(times, local)],
+        "known_from": kf.normalize().astype("datetime64[ms]"),
+        "last_seen": pd.DatetimeIndex([observed] * n).astype("datetime64[ms]"),
     })
 
 
@@ -79,13 +107,13 @@ def from_econ_calendar(rows: pd.DataFrame, patterns: dict[str, list[str]], event
         for r in mine.itertuples():
             t = ec.parse_time(r.time)
             day = pd.Timestamp(r.timestamp).normalize()
-            local = t or events[event_id].time_et or "00:00"
+            local = t or events[event_id].time_local or "00:00"
             instant = snap_instants([day], local, NEW_YORK)[0]
             capture = pd.Timestamp(r.capture).normalize()
             unconfirmed = day not in confirmed and pd.notna(frontier) and day < frontier - pd.Timedelta(days=1)
             out.append((instant, event_id, "marketwatch_unconfirmed" if unconfirmed else "marketwatch",
                         ec.stage_of(r.report),
-                        "source" if t else ("registry" if events[event_id].time_et else "unknown"),
+                        "source" if t else ("registry" if events[event_id].time_local else "unknown"),
                         min(day, capture), capture))
     if not out:
         return empty()

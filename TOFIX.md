@@ -974,3 +974,62 @@ Both MS modes hurt the bench (events: TN 0.050 -> 0.150; aging: UB 0.177 -> 0.39
 
 Over 2,100 consecutive same-contract changes (5 business days apart, 2019-2026) the models' option-value changes barely correlate with the observed changes (-0.42 UB .. +0.21 TN), so neither EWMA nor implied vol can be judged against it. UB's -0.42 looks systematic: a candidate is the TAIL (CF ~0.6) - a level move changes the measured fair-minus-market with the opposite sign to the model's response. **Options:** (1) a vol-responsive target - Treasury futures options' implied delivery-option value, or the P&L of a DV01-hedged basis position held to delivery; (2) decompose the observed change into level (beta to the futures move), carry and residual, and check UB's tail hypothesis; (3) a denser 15:00 / 15:30 cash source to cut snap noise (TRACE is paid - see memory).
 
+
+## Basis: delivery windows are counted on the FEDERAL calendar (Dec 2021 off by one day)
+
+**Found:** 2026-10-05, building the futures contract calendar events (root CLAUDE.md 17).
+**Where:** callers of `infra.analytics.futures_basis.delivery_window` that pass
+`infra.analytics.sofr_curve.business_days` (federal holidays + Good Friday), e.g. the basis
+models' inputs.
+**Status:** open (the basis sub-project's code; not changed here).
+
+**The issue:** CME counts delivery-window business days on its own (market) calendar. The
+federal calendar observes a SATURDAY New Year's Day on Friday 31 December, when markets are
+open (2021, 2010): with it, the Dec-2021 Treasury contracts' last trading days come out one
+day early (ZNZ1 rule 2021-12-20, CME/stored 2021-12-21; ZFZ1 2021-12-30 vs 2021-12-31) and
+the delivery window shifts with them. The event calendar now counts on
+`infra.processing.schedule_rules.business_days(..., "market")`, which matches every stored
+expiry (299 contracts). **Fix:** pass the market calendar to `delivery_window` in the basis
+inputs (or have `delivery_window` default to it); re-run the bench around Dec 2021.
+
+## Events: refunding / borrowing-estimate dates before 2016, and unscheduled-meeting times
+
+**Found:** 2026-10-05. **Where:** `infra/processing/event_dates.py`, `infra.config`.
+**Status:** open, low priority.
+
+**The issue:** `US_TSY_REFUNDING` / `US_TSY_BORROWING_ESTIMATES` are emitted from 2016 only:
+the Monday 15:00 / Wednesday 08:30 pattern is verified for 2016 and 2026, while the auctions
+store would date refunding statements back to 1979 (Wednesdays every quarter since 2000). The
+unscheduled central-bank decisions (ECB 18 Mar 2020 evening, BoE 11 and 19 Mar 2020, Fed 3 and
+15 Mar 2020) are day-level: their release times were not verified. **Options:** verify a few
+older refunding statements (home.treasury.gov press releases) and lower `REFUNDING_FROM`;
+add each unscheduled meeting's verified time to its config entry.
+
+## Event study: bp P&L only from 2025-07 (bmk DV01 history)
+
+**Found:** 2026-10-05. **Where:** `infra/pipeline/event_pnl.py` (`FUTURE_BPS_BBO`), the bmk
+risk store. **Status:** open.
+
+**The issue:** bp steps divide by the contract's prior-day DV01 from `Bmk/Risk`, which for the
+Treasury roots starts 2025-07; quotes go back to 2015, so `FUTURE_BPS_BBO` is NaN before then
+and studies in bp have ~15 months of history. **Options:** back-fill bmk risk
+(`infra.cycle.bmk.backfill_daily_risk`; Treasury DV01 needs FedInvest prices - from 2008 - and
+funding - SR1 from 2018-05, so 2018-05 onward is possible); meanwhile use `FUTURE_PTS_BBO`.
+
+## Event study: open items from the first build
+
+**Found:** 2026-10-05. **Status:** open.
+
+*   **Good Friday:** the grid's market calendar has no Good Friday, so an NFP on Good Friday
+    (2021, 2023, 2026) is `not_a_trading_day`, while CME rates trade a short session. A
+    CME-rates calendar (open on such Fridays) would keep them.
+*   **Costs:** no test compares the expected move with the bid-ask at the window's ends yet (the
+    bbo store has both sides: a `half_spread` per step from the same source would do it).
+*   **Overlapping windows:** consecutive events whose windows overlap are treated as independent
+    (plain t); a family with long windows should use overlap-aware errors.
+*   **Family persistence:** a family runs and reports (`run_family`), but only single codes have
+    the run machinery (one run per code); a family store (one table per fit date) is not built.
+*   **`US_FUTURES_OPEN`** (the user's example) is not defined: Globex's open is 17:00 CT (the
+    evening before) - outside the default grid - and an "open" inside the New York day was not
+    verified. Add it to `TIME_EVENTS` once its meaning is fixed.
+*   **Conditional studies** (the spec's "conditional on third variables") are not built.

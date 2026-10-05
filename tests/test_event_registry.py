@@ -11,8 +11,10 @@ from infra.reference.events import EVENTS, SERIES, event_of, series_by_bbg
 def test_ids_and_links():
     assert all(e.id == k for k, e in EVENTS.items()) and all(s.id == k for k, s in SERIES.items())
     assert all(s.event in EVENTS for s in SERIES.values())
-    assert all(e.kind in {"release", "auction", "policy"} for e in EVENTS.values())
-    assert all(e.time_et is None or re.fullmatch(r"\d{2}:\d{2}", e.time_et) for e in EVENTS.values())
+    assert all(e.kind in {"release", "auction", "policy", "treasury", "futures"} for e in EVENTS.values())
+    assert all(e.time_local is None or re.fullmatch(r"\d{2}:\d{2}", e.time_local) for e in EVENTS.values())
+    from zoneinfo import ZoneInfo
+    assert all(ZoneInfo(e.timezone) for e in EVENTS.values())
 
 
 def test_every_nowcast_release_is_a_registry_series_with_the_same_fred_id():
@@ -33,7 +35,7 @@ def test_staged_releases_agree_with_the_table():
 
 def test_treasury_coupon_auctions_and_fomc():
     assert {f"US_TSY_AUCTION_{t}Y" for t in (2, 3, 5, 7, 10, 20, 30)} <= set(EVENTS)
-    assert EVENTS["US_FOMC_DECISION"].time_et == "14:00" and len(FOMC_MEETINGS) > 0
+    assert EVENTS["US_FOMC_DECISION"].time_local == "14:00" and len(FOMC_MEETINGS) > 0
 
 
 def test_identifiers_live_only_on_the_registry():
