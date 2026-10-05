@@ -80,4 +80,10 @@ cash flows, also gives carry, rolldown and z-spreads, and a check on CMT.
     Svensson's small gap to GSW (sd 0.9-2.7bp) is consistent with similar timing, not proof.
     A cheap test if it ever matters: regress the daily change of (ours - GSW) on the futures'
     move between 15:30 and the NY1600 snap - a later GSW snap would load negatively.
+*   **The 10y area looks cheap on the curve** (seen on the bond-curve page, 2026-09-30): the 10y
+    on-the-run +4.7bp and TNZ6's CTD (the next 10y) +5.0bp of leave-one-out z-spread, while the
+    2/3/5/7y on-the-runs sit rich (-0.9..-1.4bp). Consistent with CMT's 10y gap (-1bp, section 3),
+    so possibly real - but the fit EXCLUDES each tenor's on-the-run and first off-the-run, so the
+    9.5-10y region is fitted mostly by old 20y / 30y bonds maturing there. Check: a local fit
+    with vs without them; the 10y's z-spread history around each 10y auction.
 
