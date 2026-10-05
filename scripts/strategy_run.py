@@ -8,7 +8,8 @@
     $PY scripts/strategy_run.py family-run nfp                      # daily
     # a strategy over family runs (its name in infra/strategies/config/<class>.py):
     $PY scripts/strategy_run.py run cevt_nfp [--update-families]    # firm series + plan vintage
-    $PY scripts/strategy_run.py rebuild cevt_nfp [--promote]        # recompute + reconcile
+    $PY scripts/strategy_run.py rebuild cevt_nfp [--promote]        # recompute + reconcile (incl. P&L)
+    $PY scripts/strategy_run.py account cevt_nfp                    # P&L and costs only, from stored positions
 """
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ from infra.jobs import family_runs, strategy_runs  # noqa: E402
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["family-create", "family-run", "family-rebuild", "run", "rebuild"])
+    ap.add_argument("command", choices=["family-create", "family-run", "family-rebuild", "run", "rebuild", "account"])
     ap.add_argument("name")
     ap.add_argument("--family")
     ap.add_argument("--start")
@@ -56,6 +57,8 @@ def main(argv=None) -> int:
     elif args.command == "run":
         print(json.dumps(strategy_runs.run_daily(args.name, through, root=args.root, models_root=mr,
                                                  update_families=args.update_families), indent=1, default=str))
+    elif args.command == "account":
+        print(json.dumps(strategy_runs.account(args.name, through, root=args.root), indent=1, default=str))
     else:
         print(json.dumps(strategy_runs.rebuild(args.name, through, root=args.root, models_root=mr,
                                                promote=args.promote), indent=1, default=str))

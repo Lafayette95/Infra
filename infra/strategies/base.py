@@ -12,6 +12,10 @@ END of its interval, so the two conventions meet in ONE place, ``pnl``: the P&L 
 the position decided at L - (1 + lag) steps times the step ending at L (``lag`` = execution
 delay in grid steps).
 
+**P&L and costs** are a separate layer on the ABSOLUTE positions: ``infra.strategies.accounting``
+(execution checks, executed positions, P&L, costs, checks), operated by
+``infra.jobs.strategy_runs.account``. ``pnl`` below is the instrument-level research shift.
+
 **Positions** (shared; a class may override ``positions``): each instrument's view divided by
 its ex-ante $ volatility per contract (EWMA of daily changes, ``vol_span`` days, x point value
 x sqrt 252, as available at the label - instruments treated as INDEPENDENT for now), then scaled
@@ -49,6 +53,7 @@ class StrategySpec:
     horizon_days: int = 10                       # the forward plan
     plan_vintages: bool = True
     cycle: str = "DEFAULT_CYCLE"
+    accounting: str = "bbo_mid"                  # ACCOUNTING_MODELS (infra/strategies/config/accounting.py)
 
 
 def pnl(positions: pd.DataFrame, steps: pd.DataFrame, lag: int = 0) -> pd.DataFrame:

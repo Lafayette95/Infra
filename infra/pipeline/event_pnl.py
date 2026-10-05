@@ -51,6 +51,9 @@ def _root_of(instrument: str) -> str:
     raise KeyError(f"no futures root for instrument {instrument!r}")
 
 
+root_of = _root_of   # public: the futures root of a relative or absolute ticker
+
+
 def contract_map(instrument: str, days: pd.DatetimeIndex, *, daily_root: Path = DAILY_FUTURES_DIR,
                  contracts_file: Path = FUTURES_CONTRACTS_FILE) -> pd.Series:
     """CME trading day -> the contract the instrument maps to that day (disk only)."""

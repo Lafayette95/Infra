@@ -1051,9 +1051,27 @@ funding model's SOFR path starts 2018-10-01. So bp studies start 2018-10.
 
 **Found:** 2026-10-05. **Where:** `infra/strategies`, `infra/jobs/strategy_runs.py`. **Status:** open.
 
-*   **No strategy P&L or transaction costs yet** (agreed as the next, separate step): the one
-    shift function exists (`strategies.base.pnl`), the step P&L in $ per contract needs a grid
-    source (event P&L points x point value) and costs need the bbo half-spread at each trade.
+*   ~~No strategy P&L or transaction costs~~ fixed 2026-10-05: the accounting layer
+    (`infra/strategies/accounting.py`, root CLAUDE.md 27). Its open items:
+    *   **`spread_paid` = 0.5 is an assumption** (passively filled on half the trades): research
+        it - e.g. how often a resting order at the touch would have filled within the label's
+        interval, from bbo-1s around the trades, which can differ a lot by time (an 08:30
+        release vs a quiet afternoon).
+    *   **No market impact:** a trade beyond the top-of-book size is only flagged
+        (`exceeds_top_of_book`; real data: up to 110 ZN contracts at NFP against 1-20 at the
+        touch). Options: a depth-based cost (needs MBP-10, a new paid schema), or a square-root
+        impact on volume.
+    *   **Friday `GRID_END` exits can't trade** (CME shuts 17:00 ET; the 06:00-19:00 grid runs to
+        19:00): the accounting defers them to the reopen (weekend risk), while the event study
+        values them at the 17:00 close - its P&L is optimistic for such codes. Options: a cycle
+        whose Friday ends at the close, an accounting policy `advance` (trade the last executable
+        label BEFORE a known closure for exits), or illegal-window rules in the event study for
+        a leg falling in a closure.
+    *   **Deferral is per contract**: a roll whose new contract can't trade while the old one can
+        leaves the position flat for the gap (flagged as `deferred`); a "roll as a pair" policy
+        would wait for both.
+    *   **Daily costs from NY1500 snaps** exist only for contracts the snap store holds (each bond
+        root's front, the ZQ strip); others use the root's trailing median (`cost_fallback`).
 *   **Instruments are independent** in the position sizing (no covariance): ZT and ZN views in
     the same direction double the risk the target assumes. Options: an EWMA covariance from the
     same daily changes and a portfolio scale (needs `full_strength` to be redefined as the risk

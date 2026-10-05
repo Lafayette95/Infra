@@ -141,8 +141,10 @@ def test_cevt_views_positions_and_rebuild(family_env, monkeypatch):
     monkeypatch.setitem(CEVT_STRATEGIES, spec.name, spec)
     vols = {"X": pd.Series([20_000.0], index=[D("2020-01-01")])}
     labels_all = pd.date_range("2022-01-01", "2025-01-01", freq="15min")
-    contracts = {"X": pd.Series("XH4", index=labels_all)}
-    kw = dict(root=root / "S", models_root=root, vols=vols, contracts=contracts)
+    contracts = {"X": pd.Series("ZNH4", index=labels_all)}
+    marks = _quotes(labels_all, "ZNH4", np.full(len(labels_all), 110.0), half=1 / 128)
+    cal = pd.DataFrame({"point_value": [1000.0], "last_trade": [pd.NaT], "first_notice": [pd.NaT]}, index=["ZNH4"])
+    kw = dict(root=root / "S", models_root=root, vols=vols, contracts=contracts, marks=marks, calendar=cal)
     sr.run_daily("t_cevt", "2024-12-31", **kw)
     sig = sstore.read_series("t_cevt", "signals", root=root / "S")
     pos = sstore.read_series("t_cevt", "positions", root=root / "S")
@@ -160,9 +162,142 @@ def test_cevt_views_positions_and_rebuild(family_env, monkeypatch):
     # positions: full strength = target / vol; abs positions carry the contract
     assert pos["X"].max() <= 1e6 / 20_000 + 1e-9 and pos.loc[on, "X"].min() > 0
     pabs = sstore.read_series("t_cevt", "positions_abs", root=root / "S")
-    assert set(pabs["contract"].dropna()) == {"XH4"}
+    assert set(pabs["contract"].dropna()) == {"ZNH4"}
+    pnl_t = sstore.read_series("t_cevt", "pnl", root=root / "S")
+    traded = pos["X"].diff().abs().fillna(pos["X"].abs()).sum()
+    assert pnl_t["gross"].sum() == 0 and pnl_t["cost"].sum() == pytest.approx(traded / 128 * 0.5 * 1000)
     assert sr.rebuild("t_cevt", "2024-12-31", **kw)["identical"] is True
     # include_failing turns excluded codes into zeros, which dilute the mean
     s_mean = CEVT(spec, gate="none", within="mean")
     v = s_mean.views({"f": preds}, {"f": fdr}, sig.index)
     assert (v["n:X"] >= sig["n:X"]).all()
+
+
+# --------------------------------------------------------------------------- accounting (P&L and costs)
+from infra.strategies import accounting as acc  # noqa: E402
+from infra.strategies.config.accounting import get_accounting_spec  # noqa: E402
+
+
+def _labels(n=6):
+    return pd.date_range("2024-03-05 14:00", periods=n, freq="15min")
+
+
+def _quotes(labels, contract, mids, half=0.01, sizes=500.0, age_min=0.0, halt=None, bid_nan=None):
+    n = len(labels)
+    mids = np.asarray(mids, dtype=float)
+    bid, ask = mids - half, mids + half
+    if bid_nan is not None:
+        bid = np.where(bid_nan, np.nan, bid)
+    return pd.DataFrame({"timestamp": labels, "contract": contract, "bid": bid, "ask": ask, "bid_size": sizes,
+                         "ask_size": sizes, "quote_time": labels - pd.to_timedelta(np.broadcast_to(age_min, n), "min"),
+                         "mark": mids, "halt": False if halt is None else halt})
+
+
+CAL = pd.DataFrame({"point_value": [1000.0, 1000.0], "last_trade": [D("2024-06-18"), D("2024-09-19")],
+                    "first_notice": [D("2024-05-31"), D("2024-08-30")]}, index=["ZNM4", "ZNU4"])
+
+
+def _pabs(labels, contract, pos, inst="ZN.v.0"):
+    return pd.DataFrame({"label": labels, "instrument": inst, "contract": contract, "position": pos})
+
+
+def test_accounting_align_and_multiply_with_half_the_half_spread():
+    lab = _labels(4)
+    marks = _quotes(lab, "ZNM4", [110.0, 110.5, 110.25, 110.25], half=1 / 64)
+    pabs = _pabs(lab, "ZNM4", [10.0, 10.0, -5.0, 0.0])
+    r = acc.account(pabs, lab, marks, CAL, get_accounting_spec("bbo_mid"))
+    t = r.totals
+    # step 2: 10 x 0.5 x 1000 = 5000; step 3: 10 x -0.25 x 1000 = -2500; step 4: -5 x 0 = 0
+    np.testing.assert_allclose(t["gross"].to_numpy(), [0, 5000, -2500, 0])
+    # costs: |trade| x 1/64 x 0.5 x 1000 at labels 1, 3, 4: 10, 15, 5 contracts
+    np.testing.assert_allclose(t["cost"].to_numpy(), np.array([10, 0, 15, 5]) / 64 * 0.5 * 1000)
+    np.testing.assert_allclose(t["net"], t["gross"] - t["cost"])
+    full = acc.account(pabs, lab, marks, CAL, get_accounting_spec("bbo_mid", spread_paid=1.0))
+    np.testing.assert_allclose(full.totals["cost"], 2 * t["cost"])
+    assert r.checks.empty or not (r.checks["severity"] == "fail").any()
+
+
+def test_a_roll_is_two_trades_and_pnl_stays_on_each_contract():
+    lab = _labels(3)
+    marks = pd.concat([_quotes(lab, "ZNM4", [110.0, 110.5, 111.0]), _quotes(lab, "ZNU4", [109.0, 109.0, 120.0])])
+    pabs = pd.concat([_pabs(lab[:2], "ZNM4", [4.0, 4.0]), _pabs(lab[2:], "ZNU4", [4.0])])
+    r = acc.account(pabs, lab, marks, CAL, get_accounting_spec("bbo_mid", spread_paid=0.0))
+    # step 3 is earned by the M4 contract held over it (+0.5); U4's jump to 120 is not ours yet
+    np.testing.assert_allclose(r.totals["gross"].to_numpy(), [0, 2000, 2000])
+    c = r.contracts.set_index(["label", "contract"])
+    assert c.loc[(lab[2], "ZNM4"), "trade"] == -4 and c.loc[(lab[2], "ZNU4"), "trade"] == 4
+
+
+def test_non_executable_trades_wait_and_are_reported():
+    lab = _labels(6)
+    stale = np.array([0, 0, 10, 10, 0, 0], dtype=float)               # minutes old at labels 3-4
+    marks = _quotes(lab, "ZNM4", [110.0, 110.0, 110.5, 111.0, 111.0, 111.0], age_min=stale)
+    pabs = _pabs(lab, "ZNM4", [0.0, 0.0, 5.0, 5.0, 5.0, 5.0])
+    r = acc.account(pabs, lab, marks, CAL, get_accounting_spec("bbo_mid"))
+    ex = r.contracts.set_index("label")["executed"].reindex(lab).fillna(0)
+    np.testing.assert_allclose(ex.to_numpy(), [0, 0, 0, 0, 5, 5])       # bought once the quote is fresh
+    assert r.totals["gross"].sum() == 0                                 # missed the move: no P&L for it
+    d = r.checks[r.checks["check"] == "deferred"].iloc[0]
+    assert d["n"] == 2 and "no_fresh_quote" in d["detail"]
+    ig = acc.account(pabs, lab, marks, CAL, get_accounting_spec("bbo_mid_ignore"))
+    assert ig.totals["gross"].sum() == pytest.approx(5 * 0.5 * 1000)
+
+
+@pytest.mark.parametrize("kw,reason", [({"halt": np.array([0, 0, 1, 0], bool)}, "halt"),
+                                       ({"bid_nan": np.array([0, 0, 1, 0], bool)}, "one_sided")])
+def test_halt_and_one_sided_books_block_trades(kw, reason):
+    lab = _labels(4)
+    marks = _quotes(lab, "ZNM4", [110.0] * 4, **kw)
+    r = acc.account(_pabs(lab, "ZNM4", [0.0, 0.0, 3.0, 3.0]), lab, marks, CAL, get_accounting_spec("bbo_mid"))
+    assert reason in r.checks.loc[r.checks["check"] == "deferred", "detail"].iloc[0]
+
+
+def test_wide_spread_uses_only_earlier_spreads():
+    lab = pd.date_range("2024-03-05 14:00", periods=40, freq="15min")
+    half = np.full(40, 1 / 128)
+    half[-1] = 10 / 128                                                 # 10x the usual spread at the last label
+    marks = _quotes(lab, "ZNM4", np.full(40, 110.0), half=half)
+    pos = np.zeros(40)
+    pos[-1] = 1.0
+    r = acc.account(_pabs(lab, "ZNM4", pos), lab, marks, CAL, get_accounting_spec("bbo_mid"))
+    assert r.contracts["executed"].abs().sum() == 0
+    assert r.checks.loc[r.checks["check"] == "target_not_reached"].shape[0] == 1
+
+
+def test_checks_delivery_top_of_book_and_missing_marks():
+    lab = pd.DatetimeIndex([D("2024-05-30 15:00"), D("2024-05-31 15:00"), D("2024-06-03 15:00")])
+    marks = _quotes(lab, "ZNM4", [110.0, np.nan, 110.0], sizes=50.0)
+    r = acc.account(_pabs(lab, "ZNM4", [100.0, 100.0, 100.0]), lab, marks, CAL,
+                    get_accounting_spec("bbo_mid_ignore"))
+    checks = set(r.checks["check"])
+    assert {"held_in_delivery", "exceeds_top_of_book", "no_mark"} <= checks
+    assert np.isnan(r.totals["gross"].iloc[1])                          # never a silent zero
+
+
+def test_daily_settlement_marks_execute_on_the_right_day():
+    from infra.pipeline.futures_marks import settlement_marks
+    days = pd.bdate_range("2024-03-04", periods=5)
+    sett = pd.DataFrame({"timestamp": days, "ticker": "ZNM4", "settlement_price": [110.0, 110.5, 111.0, 110.0, 110.0]})
+    snaps = pd.DataFrame({"timestamp": days + pd.Timedelta(hours=19), "ticker": "ZNM4", "bid": 109.99, "ask": 110.01})
+    # decisions at 12:00 UTC (before 14:00 CT = 19:00/20:00 UTC) trade that day; 21:00 UTC trades the next
+    lab = pd.DatetimeIndex([days[0] + pd.Timedelta(hours=12), days[1] + pd.Timedelta(hours=21)])
+    m = settlement_marks(["ZNM4"], lab, settlements=sett, snaps=snaps)
+    assert list(m["exec_day"]) == [days[0], days[2]]
+    labels = days + pd.Timedelta(hours=12)
+    m = settlement_marks(["ZNM4"], labels, settlements=sett, snaps=snaps.iloc[[0, 1, 2, 3]])
+    r = acc.account(_pabs(labels, "ZNM4", [2.0, 2.0, 0.0, 0.0, 1.0]), labels, m, CAL,
+                    get_accounting_spec("settlement"))
+    np.testing.assert_allclose(r.totals["gross"].to_numpy(), [0, 1000, 1000, 0, 0])
+    assert r.totals["cost"].iloc[-1] == pytest.approx(0.01 * 0.5 * 1000)    # fallback: trailing median spread
+    assert "cost_fallback" in set(r.checks["check"])
+
+
+def test_mark_jump_flags_a_reversed_spike_not_a_lasting_move():
+    lab = pd.date_range("2024-03-05 14:00", periods=80, freq="15min")
+    mids = 110.0 + np.tile([0.0, 1 / 64], 40)
+    mids[60] += 1.0                                                     # spike that reverses
+    mids[70:] += 1.0                                                    # news that stays
+    r = acc.account(_pabs(lab, "ZNM4", np.ones(80)), lab, _quotes(lab, "ZNM4", mids), CAL,
+                    get_accounting_spec("bbo_mid"))
+    jumps = r.checks[r.checks["check"] == "mark_jump"]
+    assert list(jumps["label"]) == [lab[60]]

@@ -22,7 +22,9 @@ import pandas as pd
 from infra.config import MODEL_RUNS_DIR, STRATEGIES_DIR
 from infra.jobs import family_runs
 from infra.storage import strategy_store as store
+from infra.strategies import accounting as acc
 from infra.strategies.base import contracts_at
+from infra.strategies.config.accounting import get_accounting_spec
 from infra.strategies.cevt import CEVT
 from infra.strategies.config.cevt import CEVT_STRATEGIES
 
@@ -88,6 +90,47 @@ def plan(strategy, through, *, models_root: Path = MODEL_RUNS_DIR, upcoming=None
     return views.join(pos.add_prefix("pos:"))
 
 
+def compute_accounting(strategy, positions_abs: pd.DataFrame, labels, *, marks=None, calendar=None
+                       ) -> acc.AccountingResult:
+    """The accounting of a strategy's absolute positions on its labels (disk reads for the
+    marks and the contract calendar unless passed in)."""
+    from infra.pipeline import futures_marks as fm
+    spec = get_accounting_spec(strategy.spec.accounting)
+    labels = pd.DatetimeIndex(labels)
+    contracts = sorted(set(positions_abs["contract"].dropna().astype(str))) if len(positions_abs) else []
+    if marks is None and contracts:
+        marks = (fm.quote_marks(contracts, labels) if spec.marks == "bbo"
+                 else fm.settlement_marks(contracts, labels))
+    if calendar is None and contracts:
+        calendar = fm.contract_calendar(contracts)
+    return acc.account(positions_abs, labels, marks if marks is not None else pd.DataFrame(),
+                       calendar if calendar is not None else pd.DataFrame(columns=["point_value"]), spec,
+                       exec_lag=strategy.spec.exec_lag)
+
+
+def account(name: str, through=None, *, root: Path = STRATEGIES_DIR, marks=None, calendar=None) -> dict:
+    """Strategy P&L and costs from the STORED firm positions (``positions_abs``), recomputed
+    whole and upserted (a changed past P&L row is counted and logged); checks replaced."""
+    _, s = make_strategy(name)
+    pabs = store.read_series(name, "positions_abs", root=root)
+    pos = store.read_series(name, "positions", root=root)
+    if pos.empty:
+        return {"labels": 0}
+    labels = pos.index if through is None else pos.index[pos.index < pd.Timestamp(through).normalize()
+                                                         + pd.Timedelta(days=1)]
+    if len(pabs):
+        pabs = pabs[pd.to_datetime(pabs["label"]) <= labels.max()]
+    res = compute_accounting(s, pabs, labels, marks=marks, calendar=calendar)
+    out = {"pnl": store.upsert_series(name, "pnl", res.totals, root=root),
+           "pnl_contracts": store.upsert_series(name, "pnl_contracts", res.contracts, root=root),
+           "checks": store.write_table(name, "exec_checks", res.checks, root=root), "summary": res.summary}
+    if out["pnl"]["changed"]:
+        log.warning("%s: %d stored P&L row(s) changed on recompute", name, out["pnl"]["changed"])
+    for r in res.checks[res.checks["severity"].isin(["warn", "fail"])].head(20).itertuples():
+        log.warning("%s: %s %s %s x%d: %s", name, r.check, r.label, r.contract, r.n, r.detail)
+    return out
+
+
 def run_daily(name: str, through, *, root: Path = STRATEGIES_DIR, models_root: Path = MODEL_RUNS_DIR,
               update_families: bool = False, **inputs) -> dict:
     group, s = make_strategy(name)
@@ -102,6 +145,8 @@ def run_daily(name: str, through, *, root: Path = STRATEGIES_DIR, models_root: P
     for k in ("signals", "positions"):
         if out[k]["changed"]:
             log.warning("%s: %d firm %s row(s) changed on recompute (an upstream revision)", name, out[k]["changed"], k)
+    out["accounting"] = account(name, through, root=root, marks=inputs.get("marks"),
+                                calendar=inputs.get("calendar"))["summary"]
     if s.spec.plan_vintages:
         pl = plan(s, through, models_root=models_root, upcoming=inputs.get("upcoming"),
                   fdr=(inputs.get("inputs") or (None, None))[1], vols=inputs.get("vols"))
@@ -126,8 +171,18 @@ def rebuild(name: str, through, *, root: Path = STRATEGIES_DIR, models_root: Pat
         rep[kind] = {"stored": len(old), "rebuilt": len(new), "max_abs_diff": float(diff) if pd.notna(diff) else 0.0,
                      "only_stored": int(len(old.index.difference(new.index))),
                      "only_rebuilt": int(len(new.index.difference(old.index)))}
-    rep["identical"] = all(r["max_abs_diff"] <= 1e-9 and r["only_stored"] == 0 and r["only_rebuilt"] == 0
-                           for r in rep.values() if isinstance(r, dict))
+    res = compute_accounting(s, pabs, pos.index, marks=inputs.get("marks"), calendar=inputs.get("calendar"))
+    old = store.read_series(name, "pnl", root=root)
+    new = res.totals
+    idx = old.index.intersection(new.index)
+    cols = [c for c in new.columns if c in old.columns]
+    d = (old.loc[idx, cols] - new.loc[idx, cols]).abs()
+    nan_mismatch = int((old.loc[idx, cols].isna() != new.loc[idx, cols].isna()).sum().sum()) if len(idx) else 0
+    rep["pnl"] = {"stored": len(old), "rebuilt": len(new), "max_abs_diff": float(d.max().max()) if len(idx) and cols
+                  and pd.notna(d.max().max()) else 0.0, "only_stored": int(len(old.index.difference(new.index))),
+                  "only_rebuilt": int(len(new.index.difference(old.index))), "nan_mismatch": nan_mismatch}
+    rep["identical"] = all(r["max_abs_diff"] <= 1e-6 and r["only_stored"] == 0 and r["only_rebuilt"] == 0
+                           and not r.get("nan_mismatch") for r in rep.values() if isinstance(r, dict))
     rb = f"{name}/_rebuild"
     store.upsert_series(rb, "signals", views, root=root)
     store.upsert_series(rb, "positions", pos, root=root)
@@ -139,4 +194,8 @@ def rebuild(name: str, through, *, root: Path = STRATEGIES_DIR, models_root: Pat
             store.upsert_series(name, kind, new, root=root)
         (root / name / "positions_abs.parquet").unlink(missing_ok=True)
         store.upsert_series(name, "positions_abs", pabs, root=root)
+        for kind, new in (("pnl", res.totals), ("pnl_contracts", res.contracts)):
+            (root / name / f"{kind}.parquet").unlink(missing_ok=True)
+            store.upsert_series(name, kind, new, root=root)
+        store.write_table(name, "exec_checks", res.checks, root=root)
     return rep
