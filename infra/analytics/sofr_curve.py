@@ -132,7 +132,14 @@ def fit_sofr_path(as_of, futures: pd.DataFrame, fixings: pd.Series, change_dates
     last = (pd.Timestamp(futures["month"].iloc[-1]) + pd.offsets.MonthEnd(0)).normalize()
     known_through = fixings.index.max()
     fixing_days = business_days(min(first, fixings.index.min()) - pd.Timedelta(days=10), last)
-    fixing_days = fixing_days.union(fixings.index)
+    # inside the span the published fixings cover, the PUBLISHED days are the fixing days: a
+    # calendar business day with no fixing there was a one-off closure (5 Dec 2018, the day of
+    # mourning for President G.H.W. Bush - no SOFR) and takes the previous fixing, like a
+    # holiday (and like SR1's own average). Before the fix it raised "a published fixing day
+    # has no fixing" for every path crossing it - most of December 2018. Unpublished (future)
+    # days keep the calendar.
+    covered = (fixing_days >= fixings.index.min()) & (fixing_days <= known_through)
+    fixing_days = fixing_days[~covered].union(fixings.index)
     calendar = pd.date_range(first, last)
     gov = governing_days(calendar, fixing_days)
     known = gov <= known_through

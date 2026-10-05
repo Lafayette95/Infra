@@ -49,6 +49,20 @@ def test_the_fit_recovers_a_known_step_path_with_its_year_end_turn():
     assert flat.residuals_bp.abs().max() > 0.01  # a missing turn shows up as misfit
 
 
+def test_a_one_off_closure_without_a_fixing_takes_the_previous_one():
+    """5 Dec 2018 (day of mourning, markets shut): a business day of the calendar with no
+    published SOFR inside the published span - the path must not fail, and that day takes the
+    previous fixing, as SR1's average does."""
+    months = pd.date_range("2018-11-01", "2019-02-01", freq="MS")
+    fut, fix, daily, cuts = _synthetic({"2018-01-01": 2.20}, 0.0, months, "2018-12-20")
+    fix = fix.copy()
+    fix.loc[pd.Timestamp("2018-12-04")] = 2.30            # distinguishable from the 5th's neighbours
+    fix = fix.drop(pd.Timestamp("2018-12-05"))            # nothing published that day
+    path = sc.fit_sofr_path("2018-12-21", fut, fix, [], year_end_turn=0.0)
+    assert path.daily.loc["2018-12-05"] == pytest.approx(2.30)  # the 4th's fixing carries
+    assert path.daily.loc["2018-12-06"] == pytest.approx(2.20)
+
+
 def test_rolling_overnight_compounds_daily():
     daily = pd.Series(4.0, index=pd.date_range("2026-01-01", "2026-12-31"))
     path = sc.SofrPath(pd.Timestamp("2026-01-01"), daily, pd.Timestamp("2025-12-31"), pd.DataFrame(), pd.Series(), 0.0)

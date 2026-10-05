@@ -1016,22 +1016,9 @@ and studies in bp have ~15 months of history. **Options:** back-fill bmk risk
 (`infra.cycle.bmk.backfill_daily_risk`; Treasury DV01 needs FedInvest prices - from 2008 - and
 funding - SR1 from 2018-05, so 2018-05 onward is possible); meanwhile use `FUTURE_PTS_BBO`.
 **Update 2026-10-05:** back-filled 2018-05 .. 2025-06 (M0 DV01, ~13 s per month): 99-100%
-of Treasury contract-days from 2019. 2018 is 27%: the funding model's SOFR path starts
-2018-10-01 (`path starts 2018-10-01` before it), and mid-December 2018 fails on the next
-entry. So bp studies effectively start 2018-10 (2019 for a clean year).
-
-## Financing: a one-off market closure breaks the SOFR path (5 Dec 2018)
-
-**Found:** 2026-10-05, back-filling bmk DV01. **Where:** `infra/analytics/sofr_curve.py`
-(its business-day calendar: federal holidays + Good Friday). **Status:** open.
-
-**The issue:** SOFR was not published on 5 Dec 2018 (national day of mourning for President
-G.H.W. Bush - markets closed), but the calendar counts it as a fixing day, so every
-`financing_rate` whose path crosses it raises `a published fixing day has no fixing`: the M0
-futures DV01 (bmk) is NaN for ZT..UB on most of December 2018. **Options:** treat a day with
-no published fixing inside the fixings' own span as a non-fixing day (carry the previous
-rate, as for a holiday); or list one-off closures (5 Dec 2018, 9 Jan 2025 - Carter) in the
-calendar.
+of Treasury contract-days from 2019, 95-96% for Oct-Dec 2018 (December was failing on the
+5 Dec 2018 closure - fixed in `fit_sofr_path`, re-run). Before 2018-10 there is no DV01: the
+funding model's SOFR path starts 2018-10-01. So bp studies start 2018-10.
 
 ## Event study: open items from the first build
 
