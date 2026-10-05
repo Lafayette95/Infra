@@ -145,6 +145,8 @@ specification). Use case (a) of 0a, run live.
     `infra.pipeline.daily.read_daily_from_disk`; the continuous-futures reader moved to
     `infra.pipeline.series_panel.continuous_futures` on 2026-10-03, unchanged), and
     `infra/models/stats` (any series through `infra.pipeline.series_panel.read_panel`).
+*   **Above the models:** `infra/strategies` consumes their predictions and `infra/jobs` operates
+    them (writes runs, families and strategy outputs) - root CLAUDE.md 3 (layer stack), 27.
 *   **Dependencies point one way.** `infra/api`, `processing`, `pipeline`, `cycle` and
     `storage` never import `infra.models`. Only `infra/dashboard` may, from above. This is
     enforced by `tests/test_architecture.py`.

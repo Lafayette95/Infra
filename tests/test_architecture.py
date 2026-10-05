@@ -67,6 +67,30 @@ def _offenders(package: str, allowed: tuple[str, ...]) -> list[str]:
     return out
 
 
+# root CLAUDE.md 3, "The layer stack": a package may import only from its own tier or below.
+LAYER_TIERS = {"config": 1, "reference": 1, "trading_calendar": 1,
+               "api": 2, "storage": 2, "processing": 2, "analytics": 2, "relative": 2, "coverage": 2,
+               "pipeline": 3, "cycle": 4, "models": 5, "strategies": 6, "jobs": 7, "dashboard": 8}
+
+
+def test_the_layer_stack():
+    tops = {p.name.removesuffix(".py") for p in INFRA.iterdir()
+            if not p.name.startswith("_") and (p.is_dir() or p.suffix == ".py")}
+    assert tops <= set(LAYER_TIERS), f"new top-level package(s) without a tier: {sorted(tops - set(LAYER_TIERS))}"
+    bad = []
+    for path in INFRA.rglob("*.py"):
+        top = path.relative_to(INFRA).parts[0].removesuffix(".py")
+        if top not in LAYER_TIERS:
+            continue
+        for m in _imports(path):
+            parts = m.split(".")
+            if parts[0] != "infra" or len(parts) < 2 or parts[1] not in LAYER_TIERS:
+                continue
+            if LAYER_TIERS[parts[1]] > LAYER_TIERS[top]:
+                bad.append(f"{path.relative_to(INFRA.parent)} ({top}) imports {m}")
+    assert not bad, "upward imports:\n" + "\n".join(sorted(set(bad)))
+
+
 def test_layering_above_the_models():
     """Strategies sit above the models (they consume model predictions); jobs above both
     (the only layer writing model / strategy outputs). Nothing below imports them; only the

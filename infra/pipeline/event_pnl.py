@@ -1,4 +1,4 @@
-"""Step P&L on an event-study grid, per instrument: the "pnl" of root CLAUDE.md 27. Disk only.
+"""Step P&L on an event-study grid, per instrument: the "pnl" of root CLAUDE.md 26 (event studies). Disk only.
 
 ``grid_pnl(source, instruments, grid)`` -> wide frame, index = every grid point (UTC), one
 column per instrument: the move over (previous grid point, point] - the previous point is
