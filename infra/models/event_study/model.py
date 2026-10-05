@@ -36,6 +36,8 @@ from infra.models.stats.common import PARAM_COLUMNS, cutoff_mask, params_frame
 from infra.processing import event_windows as ew
 from infra.reference.event_grid import resolve_cycle
 
+ROW_STATS = ("t", "n", "passed", "ev_vol")      # fitted statistics copied onto every predicted row
+COND_ROW_STATS = ("t", "n", "passed", "ev_vol", "t_did", "cond_passed")
 PREP_COLUMNS = ["kind", "anchor", "end", "start_day", "end_day", "legal", "reason", "known_from", "pattern"]
 
 
@@ -139,6 +141,11 @@ class EventStudy(Model):
             cond = self._condition(frame["start"], tl, grid.step)
             for col in cond.columns:
                 out[col] = cond[col].to_numpy()
+            # a window whose regime lookup lies beyond the latest value available now: its
+            # regime is the LATEST known one, provisional until its start (user decision 2026-10-05)
+            latest = pd.Timestamp(pd.DatetimeIndex(tl["available_at"]).max()) if len(tl) else pd.NaT
+            lookup = pd.DatetimeIndex(frame["start"]) - self.spec.condition.lag_steps * grid.step
+            out["cond_provisional"] = np.asarray(lookup > latest) if pd.notna(latest) else True
         out.index = pd.DatetimeIndex(frame["start"].fillna(frame["anchor"]), name="timestamp")
         out.attrs["instruments"] = list(panel.columns)
         out.attrs["code"] = self.code.encode()
@@ -207,8 +214,8 @@ class EventStudy(Model):
             keep &= cutoff_mask(ev.index, end)
         ev = ev[keep]
         t = self.fitted_.table
-        out = pd.DataFrame({"end": ev["end"], "legal": ev["legal"].astype(float), "reason": ev["reason"]},
-                           index=ev.index)
+        out = pd.DataFrame({"end": ev["end"], "legal": ev["legal"].astype(float), "reason": ev["reason"],
+                            "anchor": ev["anchor"]}, index=ev.index)
         if "cond_bucket" in ev:
             return self._predict_conditional(ev, out)
         for inst in t.index:
@@ -217,6 +224,8 @@ class EventStudy(Model):
             sig = float(np.sign(t.loc[inst, "mean"]) * t.loc[inst, "passed"]) + 0.0 \
                 if np.isfinite(t.loc[inst, "mean"]) else 0.0
             out[f"signal:{inst}"] = np.where(ev["legal"], sig, 0.0)
+            for stat in ROW_STATS:
+                out[f"{stat}:{inst}"] = np.where(ev["legal"], t.loc[inst, stat], np.nan)
         ends = pd.Series(pd.DatetimeIndex(ev["end"]), index=ev.index)
         ends = ends.fillna(pd.Series(ev.index, index=ev.index))
         out["in_sample"] = cutoff_mask(pd.DatetimeIndex(ends), self.fitted_.as_of)
@@ -229,11 +238,14 @@ class EventStudy(Model):
         conditioning tests (``cond_passed``), else 0. ``expected_all`` = the unconditional mean."""
         t = self.fitted_.table
         out["cond_bucket"] = ev["cond_bucket"].to_numpy()
+        if "cond_provisional" in ev:
+            out["cond_provisional"] = ev["cond_provisional"].to_numpy(dtype=float)
         legal = ev["legal"].to_numpy(dtype=bool)
         for inst in [i for i in t.index if "|" not in i]:
             out[f"pnl:{inst}"] = ev[f"pnl:{inst}"].to_numpy() if f"pnl:{inst}" in ev else np.nan
             out[f"expected_all:{inst}"] = np.where(legal, t.loc[inst, "mean"], np.nan)
             exp, sig = np.full(len(ev), np.nan), np.zeros(len(ev))
+            extra = {stat: np.full(len(ev), np.nan) for stat in COND_ROW_STATS}
             for b in (-1.0, 0.0, 1.0):
                 key = f"{inst}|{int(b):+d}"
                 if key not in t.index:
@@ -242,7 +254,11 @@ class EventStudy(Model):
                 mean, ok = t.loc[key, "mean"], t.loc[key, "cond_passed"] == 1.0
                 exp[m] = mean
                 sig[m] = (float(np.sign(mean)) if ok and np.isfinite(mean) else 0.0) + 0.0
+                for stat in COND_ROW_STATS:
+                    extra[stat][m] = t.loc[key, stat]
             out[f"expected:{inst}"], out[f"signal:{inst}"] = exp, sig
+            for stat, v in extra.items():
+                out[f"{stat}:{inst}"] = v
         ends = pd.Series(pd.DatetimeIndex(ev["end"]), index=ev.index)
         ends = ends.fillna(pd.Series(ev.index, index=ev.index))
         out["in_sample"] = cutoff_mask(pd.DatetimeIndex(ends), self.fitted_.as_of)

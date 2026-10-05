@@ -61,7 +61,7 @@ specification). Use case (a) of 0a, run live.
     `Database/Derived/ModelRuns/<run>/meta.json`, with `params.parquet` (one block per fit
     date, `fit_as_of`) and `predictions.parquet` (one row per timestamp, `fit_as_of` = the
     fit behind it).
-*   **The three jobs** (`scripts/model_run.py`):
+*   **The three jobs** (`infra/jobs/model_runs.py`, CLI `scripts/model_run.py`; event families: `infra/jobs/family_runs.py`, root CLAUDE.md 27):
     1.  `run` = the daily job: predict the new rows, append any due fit, then re-predict
         the rows after a fit it just appended - so the run is walk-forward-consistent
         whenever the job ends. (`fit` / `predict` do one half each.)

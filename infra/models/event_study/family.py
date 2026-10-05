@@ -74,3 +74,38 @@ def run_family(family: FamilySpec | str, panel: pd.DataFrame, as_of=None, *, occ
         out.loc[~overall, "passed_fdr"] = ((out.loc[~overall, "cond_passed"] == 1.0)
                                            & (out.loc[~overall, "q_did"] <= fam.fdr_q)).astype(float)
     return out
+
+
+def fdr_table(params_by_code: dict[int, pd.DataFrame], fdr_q: float) -> pd.DataFrame:
+    """Point-in-time false-discovery control of a FAMILY RUN, from its codes' stored params
+    (``fit_as_of`` + ``event_stat`` rows): per fit DAY, Benjamini-Hochberg over every code's
+    overall (code, instrument) p_t -> ``q``, and separately over every conditional bucket's
+    p_did -> ``q`` on the bucket rows; ``passed_fdr`` = the row's own tests (``passed``, or
+    ``cond_passed`` for a bucket) AND ``q <= fdr_q``. Codes fit at slightly different instants
+    of the same day (refit targets snap to each code's own window starts) share one BH set.
+    Columns: ``fit_as_of, code, row, q, passed_fdr``."""
+    rows = []
+    for i, p in params_by_code.items():
+        st_rows = p[p["section"] == "event_stat"]
+        if st_rows.empty:
+            continue
+        wide = st_rows.pivot_table(index=["fit_as_of", "row"], columns="col", values="value", aggfunc="last")
+        wide = wide.reset_index().assign(code=i)
+        rows.append(wide)
+    if not rows:
+        return pd.DataFrame(columns=["fit_as_of", "code", "row", "q", "passed_fdr"])
+    t = pd.concat(rows, ignore_index=True)
+    t["fit_day"] = pd.to_datetime(t["fit_as_of"]).dt.normalize()
+    bucket = t["row"].astype(str).str.contains("|", regex=False)
+    t["q"] = np.nan
+    for day, g in t.groupby("fit_day"):
+        o = g.index[~bucket[g.index]]
+        b = g.index[bucket[g.index]]
+        if len(o):
+            t.loc[o, "q"] = benjamini_hochberg(t.loc[o, "p_t"].to_numpy())
+        if len(b) and "p_did" in t:
+            t.loc[b, "q"] = benjamini_hochberg(t.loc[b, "p_did"].to_numpy())
+    own = np.where(bucket, t.get("cond_passed", pd.Series(np.nan, index=t.index)), t["passed"])
+    t["passed_fdr"] = ((own == 1.0) & (t["q"] <= fdr_q)).astype(float)
+    return t[["fit_as_of", "code", "row", "q", "passed_fdr"]].sort_values(["fit_as_of", "code", "row"]).reset_index(
+        drop=True)

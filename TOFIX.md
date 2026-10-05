@@ -1031,8 +1031,8 @@ funding model's SOFR path starts 2018-10-01. So bp studies start 2018-10.
     bbo store has both sides: a `half_spread` per step from the same source would do it).
 *   **Overlapping windows:** consecutive events whose windows overlap are treated as independent
     (plain t); a family with long windows should use overlap-aware errors.
-*   **Family persistence:** a family runs and reports (`run_family`), but only single codes have
-    the run machinery (one run per code); a family store (one table per fit date) is not built.
+*   ~~Family persistence~~ fixed 2026-10-05: family runs (`infra/jobs/family_runs.py`, one run
+    per code + a point-in-time FDR table).
 *   **Conditional studies, next steps:** one condition per study (two-dimensional regimes
     later); no SURPRISE feature yet (actual - MarketWatch consensus,
     `infra.pipeline.econ_calendar.consensus`, needs its own availability: the consensus as known
@@ -1046,3 +1046,27 @@ funding model's SOFR path starts 2018-10-01. So bp studies start 2018-10.
     enter at the ask / exit at the bid (long), the cost-inclusive move - the "costs" item above.
     ohlcv-1m holds only 2026-08-23..09-20 for the bond roots: price the back-fill with a dry run
     first.
+
+## Strategies: open items from the first build (CEVT)
+
+**Found:** 2026-10-05. **Where:** `infra/strategies`, `infra/jobs/strategy_runs.py`. **Status:** open.
+
+*   **No strategy P&L or transaction costs yet** (agreed as the next, separate step): the one
+    shift function exists (`strategies.base.pnl`), the step P&L in $ per contract needs a grid
+    source (event P&L points x point value) and costs need the bbo half-spread at each trade.
+*   **Instruments are independent** in the position sizing (no covariance): ZT and ZN views in
+    the same direction double the risk the target assumes. Options: an EWMA covariance from the
+    same daily changes and a portfolio scale (needs `full_strength` to be redefined as the risk
+    of the full-strength vector).
+*   **Not scheduled:** like model runs (root CLAUDE.md 3b), the jobs need a runner after the
+    daily cycle (which may not import above the pipeline); `scripts/strategy_run.py` by hand.
+*   **Firm series are recomputed whole each run** (fine at ~36k labels a few years; for long
+    1-minute grids, restrict to labels after the last stored one plus open windows, like
+    `predict_window_after`).
+*   **Overlapping windows of one code** (consecutive events whose windows overlap) are
+    aggregated like different codes; harmless for intraday NFP windows, not for multi-day ones.
+*   **The plan uses the latest fit for every upcoming event** and the family's latest FDR
+    verdict; a refit due before the event can change it (that is what plan vintages record).
+*   **The realised-vol scaling** has a unit test but no real strategy using it yet; the first
+    always-on strategy should check its warm-up (`realised_min_obs` days of P&L, flat before).
+

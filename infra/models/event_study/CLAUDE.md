@@ -85,11 +85,30 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
 *   **Tests** (`passes`): `min_obs` (always), `t_min` (default 1.5), `ev_abs_min` (2 bp),
     `ev_vol_min`, `hit_min`, `placebo_t_min`, `stable_halves`, `year_share_min`; `passed` = all
     enabled. Per instrument, so a study passes on ZB and fails on ZT independently.
-*   **Families** (`family.py`, `FamilySpec` + `LegRule`: a cartesian product of refs, day lags,
+*   **Families** (`family.py`; as RUNS: section 4a; `FamilySpec` + `LegRule`: a cartesian product of refs, day lags,
     times and step lags per leg -> codes; registry `EVENT_FAMILIES`): every code fitted on one
     shared panel, illegal codes kept (n = 0, with the reasons), and **Benjamini-Hochberg**
     false-discovery control over all (code, instrument) tests (`q`, `passed_fdr`): a family
     produces false positives by construction.
+
+## 4a. Family runs (`infra/jobs/family_runs.py`, built 2026-10-05)
+*   **A family on the operating model:** one ordinary run per code (`<name>/c000` ..., spec
+    `family:<family>#<i>`, resolved by `config.get_event_study_spec`) plus the family's
+    point-in-time false-discovery table `<name>/fdr.parquet` (`family.fdr_table`: per fit DAY,
+    BH across every code's (code, instrument) p_t - the codes' fits sit at different instants
+    of the same day, since refit targets snap to each code's window starts - and across the
+    conditional buckets' p_did; `passed_fdr` = own tests AND q <= `fdr_q`), recomputed from
+    the codes' stored params after every job, so it always matches them. The panel, the
+    occurrences and the condition timeline are read once per job for all codes.
+*   **Incremental == rebuild holds per code**, so for the family
+    (`tests/test_strategies.py`); real data (40 NFP codes, monthly refits 2024-01..2026-09):
+    rebuild 17 s, a daily catch-up 6 s, reconciled identical.
+*   **Predictions carry the fitted statistics** (`t:`, `n:`, `passed:`, `ev_vol:` per
+    instrument; conditional: per the row's bucket, plus `t_did:`, `cond_passed:` and
+    `cond_provisional` = the regime rests on a value not yet known at the window start's
+    lookup now, i.e. the latest known one) and the `anchor`: what a strategy needs per row.
+    `runs.predict_upcoming` / `family_runs.upcoming` give the events already scheduled in the
+    next N days with the latest fit (a plan, not stored by the run).
 
 ## 5. Conditional studies (`conditions.py`, `ConditionSpec`; built 2026-10-05)
 *   **The condition is another series** (`ConditionSpec.series`, any `series_panel` id: a price

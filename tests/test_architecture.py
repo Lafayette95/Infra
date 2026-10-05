@@ -48,12 +48,31 @@ def test_nothing_below_the_models_imports_them():
     offenders = []
     for path in INFRA.rglob("*.py"):
         parts = path.relative_to(INFRA).parts
-        if parts[0] in ("models", "dashboard"):
+        if parts[0] in ("models", "dashboard", "strategies", "jobs"):
             continue
         bad = {m for m in _imports(path) if m == "infra.models" or m.startswith("infra.models.")}
         if bad:
             offenders.append(f"{path.relative_to(INFRA.parent)}: {sorted(bad)}")
     assert not offenders, "upward imports into infra/models:\n" + "\n".join(offenders)
+
+
+def _offenders(package: str, allowed: tuple[str, ...]) -> list[str]:
+    out = []
+    for path in INFRA.rglob("*.py"):
+        if path.relative_to(INFRA).parts[0] in allowed:
+            continue
+        bad = {m for m in _imports(path) if m == f"infra.{package}" or m.startswith(f"infra.{package}.")}
+        if bad:
+            out.append(f"{path.relative_to(INFRA.parent)}: {sorted(bad)}")
+    return out
+
+
+def test_layering_above_the_models():
+    """Strategies sit above the models (they consume model predictions); jobs above both
+    (the only layer writing model / strategy outputs). Nothing below imports them; only the
+    dashboard may, from above."""
+    assert not _offenders("strategies", ("strategies", "jobs", "dashboard"))
+    assert not _offenders("jobs", ("jobs", "dashboard"))
 
 
 def test_the_suite_cannot_reach_the_outside_world():

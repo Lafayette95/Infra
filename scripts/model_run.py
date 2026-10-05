@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from infra.config import MODEL_RUNS_DIR  # noqa: E402
 from infra.models import runs  # noqa: E402
 from infra.models.runs import RunConfig  # noqa: E402
+from infra.jobs import model_runs as jobs  # noqa: E402
 from infra.storage import model_runs as store  # noqa: E402
 
 log = logging.getLogger("model_run")
@@ -52,76 +53,31 @@ def _kv(items) -> dict:
 
 
 def _load(name: str, root: Path) -> tuple[RunConfig, dict]:
-    meta = store.read_meta(name, root=root)
-    return RunConfig.from_json(meta), meta
+    return jobs.load(name, root)
 
 
 def cmd_create(args, root: Path) -> int:
-    if (root / args.name / "meta.json").exists() and not args.force:
-        print(f"run {args.name!r} exists (use --force to redefine; its fits are NOT cleared)")
-        return 1
     history = args.history or str((pd.Timestamp(args.start) - pd.DateOffset(years=3)).date())
     config = RunConfig(name=args.name, kind=args.kind, spec=args.spec, series=tuple(args.series),
                        regime_series=tuple(args.regime_series), start=args.start, history_start=history,
                        refit=int(args.refit) if args.refit.isdigit() else args.refit,
                        overrides=_kv(args.set), regime_overrides=_kv(args.regime_set))
-    config.make_model()  # validates the spec now, not at the first scheduled run
-    store.write_meta(args.name, {**config.to_json(), "failures": {}}, root=root)
-    print(f"created {root / args.name}")
+    try:
+        print(f"created {jobs.create(config, root=root, force=args.force)}")
+    except FileExistsError as exc:
+        print(exc)
+        return 1
     return 0
 
 
 def _prepared(config: RunConfig, through: pd.Timestamp):
-    panel = runs.read_inputs(config, through)
-    return config.make_model().prepare(panel)
-
-
-def do_predict(config: RunConfig, prepared, through, root: Path) -> dict:
-    params = store.read_params(config.name, root=root)
-    meta = store.read_meta(config.name, root=root)
-    after = runs.predict_window_after(params, store.read_predictions(config.name, root=root),
-                                      last_through=meta.get("last_predict_through"))
-    rows = runs.predict_rows(config, prepared, params, after, through)
-    res = store.upsert_predictions(config.name, rows, root=root)
-    store.write_meta(config.name, {**store.read_meta(config.name, root=root),
-                                   "last_predict_through": str(pd.Timestamp(through).date())}, root=root)
-    if res["changed"]:
-        log.warning("%s: %d stored prediction row(s) changed on recompute (data revision, or a fit appended "
-                    "after they were first predicted)", config.name, res["changed"])
-    return res
-
-
-def do_fit(config: RunConfig, meta: dict, prepared, through, root: Path) -> dict:
-    params = store.read_params(config.name, root=root)
-    fr = runs.fit_due(config, prepared, params, through, skip=set(pd.to_datetime(list(meta.get("failures", {})))))
-    store.append_params(config.name, fr.params, root=root)
-    if fr.failures:
-        meta = {**meta, "failures": {**meta.get("failures", {}), **fr.failures}}
-        store.write_meta(config.name, meta, root=root)
-    return {"fitted": [d.date().isoformat() for d in fr.fitted], "failures": fr.failures}
+    return config.make_model().prepare(runs.read_inputs(config, through))
 
 
 def cmd_rebuild(args, root: Path, config: RunConfig, meta: dict, through) -> int:
     panel = runs.read_inputs(config, through)
-    res = runs.rebuild(config, panel, through)
-    stored = store.read_params(config.name, root=root)
-    rep = runs.reconcile(stored, store.read_predictions(config.name, root=root), res.params, res.predictions)
-    if stored.empty:
-        rep = {"note": "nothing stored yet - this rebuild is the run's first build", "identical": None}
-    rb = f"{config.name}/_rebuild"
-    store.save_run(rb, res.params, res.predictions, {**config.to_json(), "failures":
-                   {d.date().isoformat(): e for d, e in res.failures.items()}}, root=root)
-    print(json.dumps(rep, indent=2))
-    stamp = pd.Timestamp.now().strftime("%Y-%m-%dT%H%M")
-    meta = {**meta, "last_rebuild": {"at": stamp, "through": str(through.date()), "identical": rep["identical"]}}
-    if args.promote:
-        tag = store.archive_run(config.name, stamp, root=root)
-        store.save_run(config.name, res.params, res.predictions,
-                       {**meta, "failures": {d.date().isoformat(): e for d, e in res.failures.items()}}, root=root)
-        print(f"promoted; previous run archived to {tag}")
-    else:
-        store.write_meta(config.name, meta, root=root)
-        print(f"rebuild written to {root / rb} (not promoted)")
+    rep = jobs.rebuild(config, panel, through, root=root, promote=args.promote)
+    print(json.dumps(rep, indent=2, default=str))
     return 0
 
 
@@ -166,15 +122,12 @@ def main() -> int:
     if args.command == "rebuild":
         return cmd_rebuild(args, root, config, meta, through)
     prepared = _prepared(config, through)
-    if args.command in ("predict", "run"):
-        print(f"predict: {do_predict(config, prepared, through, root)}")
-    if args.command in ("fit", "run"):
-        fitted = do_fit(config, meta, prepared, through, root)
-        print(f"fit: {fitted}")
-        if args.command == "run" and fitted["fitted"]:
-            # rows after a fit just appended were predicted with the previous one: redo them now,
-            # so the run is walk-forward-consistent when the command ends
-            print(f"re-predict after new fit: {do_predict(config, prepared, through, root)}")
+    if args.command == "run":
+        print(json.dumps(jobs.run_daily(config, prepared, through, root=root), indent=1, default=str))
+    elif args.command == "predict":
+        print(f"predict: {jobs.predict_append(config, prepared, through, root=root)}")
+    else:
+        print(f"fit: {jobs.fit_append(config, prepared, through, root=root)}")
     return 0
 
 

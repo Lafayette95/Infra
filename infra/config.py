@@ -110,6 +110,9 @@ CURVE_GRID_YEARS = (1, 2, 3, 5, 7, 10, 20, 30)
 # predictions.parquet (the stitched out-of-sample rows), written by
 # scripts/run_walk_forward.py through infra.storage.model_runs.
 MODEL_RUNS_DIR = DERIVED_ROOT / "ModelRuns"
+# Strategies (infra/strategies, root CLAUDE.md 27): per strategy, its firm signals and positions
+# (relative and absolute tickers) and its plan vintages, written by infra.jobs.strategy_runs.
+STRATEGIES_DIR = DATABASE_ROOT / "Strategies"
 BOND_YIELD_SOURCES = ("cmt", "otr")
 
 # Repo rates and the NY Fed's Treasury securities lending (CLAUDE.md 19), both fetched by

@@ -67,8 +67,23 @@ EVENT_STUDIES: dict[str, EventStudySpec] = {s.name: s for s in (
 )}
 
 
+FAMILY_PREFIX = "family:"
+
+
+def family_member_name(family: str, i: int) -> str:
+    """The spec name of a family's i-th code: ``family:<name>#<i>`` (a family's codes are
+    ordinary single-code runs; their config stores only this name)."""
+    return f"{FAMILY_PREFIX}{family}#{i}"
+
+
 def get_event_study_spec(spec: EventStudySpec | str | None = None, **overrides) -> EventStudySpec:
-    base = EVENT_STUDIES["nfp_morning"] if spec is None else (EVENT_STUDIES[spec] if isinstance(spec, str) else spec)
+    if isinstance(spec, str) and spec.startswith(FAMILY_PREFIX):
+        fam_name, _, idx = spec[len(FAMILY_PREFIX):].rpartition("#")
+        fam = EVENT_FAMILIES[fam_name]
+        base = replace(fam.study, name=spec, code=fam.codes()[int(idx)])
+    else:
+        base = EVENT_STUDIES["nfp_morning"] if spec is None else (EVENT_STUDIES[spec] if isinstance(spec, str)
+                                                                  else spec)
     return replace(base, **overrides) if overrides else base
 
 

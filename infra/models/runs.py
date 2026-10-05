@@ -203,6 +203,22 @@ def expected_fit(fits: list[pd.Timestamp], index: pd.DatetimeIndex) -> pd.Series
     return pd.Series([f[p] if p >= 0 else pd.NaT for p in pos], index=index)
 
 
+def predict_upcoming(config: RunConfig, prepared: pd.DataFrame, params: pd.DataFrame, through,
+                     horizon_days: int) -> pd.DataFrame:
+    """Rows STARTING after ``through`` within ``horizon_days`` calendar days (events already
+    scheduled, from ``prepared``), all with the LATEST stored fit - what the run expects now
+    for the coming days. A plan, not a stored prediction: the daily predict records each row
+    once its start has passed (with the fit then current)."""
+    fits = fit_dates(params)
+    if not fits:
+        return pd.DataFrame()
+    through = pd.Timestamp(through)
+    model = rebuild_fit(config, params, fits[-1])
+    out = model.predict(prepared, start=through, end=through.normalize() + pd.Timedelta(days=horizon_days + 1)
+                        - pd.Timedelta(microseconds=1))
+    return out.assign(fit_as_of=fits[-1]) if len(out) else out
+
+
 def predict_window_after(params: pd.DataFrame, predictions: pd.DataFrame, last_through=None):
     """Where the daily predict starts (rows AFTER this are recomputed): the earliest of
     * the last fit - the current segment is always redone, so a revised day shows up as a
@@ -235,9 +251,10 @@ def predict_window_after(params: pd.DataFrame, predictions: pd.DataFrame, last_t
     return min(candidates)
 
 
-def rebuild(config: RunConfig, panel: pd.DataFrame, through) -> WalkForwardResult:
+def rebuild(config: RunConfig, panel: pd.DataFrame, through, *, prepare_kwargs: dict | None = None) -> WalkForwardResult:
     """The whole run from scratch (the periodic check)."""
-    return walk_forward(config.make_model, panel, config.start, through, refit=config.refit)
+    return walk_forward(config.make_model, panel, config.start, through, refit=config.refit,
+                        prepare_kwargs=prepare_kwargs)
 
 
 def reconcile(old_params: pd.DataFrame, old_pred: pd.DataFrame, new_params: pd.DataFrame, new_pred: pd.DataFrame,
