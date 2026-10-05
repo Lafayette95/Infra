@@ -5,7 +5,9 @@ then judged together.
 Testing dozens of windows x instruments makes some pass by luck, so a family adds
 **Benjamini-Hochberg** false-discovery-rate control over all its (code, instrument) tests
 (``q`` = the BH-adjusted p-value of the mean's t-test; ``passed_fdr`` = the study's own tests
-AND ``q <= fdr_q``). Codes whose every window is illegal (an end before its start, a lag off
+AND ``q <= fdr_q``). With a condition, the bucket rows (``instrument|-1`` ...) are a second
+family: ``q_did`` over their difference-in-differences p-values, ``passed_fdr`` = the
+bucket's own and conditioning tests AND ``q_did <= fdr_q``. Codes whose every window is illegal (an end before its start, a lag off
 the grid) are kept with ``n = 0`` and the reasons, never silently dropped.
 """
 from __future__ import annotations
@@ -61,6 +63,14 @@ def run_family(family: FamilySpec | str, panel: pd.DataFrame, as_of=None, *, occ
         t["illegal_reasons"] = ";".join(f"{k}={v}" for k, v in reasons.items())
         rows.append(t)
     out = pd.concat(rows, ignore_index=True)
-    out["q"] = benjamini_hochberg(out["p_t"].to_numpy())
+    overall = ~out["instrument"].astype(str).str.contains("|", regex=False)
+    out["q"] = np.nan
+    out.loc[overall, "q"] = benjamini_hochberg(out.loc[overall, "p_t"].to_numpy())
     out["passed_fdr"] = ((out["passed"] == 1.0) & (out["q"] <= fam.fdr_q)).astype(float)
+    if "p_did" in out:
+        # conditional buckets: their own family of tests - the conditioning's added value (DiD)
+        out["q_did"] = np.nan
+        out.loc[~overall, "q_did"] = benjamini_hochberg(out.loc[~overall, "p_did"].to_numpy())
+        out.loc[~overall, "passed_fdr"] = ((out.loc[~overall, "cond_passed"] == 1.0)
+                                           & (out.loc[~overall, "q_did"] <= fam.fdr_q)).astype(float)
     return out

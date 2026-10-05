@@ -27,6 +27,15 @@ Everything stays tz-naive UTC (root CLAUDE.md 7). ``as_of`` is the point-in-time
 (root CLAUDE.md 3): rows after it are never returned, and ``release:`` reads the vintage
 published by then. Missing history must be loaded through the pipeline first; nothing
 here fetches.
+
+**Availability** (``SeriesSource.availability``, ``available_at``, ``read_available``; user
+decision 2026-10-05: one global set of rules, here next to the readers): WHEN a value became
+public - to the MARKET, not to our pipeline (a settlement is public that evening; our licence
+and the morning cycle deliver it later - a live-scheduling concern). A row's ``timestamp``
+is a LABEL (the trading day, the period), not when it was known: a condition, a feature or
+any point-in-time join must use ``available_at``. Rules sit at the LATE end of the usual
+publication window; a store's own publication instant (release vintages) beats a rule;
+``verified=False`` marks a deliberately conservative rule whose real time is not verified.
 """
 from __future__ import annotations
 
@@ -170,29 +179,99 @@ def _bar(keys, start, end, as_of):
 
 
 @dataclass(frozen=True)
+class Availability:
+    """When a value labelled day D (or instant t) became public.
+
+    ``kind="day"``: D moved ``days`` business days (``calendar``), at ``local_time`` in
+    ``timezone``. ``kind="instant"``: the label instant + ``offset``. ``kind="publication"``:
+    the store's own publication instant per row (release vintages)."""
+    kind: str = "day"
+    days: int = 0
+    local_time: str = "23:59"
+    timezone: str = "America/New_York"
+    offset: pd.Timedelta = pd.Timedelta(0)
+    calendar: str = "federal"
+    verified: bool = True
+    note: str = ""
+
+
+def _settle_avail(key: str) -> Availability:
+    """A settlement for trading day D: public by the session's close on D (CME settles at
+    14:00 CT, the session closes 16:00 CT - the close is the safe side)."""
+    from infra.config import FUTURES_ROOTS, TRADING_HOURS
+    spec = parse_relative(key)
+    root = spec.root if spec is not None else next((r for r in sorted(FUTURES_ROOTS, key=len, reverse=True)
+                                                    if key.startswith(r)), None)
+    session = TRADING_HOURS[FUTURES_ROOTS[root].dataset]
+    return Availability("day", 0, session.close_time, session.timezone,
+                        note=f"settlement by the session close ({session.close_time} {session.timezone})")
+
+
+def _bond_avail(key: str) -> Availability:
+    if key.startswith("UK_"):
+        return Availability("day", 1, "12:00", "Europe/London", calendar="market", verified=False,
+                            note="BoE curve: next business day noon (conservative; often later - month ends)")
+    if key.startswith("DE_"):
+        return Availability("day", 1, "09:00", "Europe/Berlin", calendar="market", verified=False,
+                            note="Bundesbank Svensson parameters: next morning (conservative; same-day in practice)")
+    return Availability("day", 1, "09:00", "America/New_York", verified=False,
+                        note="Treasury par yield curve (CMT): next morning (conservative; published the same evening)")
+
+
+def _swap_avail(key: str) -> Availability:
+    from infra.config import SWAP_CLOSES
+    parts = key.split(":")
+    close = parts[2] if len(parts) > 2 else "NY1500"
+    spec = SWAP_CLOSES[close]
+    return Availability("day", 0, spec.local_time, spec.timezone, offset=pd.Timedelta(minutes=90),
+                        note=f"the {close} snap + 90 min (the latest trade a close can use; DTCC disseminates in "
+                             f"real time)")
+
+
+def _repo_avail(key: str) -> Availability:
+    if key in ("SOFR", "TGCR", "BGCR"):
+        return Availability("day", 1, "08:00", "America/New_York",
+                            note="NY Fed: ~08:00 New York on D+1 (root CLAUDE.md 19; may be revised that afternoon)")
+    return Availability("day", 2, "12:00", "America/New_York", verified=False,
+                        note="OFR / DTCC series: two business days (conservative)")
+
+
+@dataclass(frozen=True)
 class SeriesSource:
     reader: Callable  # (keys, start, end, as_of) -> wide frame, columns = keys
     description: str
     examples: tuple[str, ...] = ()
     point_in_time_index: bool = True  # False: indexed by observation period, not by when it was known
+    availability: Availability | Callable[[str], Availability] = Availability()
 
 
 SERIES_SOURCES: dict[str, SeriesSource] = {
     "fut": SeriesSource(_fut, "back-adjusted continuous futures settlement",
-                        ("fut:ZN.v.0", "fut:ZF.v.0", "fut:ZT.v.0", "fut:TN.v.0", "fut:ZB.v.0", "fut:UB.v.0")),
-    "settle": SeriesSource(_settle, "raw daily settlement (roll jumps kept)", ("settle:ZQ.c.1",)),
+                        ("fut:ZN.v.0", "fut:ZF.v.0", "fut:ZT.v.0", "fut:TN.v.0", "fut:ZB.v.0", "fut:UB.v.0"),
+                        availability=_settle_avail),
+    "settle": SeriesSource(_settle, "raw daily settlement (roll jumps kept)", ("settle:ZQ.c.1",),
+                           availability=_settle_avail),
     "stir": SeriesSource(_stir, "STIR implied rate, 100 - settlement (%)",
-                         tuple(f"stir:SR3.c.{i}" for i in range(12)) + tuple(f"stir:ESR.c.{i}" for i in range(4))),
+                         tuple(f"stir:SR3.c.{i}" for i in range(12)) + tuple(f"stir:ESR.c.{i}" for i in range(4)),
+                         availability=_settle_avail),
     "bond": SeriesSource(_bond("cmt"), "par yield (CMT / BoE / Bundesbank), %",
-                         tuple(f"bond:{c}_BOND_{t}y" for c in ("US", "UK", "DE") for t in (2, 3, 5, 7, 10, 20, 30))),
+                         tuple(f"bond:{c}_BOND_{t}y" for c in ("US", "UK", "DE") for t in (2, 3, 5, 7, 10, 20, 30)),
+                         availability=_bond_avail),
     "otr": SeriesSource(_bond("otr"), "on-the-run Treasury END OF DAY yield, %",
-                        tuple(f"otr:US_BOND_{t}y" for t in (2, 3, 5, 7, 10, 20, 30))),
+                        tuple(f"otr:US_BOND_{t}y" for t in (2, 3, 5, 7, 10, 20, 30)),
+                        availability=Availability("day", 1, "10:00", "America/New_York",
+                                                  note="FedInvest END OF DAY: posted D+1 06:00-~10:00 New York "
+                                                       "(root CLAUDE.md 18)")),
     "swap": SeriesSource(_swap, "swap close (currency:tenor[:close[:method]]), %",
-                         tuple(f"swap:USD:{t}y" for t in (1, 2, 3, 5, 7, 10, 15, 20, 30))),
-    "repo": SeriesSource(_repo, "repo rate, %", ("repo:SOFR", "repo:TGCR", "repo:BGCR")),
+                         tuple(f"swap:USD:{t}y" for t in (1, 2, 3, 5, 7, 10, 15, 20, 30)), availability=_swap_avail),
+    "repo": SeriesSource(_repo, "repo rate, %", ("repo:SOFR", "repo:TGCR", "repo:BGCR"), availability=_repo_avail),
     "release": SeriesSource(_release, "macro series as published by as_of (indexed by period)",
-                            ("release:PAYEMS", "release:UNRATE", "release:CPIAUCSL"), point_in_time_index=False),
-    "bar": SeriesSource(_bar, "1-minute trade-bar close (UTC)", ("bar:ZN.v.0",)),
+                            ("release:PAYEMS", "release:UNRATE", "release:CPIAUCSL"), point_in_time_index=False,
+                            availability=Availability("publication", note="each vintage at its publication day, "
+                                                      "at the release's registry time")),
+    "bar": SeriesSource(_bar, "1-minute trade-bar close (UTC)", ("bar:ZN.v.0",),
+                        availability=Availability("instant", offset=pd.Timedelta(minutes=1),
+                                                  note="a bar is stamped at its START: known one minute later")),
 }
 
 
@@ -234,3 +313,62 @@ def read_panel(series_ids: list[str], start, end, *, as_of=None, how: str = "out
 def example_ids() -> list[str]:
     """Every source's example ids (for pickers)."""
     return [e for s in SERIES_SOURCES.values() for e in s.examples]
+
+
+# --------------------------------------------------------------------------- availability
+def availability_of(series_id: str) -> Availability:
+    source, key = parse_id(series_id)
+    rule = SERIES_SOURCES[source].availability
+    return rule(key) if callable(rule) else rule
+
+
+def available_at(series_id: str, labels) -> pd.DatetimeIndex:
+    """UTC instant each labelled value became public (``Availability``); not for
+    ``kind="publication"`` sources (use ``read_available``)."""
+    from infra.processing.schedule_rules import business_days
+    from infra.trading_calendar import snap_instants
+    rule = availability_of(series_id)
+    labels = pd.DatetimeIndex(pd.to_datetime(labels))
+    if rule.kind == "instant":
+        return labels + rule.offset
+    if rule.kind != "day":
+        raise ValueError(f"{series_id}: availability {rule.kind!r} needs read_available")
+    days = labels.normalize()
+    if rule.days:
+        bd = business_days(days.min() - pd.Timedelta(days=10), days.max() + pd.Timedelta(days=10 + 2 * rule.days),
+                           rule.calendar)
+        pos = bd.searchsorted(days, side="right") - 1 + rule.days  # from the day (or the business day before it)
+        days = bd[pos]
+    return snap_instants(days, rule.local_time, rule.timezone) + rule.offset
+
+
+def _release_available(key: str, start, end) -> pd.DataFrame:
+    """Every vintage of a macro series with its publication instant: the publication day at
+    the release's registry time (the event of the registry series stored under this id), else
+    the end of the publication day. ``label`` = the period."""
+    from infra.pipeline.releases import read_releases_from_disk
+    from infra.reference.events import EVENTS, SERIES
+    from infra.trading_calendar import snap_instants
+    raw = read_releases_from_disk([key])
+    raw = raw[(raw["timestamp"] >= pd.Timestamp(start) - pd.DateOffset(years=2)) & (raw["timestamp"] <= pd.Timestamp(end))]
+    ev = next((EVENTS[s_.event] for s_ in SERIES.values() if s_.store_id == key), None)
+    t = ev.time_local if ev is not None and ev.time_local else "23:59"
+    tz = ev.timezone if ev is not None else "America/New_York"
+    pub = snap_instants(pd.DatetimeIndex(raw["timestamp"]).normalize(), t, tz)
+    return pd.DataFrame({"label": pd.DatetimeIndex(raw["period"]), "available_at": pub,
+                         "value": raw["value"].to_numpy(dtype="float64")})
+
+
+def read_available(series_id: str, start, end) -> pd.DataFrame:
+    """One series as a point-in-time timeline: ``label`` (the row's day / period / instant),
+    ``available_at`` (UTC, when it became public) and ``value``, sorted by availability. For a
+    vintage series, every vintage is a row (a revision is a later row for the same label)."""
+    source, key = parse_id(series_id)
+    if availability_of(series_id).kind == "publication":
+        out = _release_available(key, start, end)
+    else:
+        wide = read_panel([series_id], start, end)
+        s = wide[series_id].dropna() if series_id in wide else pd.Series(dtype="float64")
+        out = pd.DataFrame({"label": s.index, "available_at": available_at(series_id, s.index) if len(s) else
+                            pd.DatetimeIndex([]), "value": s.to_numpy(dtype="float64")})
+    return out.sort_values(["available_at", "label"], kind="stable").reset_index(drop=True)

@@ -24,7 +24,7 @@ predict-append, rebuild) applies unchanged.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -91,7 +91,23 @@ class EventStudy(Model):
         return ew.consolidate(cal)
 
     # ------------------------------------------------------------------ 1-2. prepare
-    def prepare(self, raw: pd.DataFrame, *, as_of=None, occurrences: pd.DataFrame | None = None, **_) -> pd.DataFrame:
+    def condition_timeline(self, start, end) -> pd.DataFrame:
+        """The condition series' point-in-time rows (``read_available``), from ``history``
+        before ``start`` (the partition's warm-up)."""
+        from infra.pipeline.series_panel import read_available
+        c = self.spec.condition
+        return read_available(c.series, pd.Timestamp(start) - pd.Timedelta(c.history), end)
+
+    def _condition(self, starts, timeline: pd.DataFrame, step: pd.Timedelta) -> pd.DataFrame:
+        from infra.models.event_study import conditions as ec
+        c = self.spec.condition
+        states = ec.state_timeline(timeline, period_diff=c.period_diff)
+        feat = ec.feature(states, c.steps)
+        buckets = ec.partition(feat, c.partition)
+        return ec.at_windows(starts, feat, buckets, c.lag_steps * step)
+
+    def prepare(self, raw: pd.DataFrame, *, as_of=None, occurrences: pd.DataFrame | None = None,
+                condition_timeline: pd.DataFrame | None = None, **_) -> pd.DataFrame:
         """``raw`` = the grid step P&L panel (``read_panel``). Events as known at ``as_of``
         (default: the panel's last day; ``spec.ignore_as_of``: as known now)."""
         from infra.processing.schedule_rules import business_days
@@ -117,6 +133,12 @@ class EventStudy(Model):
         for inst in panel.columns:
             out[f"pnl:{inst}"] = pnl[inst].to_numpy()
             out[f"missing:{inst}"] = gaps[inst].to_numpy()
+        if self.spec.condition is not None:
+            tl = condition_timeline if condition_timeline is not None else self.condition_timeline(
+                days.min(), max(days.max(), grid.days.max()) + pd.Timedelta(days=1))
+            cond = self._condition(frame["start"], tl, grid.step)
+            for col in cond.columns:
+                out[col] = cond[col].to_numpy()
         out.index = pd.DatetimeIndex(frame["start"].fillna(frame["anchor"]), name="timestamp")
         out.attrs["instruments"] = list(panel.columns)
         out.attrs["code"] = self.code.encode()
@@ -136,9 +158,29 @@ class EventStudy(Model):
         pl = prepared[done & (prepared["kind"] == "placebo").to_numpy()]
         pl = pl[pl["pattern"].isin(set(ev["pattern"]))]
         rows = {}
+        cond = self.spec.condition
         for inst in insts:
-            s = st.event_stats(ev[f"pnl:{inst}"].to_numpy(), ev.index, pl[f"pnl:{inst}"].to_numpy(), trim=self.spec.trim)
+            x, y = ev[f"pnl:{inst}"].to_numpy(), pl[f"pnl:{inst}"].to_numpy()
+            s = st.event_stats(x, ev.index, y, trim=self.spec.trim)
             rows[inst] = s | st.passes(s, self.spec)
+            if cond is None:
+                continue
+            bx, by = ev["cond_bucket"].to_numpy(dtype="float64"), pl["cond_bucket"].to_numpy(dtype="float64")
+            rows[inst] |= st.condition_overall(x, ev["cond_value"].to_numpy(dtype="float64"), y,
+                                               pl["cond_value"].to_numpy(dtype="float64"), bx)
+            bucket_spec = replace(self.spec, min_obs=cond.min_bucket_obs)
+            for b in (-1.0, 0.0, 1.0):
+                inb, inp = bx == b, by == b
+                rest_x, rest_p = np.isfinite(bx) & ~inb, np.isfinite(by) & ~inp
+                sb = st.event_stats(x[inb], ev.index[inb], y[inp], trim=self.spec.trim)
+                sb |= st.passes(sb, bucket_spec)
+                sb |= st.bucket_stats(x[inb], y[inp], x[rest_x], y[rest_p])
+                did_ok = cond.did_t_min is None or (np.isfinite(sb["t_did"]) and abs(sb["t_did"]) >= cond.did_t_min)
+                rest_ok = cond.vs_rest_t_min is None or (np.isfinite(sb["t_vs_rest"])
+                                                         and abs(sb["t_vs_rest"]) >= cond.vs_rest_t_min)
+                sb["test_did"], sb["test_vs_rest"] = float(did_ok), float(rest_ok)
+                sb["cond_passed"] = float(sb["passed"] == 1.0 and did_ok and rest_ok)
+                rows[f"{inst}|{int(b):+d}"] = sb
         table = pd.DataFrame(rows).T
         table.index.name = "instrument"
         self.fitted_ = EventStudyFit(as_of=as_of, table=table.astype("float64"), code=self.code.encode())
@@ -167,6 +209,8 @@ class EventStudy(Model):
         t = self.fitted_.table
         out = pd.DataFrame({"end": ev["end"], "legal": ev["legal"].astype(float), "reason": ev["reason"]},
                            index=ev.index)
+        if "cond_bucket" in ev:
+            return self._predict_conditional(ev, out)
         for inst in t.index:
             out[f"pnl:{inst}"] = ev[f"pnl:{inst}"].to_numpy() if f"pnl:{inst}" in ev else np.nan
             out[f"expected:{inst}"] = np.where(ev["legal"], t.loc[inst, "mean"], np.nan)
@@ -178,6 +222,31 @@ class EventStudy(Model):
         out["in_sample"] = cutoff_mask(pd.DatetimeIndex(ends), self.fitted_.as_of)
         out = out.drop(columns=["reason"])
         return out
+
+    def _predict_conditional(self, ev: pd.DataFrame, out: pd.DataFrame) -> pd.DataFrame:
+        """Each event's expectation and signal come from the bucket its condition was in at its
+        start: +1 / -1 (the bucket mean's sign) where the bucket passes its own tests AND the
+        conditioning tests (``cond_passed``), else 0. ``expected_all`` = the unconditional mean."""
+        t = self.fitted_.table
+        out["cond_bucket"] = ev["cond_bucket"].to_numpy()
+        legal = ev["legal"].to_numpy(dtype=bool)
+        for inst in [i for i in t.index if "|" not in i]:
+            out[f"pnl:{inst}"] = ev[f"pnl:{inst}"].to_numpy() if f"pnl:{inst}" in ev else np.nan
+            out[f"expected_all:{inst}"] = np.where(legal, t.loc[inst, "mean"], np.nan)
+            exp, sig = np.full(len(ev), np.nan), np.zeros(len(ev))
+            for b in (-1.0, 0.0, 1.0):
+                key = f"{inst}|{int(b):+d}"
+                if key not in t.index:
+                    continue
+                m = legal & (ev["cond_bucket"].to_numpy(dtype="float64") == b)
+                mean, ok = t.loc[key, "mean"], t.loc[key, "cond_passed"] == 1.0
+                exp[m] = mean
+                sig[m] = (float(np.sign(mean)) if ok and np.isfinite(mean) else 0.0) + 0.0
+            out[f"expected:{inst}"], out[f"signal:{inst}"] = exp, sig
+        ends = pd.Series(pd.DatetimeIndex(ev["end"]), index=ev.index)
+        ends = ends.fillna(pd.Series(ev.index, index=ev.index))
+        out["in_sample"] = cutoff_mask(pd.DatetimeIndex(ends), self.fitted_.as_of)
+        return out.drop(columns=["reason"])
 
     # ------------------------------------------------------------------ paths
     def paths(self, panel: pd.DataFrame, prepared: pd.DataFrame, *, relative_to: str = "start") -> pd.DataFrame:

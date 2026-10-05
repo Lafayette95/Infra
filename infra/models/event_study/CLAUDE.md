@@ -5,8 +5,8 @@ prepare -> fit -> predict, the operating model of 0b). Known gaps: the ONE root 
 headings "Event study: ...". Built 2026-10-05 from the user's spec.
 
 ## 1. What it is
-*   **Patterns in windows relative to one event, or between two events** (absolute for now;
-    conditional on third variables later). A study = an EVENT CODE (the window) x instruments x
+*   **Patterns in windows relative to one event, or between two events**, absolute or
+    CONDITIONAL on a third series (section 5). A study = an EVENT CODE (the window) x instruments x
     a P&L source x test thresholds (`config.EventStudySpec`, registry `EVENT_STUDIES`).
 *   **Model lingo:** steps 1-2 (events -> windows -> window P&L) are `prepare`; steps 3-4 (the
     tests, per instrument, and what passes) are `fit`; `predict` gives each later event the
@@ -69,8 +69,9 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
     following (Friday evening, holiday eves) - the price is the close's: without that, 11% of
     ZN's grid points were NaN (found 2026-10-05); with it 99.35%.
 *   **Coverage today:** bbo-1m quotes for ZT / ZF / ZN / ZB / UB from 2015, TN from 2016 (both
-    contracts around each roll); bp needs the bmk DV01, which for the Treasury roots exists only
-    from 2025-07 (`TOFIX.md`): use `FUTURE_PTS_BBO` for longer history until bmk is back-filled.
+    contracts around each roll); bp needs the bmk DV01: back-filled 2026-10-05, so bp from
+    2018-10 (the funding model's start), 98-99% of grid steps from 2019; `FUTURE_PTS_BBO` (points)
+    from 2015.
     A persisted 15-minute bmk store can replace the on-the-fly source under the same interface.
 
 ## 4. The tests (`stats.py`, thresholds in the spec; `None` = off)
@@ -90,7 +91,41 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
     false-discovery control over all (code, instrument) tests (`q`, `passed_fdr`): a family
     produces false positives by construction.
 
-## 5. Real-data checks (2026-10-05, ZT / ZN / ZB, price points, fit 2015-2024)
+## 5. Conditional studies (`conditions.py`, `ConditionSpec`; built 2026-10-05)
+*   **The condition is another series** (`ConditionSpec.series`, any `series_panel` id: a price
+    we track, a yield, a repo rate, a macro print), one per study for now (user decision).
+*   **Point in time through the GLOBAL availability rules** (`infra.pipeline.series_panel`,
+    root CLAUDE.md 26): each value counts from when it became public to the market (a settlement
+    by the session close, SOFR at 08:00 the next morning, FedInvest at 10:00 the next morning, a
+    macro vintage at its release instant ...), not from its day label - a fixed "1 day" lag would
+    leak FedInvest's END OF DAY into an 08:30 window. `lag_steps` (default 1 grid step) is a
+    safety margin on top. Conditioning a window on the print it contains is therefore impossible
+    unless the window starts after the print.
+*   **Feature** (`steps`: the prep steps along the series' own point-in-time timeline - `diff:20`
+    = the 20-observation change, `ewm_z:hl` ...; `period_diff` for vintage series: the latest
+    print's change vs the previous period, as known then) and **regimes** (`partition`, swappable,
+    `PARTITIONERS`): `rolling_tercile:W` (default; balanced buckets), `zscore:W:k` (tails),
+    `sign`, `fixed:a:b` - each from the trailing W timeline rows only.
+*   **The tests**, per instrument and bucket (rows `ZN.v.0|-1`, `|+0`, `|+1` next to the overall
+    row): the standalone tests on the bucket's events (`min_bucket_obs`); `t_vs_rest` (Welch,
+    the bucket vs the other buckets - never vs the whole population, which contains it); and
+    the **difference-in-differences** `did` / `t_did` = (bucket events - bucket placebo) -
+    (rest events - rest placebo): whether the EVENT effect differs in the regime, net of what the
+    regime does to every window. `cond_passed` = the bucket's own tests and `did_t_min` (and
+    `vs_rest_t_min` if set). Overall: `p_kruskal` (do the buckets differ at all) and the SLOPE of
+    the event move on the continuous feature, with the placebo slope and `t_slope_did` (no
+    thresholds). `predict` uses the bucket the event was in at its start. Families add
+    `q_did` (BH over the buckets' DiD p-values).
+*   **Why the DiD (pinned by a test):** a regime that moves EVERY window (placebo too) makes the
+    naive bucket-vs-rest t 9-13 on synthetic data, while the DiD stays null - over 30 seeds mean
+    t 0.24, |t| > 1.5 in 3% (conservative). A regime-specific event effect passes it (t > 3).
+*   **Real data** (2026-10-05, points, fit 2015-2024, `nfp_morning_by_trend`: ZN's 20-day trend
+    into the print, rolling terciles over 2 years): after a 20-day rally in ZN (top tercile) ZN
+    sells off after NFP (-0.15 pt, t -1.9, DiD t -1.6): passes; ZB's unconditional effect is not
+    a trend effect (no ZB bucket passes the DiD); the slope of ZT's move on the trend is t -2.0
+    net of placebo.
+
+## 6. Real-data checks (2026-10-05, ZT / ZN / ZB, price points, fit 2015-2024)
 *   `nfp_morning` (08:15 -> 10:30 ET, 120 events): ZB mean -0.20 pt, t -2.44, Wilcoxon p 0.018,
     same sign in 90% of years, placebo excess t -2.33: passes; ZT / ZN don't. The path: the move
     is in the 08:30-08:45 step (sd 0.36 vs 0.08 the step before).
@@ -98,7 +133,7 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
     (ZN sells off in the 30 minutes after the print, |t| up to 2.8), none survives BH at q 0.10
     (lowest q 0.20) - the reason the family control exists.
 
-## 6. Running it
+## 7. Running it
 ```python
 from infra.models.event_study.model import EventStudy
 study = EventStudy("nfp_morning", source="FUTURE_PTS_BBO")
@@ -108,4 +143,5 @@ study.fit(data, as_of="2024-12-31"); study.fitted_.table
 study.predict(data, start="2024-12-31"); study.paths(panel, data)
 from infra.models.event_study.family import run_family
 run_family("nfp_intraday", panel, as_of="2024-12-31")
+EventStudy("nfp_morning_by_trend", source="FUTURE_PTS_BBO")   # a conditional study: same calls
 ```

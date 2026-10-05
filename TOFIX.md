@@ -1033,7 +1033,11 @@ funding model's SOFR path starts 2018-10-01. So bp studies start 2018-10.
     (plain t); a family with long windows should use overlap-aware errors.
 *   **Family persistence:** a family runs and reports (`run_family`), but only single codes have
     the run machinery (one run per code); a family store (one table per fit date) is not built.
-*   **Conditional studies** (the spec's "conditional on third variables") are not built.
+*   **Conditional studies, next steps:** one condition per study (two-dimensional regimes
+    later); no SURPRISE feature yet (actual - MarketWatch consensus,
+    `infra.pipeline.econ_calendar.consensus`, needs its own availability: the consensus as known
+    before the print); availability rules are single per source (date-ranged variants if a
+    publication time changes); CMT / BoE / Bundesbank / OFR rules are conservative, not verified.
 *   **OHLC and executable P&L sources** (user decision 2026-10-05: BBO mid only for now). Both
     are a price-type parameter on the same source (mapping, one-contract steps, halt carry and
     DV01 conversion shared): `..._OHLC` = the close of the 1-minute bar ENDING at the point (a

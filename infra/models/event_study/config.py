@@ -9,6 +9,21 @@ from itertools import product
 
 
 @dataclass(frozen=True)
+class ConditionSpec:
+    """Condition the windows on a third series (infra.models.event_study.conditions): its
+    point-in-time feature at each window's start, partitioned into -1 / 0 / +1."""
+    series: str                                 # a series id (infra.pipeline.series_panel), e.g. "fut:ZN.v.0"
+    steps: tuple[str, ...] = ()                 # feature: prep steps along its timeline ("diff", "ewm_z:20")
+    period_diff: bool = False                   # vintage series: the latest period's change vs the previous
+    partition: str = "rolling_tercile:252"      # PARTITIONERS rule, W in timeline rows
+    lag_steps: int = 1                          # grid steps BEFORE the window start, on top of availability
+    history: str = "1095D"                      # timeline read this far before the panel (partition warm-up)
+    min_bucket_obs: int = 10
+    did_t_min: float | None = 1.5               # |t| of the bucket's event-minus-placebo effect vs the rest's
+    vs_rest_t_min: float | None = None          # |t| of the bucket's events vs the other buckets' (Welch)
+
+
+@dataclass(frozen=True)
 class EventStudySpec:
     name: str = "custom"
     description: str = ""
@@ -30,6 +45,7 @@ class EventStudySpec:
     stable_halves: bool = False                 # both halves of the sample: same sign as the whole
     year_share_min: float | None = None         # share of years (>= 2 events) with the same sign
     trim: int = 1                               # events dropped at EACH tail for the trimmed mean
+    condition: ConditionSpec | None = None      # a third series' regime (None = unconditional)
 
 
 EVENT_STUDIES: dict[str, EventStudySpec] = {s.name: s for s in (
@@ -40,6 +56,11 @@ EVENT_STUDIES: dict[str, EventStudySpec] = {s.name: s for s in (
                    "grid opens the day after the following 7y auction",
                    code="US_TSY_AUCTION_3Y__US_TSY_AUCTION_7Y;GRID_START;;&0_0_&_-2__&1_1_%0_2;;DEFAULT_CYCLE",
                    instruments=("ZT.v.0", "ZF.v.0", "ZN.v.0")),
+    EventStudySpec("nfp_morning_by_trend", "nfp_morning conditioned on ZN's 20-day trend into the print "
+                   "(change of the back-adjusted settlement over 20 days, rolling terciles over 2 years)",
+                   code="US_EMPLOYMENT_SITUATION;;;&0_0_&_-1__&0_0_&_8;;DEFAULT_CYCLE",
+                   instruments=("ZT.v.0", "ZN.v.0", "ZB.v.0"),
+                   condition=ConditionSpec("fut:ZN.v.0", steps=("diff:20",), partition="rolling_tercile:504")),
     EventStudySpec("refunding_day", "Refunding statement: 08:30 -> grid end",
                    code="US_TSY_REFUNDING;GRID_END;;&0_0_&_0__&0_0_%0_0;;DEFAULT_CYCLE",
                    instruments=("ZN.v.0", "ZB.v.0", "UB.v.0")),

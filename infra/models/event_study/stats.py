@@ -116,3 +116,67 @@ def passes(st: dict, spec) -> dict:
         tests["test_years"] = ge(st["year_share"], spec.year_share_min)
     tests["passed"] = float(all(v == 1.0 for v in tests.values()))
     return tests
+
+
+CONDITION_STAT_NAMES = ("bucket_share", "mean_rest", "t_vs_rest", "p_vs_rest", "effect", "effect_rest", "did",
+                        "t_did", "p_did")
+
+
+def bucket_stats(x_b, y_b, x_rest, y_rest) -> dict:
+    """The bucket against the rest: ``t_vs_rest`` (Welch, event moves), and the
+    DIFFERENCE-IN-DIFFERENCES ``did`` = (bucket events - bucket placebo) - (rest events - rest
+    placebo), with its t: whether the EVENT effect differs in the regime, net of what the
+    regime does to every window (a high-vol regime moves all windows more)."""
+    def clean(v):
+        v = np.asarray(v, dtype="float64")
+        return v[np.isfinite(v)]
+    x_b, y_b, x_rest, y_rest = map(clean, (x_b, y_b, x_rest, y_rest))
+    out = dict.fromkeys(CONDITION_STAT_NAMES, np.nan)
+    n_all = len(x_b) + len(x_rest)
+    if n_all:
+        out["bucket_share"] = len(x_b) / n_all
+    if len(x_rest):
+        out["mean_rest"] = float(np.mean(x_rest))
+    if len(x_b) > 1 and len(x_rest) > 1:
+        w = stats.ttest_ind(x_b, x_rest, equal_var=False)
+        out["t_vs_rest"], out["p_vs_rest"] = float(w.statistic), float(w.pvalue)
+    if min(len(x_b), len(y_b), len(x_rest), len(y_rest)) > 1:
+        eff_b, eff_r = np.mean(x_b) - np.mean(y_b), np.mean(x_rest) - np.mean(y_rest)
+        se = np.sqrt(np.var(x_b, ddof=1) / len(x_b) + np.var(y_b, ddof=1) / len(y_b)
+                     + np.var(x_rest, ddof=1) / len(x_rest) + np.var(y_rest, ddof=1) / len(y_rest))
+        did = eff_b - eff_r
+        out.update(effect=float(eff_b), effect_rest=float(eff_r), did=float(did))
+        if se > 0:
+            t = did / se
+            out["t_did"], out["p_did"] = float(t), float(2 * stats.norm.sf(abs(t)))
+    return out
+
+
+def condition_overall(x, feat_x, y, feat_y, buckets_x) -> dict:
+    """Over all events: ``p_kruskal`` (do the buckets' event moves differ at all), and the
+    SLOPE of the event move on the continuous feature (no thresholds), the placebo's slope,
+    and the slope difference's t (``t_slope_did``)."""
+    out = {"p_kruskal": np.nan, "slope": np.nan, "t_slope": np.nan, "slope_placebo": np.nan, "t_slope_did": np.nan}
+    x, fx, bx = (np.asarray(a, dtype="float64") for a in (x, feat_x, buckets_x))
+    groups = [x[(bx == b) & np.isfinite(x)] for b in (-1.0, 0.0, 1.0)]
+    groups = [g for g in groups if len(g) > 1]
+    if len(groups) >= 2:
+        try:
+            out["p_kruskal"] = float(stats.kruskal(*groups).pvalue)
+        except ValueError:
+            pass
+
+    def slope(v, f):
+        ok = np.isfinite(v) & np.isfinite(f)
+        if ok.sum() < 5 or np.std(f[ok]) == 0:
+            return np.nan, np.nan
+        r = stats.linregress(f[ok], v[ok])
+        return float(r.slope), float(r.stderr)
+    b_x, se_x = slope(x, fx)
+    b_y, se_y = slope(np.asarray(y, dtype="float64"), np.asarray(feat_y, dtype="float64"))
+    out["slope"], out["slope_placebo"] = b_x, b_y
+    if np.isfinite(se_x) and se_x > 0:
+        out["t_slope"] = b_x / se_x
+    if np.isfinite(se_x) and np.isfinite(se_y) and (se_x ** 2 + se_y ** 2) > 0:
+        out["t_slope_did"] = (b_x - b_y) / np.sqrt(se_x ** 2 + se_y ** 2)
+    return out
