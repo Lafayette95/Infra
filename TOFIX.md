@@ -1015,6 +1015,23 @@ Treasury roots starts 2025-07; quotes go back to 2015, so `FUTURE_BPS_BBO` is Na
 and studies in bp have ~15 months of history. **Options:** back-fill bmk risk
 (`infra.cycle.bmk.backfill_daily_risk`; Treasury DV01 needs FedInvest prices - from 2008 - and
 funding - SR1 from 2018-05, so 2018-05 onward is possible); meanwhile use `FUTURE_PTS_BBO`.
+**Update 2026-10-05:** back-filled 2018-05 .. 2025-06 (M0 DV01, ~13 s per month): 99-100%
+of Treasury contract-days from 2019. 2018 is 27%: the funding model's SOFR path starts
+2018-10-01 (`path starts 2018-10-01` before it), and mid-December 2018 fails on the next
+entry. So bp studies effectively start 2018-10 (2019 for a clean year).
+
+## Financing: a one-off market closure breaks the SOFR path (5 Dec 2018)
+
+**Found:** 2026-10-05, back-filling bmk DV01. **Where:** `infra/analytics/sofr_curve.py`
+(its business-day calendar: federal holidays + Good Friday). **Status:** open.
+
+**The issue:** SOFR was not published on 5 Dec 2018 (national day of mourning for President
+G.H.W. Bush - markets closed), but the calendar counts it as a fixing day, so every
+`financing_rate` whose path crosses it raises `a published fixing day has no fixing`: the M0
+futures DV01 (bmk) is NaN for ZT..UB on most of December 2018. **Options:** treat a day with
+no published fixing inside the fixings' own span as a non-fixing day (carry the previous
+rate, as for a holiday); or list one-off closures (5 Dec 2018, 9 Jan 2025 - Carter) in the
+calendar.
 
 ## Event study: open items from the first build
 
@@ -1029,7 +1046,12 @@ funding - SR1 from 2018-05, so 2018-05 onward is possible); meanwhile use `FUTUR
     (plain t); a family with long windows should use overlap-aware errors.
 *   **Family persistence:** a family runs and reports (`run_family`), but only single codes have
     the run machinery (one run per code); a family store (one table per fit date) is not built.
-*   **`US_FUTURES_OPEN`** (the user's example) is not defined: Globex's open is 17:00 CT (the
-    evening before) - outside the default grid - and an "open" inside the New York day was not
-    verified. Add it to `TIME_EVENTS` once its meaning is fixed.
 *   **Conditional studies** (the spec's "conditional on third variables") are not built.
+*   **OHLC and executable P&L sources** (user decision 2026-10-05: BBO mid only for now). Both
+    are a price-type parameter on the same source (mapping, one-contract steps, halt carry and
+    DV01 conversion shared): `..._OHLC` = the close of the 1-minute bar ENDING at the point (a
+    bar is stamped at its start - point in time), a cross-check (an effect only in trade prices
+    is microstructure: bid-ask bounce, stale prints) that also brings volume; `..._BBO_EXEC` =
+    enter at the ask / exit at the bid (long), the cost-inclusive move - the "costs" item above.
+    ohlcv-1m holds only 2026-08-23..09-20 for the bond roots: price the back-fill with a dry run
+    first.

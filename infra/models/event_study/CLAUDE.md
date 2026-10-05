@@ -25,7 +25,8 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
     Events are read as known at the panel's last day (`as_of`), or as known now
     (`EventStudySpec.ignore_as_of`).
 *   **Time-only events and grids** are `infra.reference.event_grid`: `TIME_EVENTS` (`GRID_START`,
-    `GRID_END` = the cycle's own first / last point; `CME_GLOBEX_OPEN` 17:00 CT,
+    `GRID_END` = the cycle's own first / last point; `US_CASH_OPEN` 08:20 ET (the user's
+    definition; the example's "futures open" meant this); `CME_GLOBEX_OPEN` 17:00 CT,
     `CME_GLOBEX_CLOSE` 16:00 CT, `CME_TSY_SETTLE` 14:00 CT; the benchmark snaps NY1500 / NY1530 /
     NY1600 / LDN1615 from `SWAP_CLOSES`) and `CYCLES` (`15MIN_NO_OVERNIGHT`: 06:00-19:00 New York
     every 15 minutes, market calendar; `1MIN_NO_OVERNIGHT`) with `CYCLE_ALIASES`

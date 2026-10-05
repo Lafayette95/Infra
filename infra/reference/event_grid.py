@@ -59,6 +59,7 @@ class CycleSpec:
 TIME_EVENTS: dict[str, TimeEvent] = {e.id: e for e in (
     TimeEvent("GRID_START", None, None, "the cycle's first point", grid="start"),
     TimeEvent("GRID_END", None, None, "the cycle's last point", grid="end"),
+    TimeEvent("US_CASH_OPEN", "08:20", NEW_YORK, "US rates cash open, 08:20 ET (user's definition, 2026-10-05)"),
     # CME Treasury (and SOFR) futures on Globex: 5:00 p.m. - 4:00 p.m. CT, Sunday-Friday
     # (cmegroup.com, verified 2026-10-05; the session crosses midnight - root CLAUDE.md 6e)
     TimeEvent("CME_GLOBEX_OPEN", "17:00", CHICAGO, "Globex session open (the evening before its trade date)"),
