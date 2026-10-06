@@ -124,4 +124,12 @@ EVENT_FAMILIES: dict[str, FamilySpec] = {f.name: f for f in (
                study=EventStudySpec(instruments=("ZT.v.0", "ZN.v.0")),
                description="NFP: entries 2h/1h/15m before and at the print, exits 15m..2h after it and at the "
                            "grid's close"),
+    FamilySpec("nfp_intraday_struct", ("US_EMPLOYMENT_SITUATION",), ("GRID_START", "GRID_END"),
+               start=LegRule(times=("&",), step_lags=(-8, -4, -1, 0)),
+               end=LegRule(times=("&", "%1"), step_lags=(1, 2, 4, 8, 0)),
+               study=EventStudySpec(instruments=("DUR__TY", "CURVE__FV__WN", "FLY__FV__UXY__WN", "FRONT__TU__H",
+                                                 "MICRO__TY__FV__H", "MICRO__US__WN__H"),
+                                    source="STRUCT_BPS_BBO", ev_abs_min=None),
+               description="the NFP family on the curve structures (bp per unit of structure; no absolute-size "
+                           "test: a fly moving 0.8bp a day can't clear a 2bp floor set for single futures)"),
 )}

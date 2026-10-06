@@ -188,11 +188,38 @@ class PnlSource:
     description: str
 
 
+def _structures_bbo(structures, grid, *, structure_set: str = "ust_layers", state=None, **kw) -> pd.DataFrame:
+    """Step P&L of curve STRUCTURES (``infra.reference.structures``): the legs' FUTURE_BPS_BBO
+    steps x the structure's DV01 weights for the step's CME trading day (point in time: hedge
+    betas fitted on settlements before that day). bp per unit of structure."""
+    from infra.pipeline.structures import structure_state
+    from infra.reference.structures import STRUCTURE_SETS
+    sset = STRUCTURE_SETS[structure_set]
+    legs = sset.legs()
+    steps = _futures_bbo(legs, grid, bps=True, **kw)
+    points = steps.index
+    tday = pd.DatetimeIndex(trading_day(points, "GLBX.MDP3")).normalize()
+    if state is None:
+        state = structure_state(sset, tday.min(), tday.max(), with_dv01=False)
+    out = {s: np.full(len(points), np.nan) for s in structures}
+    for d in tday.unique():
+        rows = np.flatnonzero(tday == d)
+        if d not in state.weights:
+            continue
+        W = state.weights[d]
+        for s in structures:
+            out[s][rows] = steps.iloc[rows][legs].to_numpy() @ W.loc[s, legs].to_numpy()
+    return pd.DataFrame(out, index=points)
+
+
 PNL_SOURCES: dict[str, PnlSource] = {
     "FUTURE_BPS_BBO": PnlSource(lambda inst, grid, **kw: _futures_bbo(inst, grid, bps=True, **kw), "bp",
                                 "bbo-1m mid changes of the mapped futures contract, bp (/ prior-day DV01)"),
     "FUTURE_PTS_BBO": PnlSource(lambda inst, grid, **kw: _futures_bbo(inst, grid, bps=False, **kw), "points",
                                 "bbo-1m mid changes of the mapped futures contract, price points"),
+    "STRUCT_BPS_BBO": PnlSource(lambda inst, grid, **kw: _structures_bbo(inst, grid, **kw), "bp",
+                                "curve structures (infra.reference.structures): legs' bp steps x point-in-time "
+                                "DV01 weights, bp per unit of structure"),
 }
 
 

@@ -301,3 +301,12 @@ def test_mark_jump_flags_a_reversed_spike_not_a_lasting_move():
                     get_accounting_spec("bbo_mid"))
     jumps = r.checks[r.checks["check"] == "mark_jump"]
     assert list(jumps["label"]) == [lab[60]]
+
+
+def test_cevt_views_have_no_nan_where_one_instrument_is_flat():
+    lab = pd.date_range("2024-01-05 13:00", periods=4, freq="15min")
+    preds = pd.DataFrame({"end": lab[2], "legal": 1.0, "code": 0, "fit_as_of": D("2024-01-01"),
+                          "t:A": 2.0, "expected:A": 1.0, "passed:A": 1.0,
+                          "t:B": np.nan, "expected:B": np.nan, "passed:B": 0.0}, index=lab[:1])
+    v = CEVT(CEVTSpec("t", instruments=("A", "B"), gate="passed")).views({"f": preds}, {}, lab)
+    assert not v.isna().any().any() and v.loc[lab[0], "tsig:B"] == 0 and v.loc[lab[0], "tsig:A"] > 0

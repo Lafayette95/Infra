@@ -164,7 +164,9 @@ class CEVT(Strategy):
             fam = fam.groupby(["label", "instrument"]).agg(tsig=("tsig", "mean"), ev=("ev", "mean"), n=("n", "sum"),
                                                            provisional=("provisional", "max")).reset_index()
         for col in ("tsig", "ev", "n", "provisional"):
-            wide = fam.pivot(index="label", columns="instrument", values=col)
+            # an instrument with no active view at a label where others have one is a GAP in the
+            # pivot: no view = 0, never NaN (found 2026-10-05 on six structures)
+            wide = fam.pivot(index="label", columns="instrument", values=col).fillna(0.0)
             for inst in wide.columns:
                 out.loc[wide.index, f"{col}:{inst}"] = wide[inst].to_numpy()
         del keys

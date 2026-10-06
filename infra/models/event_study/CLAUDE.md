@@ -72,7 +72,19 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
     contracts around each roll); bp needs the bmk DV01: back-filled 2026-10-05, so bp from
     2018-10 (the funding model's start), 98-99% of grid steps from 2019; `FUTURE_PTS_BBO` (points)
     from 2015.
+*   **bp is the unit for every study** (the default source, and every registered study's): a
+    points move mixes the rate level in (0.25pt on ZN is ~4bp at a $62 DV01, ~3bp at $85) and
+    isn't comparable across contracts; positions are sized in $/bp; structures exist only in bp.
+    `FUTURE_PTS_BBO` is only for history before 2018-10 or a cross-check. The real-data checks
+    in sections 5 and 6 below were run in points because, when they were run, bp history began
+    only in 2025-07 - an artifact of timing, not a method choice; re-run them in bp from 2018-10
+    before relying on them (`TOFIX.md`, extending bp before 2018-10).
     A persisted 15-minute bmk store can replace the on-the-fly source under the same interface.
+*   **`STRUCT_BPS_BBO`** (2026-10-05): the same, on curve STRUCTURES (root CLAUDE.md 28): the legs'
+    bp steps x the structure's DV01 weights for the step's trading day (hedge betas fitted on
+    earlier settlements). Instruments are structure names (`CURVE__FV__WN`); family
+    `nfp_intraday_struct`. Use `ev_abs_min=None` on structures: the 2bp floor is for single
+    futures, and a fly moves 0.8bp a day.
 
 ## 4. The tests (`stats.py`, thresholds in the spec; `None` = off)
 *   Size: n, mean, median, std, t / p (one-sample). Robustness: hit rate with a two-sided
@@ -144,7 +156,7 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
     a trend effect (no ZB bucket passes the DiD); the slope of ZT's move on the trend is t -2.0
     net of placebo.
 
-## 6. Real-data checks (2026-10-05, ZT / ZN / ZB, price points, fit 2015-2024)
+## 6. Real-data checks (2026-10-05, ZT / ZN / ZB, price points, fit 2015-2024 - points only because bp then began 2025-07; see 3)
 *   `nfp_morning` (08:15 -> 10:30 ET, 120 events): ZB mean -0.20 pt, t -2.44, Wilcoxon p 0.018,
     same sign in 90% of years, placebo excess t -2.33: passes; ZT / ZN don't. The path: the move
     is in the 08:30-08:45 step (sd 0.36 vs 0.08 the step before).
@@ -155,12 +167,12 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
 ## 7. Running it
 ```python
 from infra.models.event_study.model import EventStudy
-study = EventStudy("nfp_morning", source="FUTURE_PTS_BBO")
-panel = study.read_panel("2015-01-01", "2026-09-30")
+study = EventStudy("nfp_morning")                        # bp (FUTURE_BPS_BBO), from 2018-10
+panel = study.read_panel("2018-10-01", "2026-09-30")
 data = study.prepare(panel)
 study.fit(data, as_of="2024-12-31"); study.fitted_.table
 study.predict(data, start="2024-12-31"); study.paths(panel, data)
 from infra.models.event_study.family import run_family
 run_family("nfp_intraday", panel, as_of="2024-12-31")
-EventStudy("nfp_morning_by_trend", source="FUTURE_PTS_BBO")   # a conditional study: same calls
+EventStudy("nfp_morning_by_trend")   # a conditional study: same calls
 ```

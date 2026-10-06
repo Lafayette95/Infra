@@ -1072,10 +1072,11 @@ funding model's SOFR path starts 2018-10-01. So bp studies start 2018-10.
         would wait for both.
     *   **Daily costs from NY1500 snaps** exist only for contracts the snap store holds (each bond
         root's front, the ZQ strip); others use the root's trailing median (`cost_fallback`).
-*   **Instruments are independent** in the position sizing (no covariance): ZT and ZN views in
-    the same direction double the risk the target assumes. Options: an EWMA covariance from the
-    same daily changes and a portfolio scale (needs `full_strength` to be redefined as the risk
-    of the full-strength vector).
+*   **Instruments are independent** in the PER-INSTRUMENT position sizing (no covariance): ZT and
+    ZN views in the same direction double the risk the target assumes. Addressed 2026-10-05 for
+    the Treasury futures by the LAYERED sizing (views on structures, per-layer budgets, a
+    full-covariance portfolio cap; root CLAUDE.md 28); per-instrument sizing is unchanged and
+    still independent (fine for one instrument, wrong for several correlated ones).
 *   **Not scheduled:** like model runs (root CLAUDE.md 3b), the jobs need a runner after the
     daily cycle (which may not import above the pipeline); `scripts/strategy_run.py` by hand.
 *   **Firm series are recomputed whole each run** (fine at ~36k labels a few years; for long
@@ -1087,4 +1088,78 @@ funding model's SOFR path starts 2018-10-01. So bp studies start 2018-10.
     verdict; a refit due before the event can change it (that is what plan vintages record).
 *   **The realised-vol scaling** has a unit test but no real strategy using it yet; the first
     always-on strategy should check its warm-up (`realised_min_obs` days of P&L, flat before).
+
+
+## Daily futures: bad / stale vendor settlements the bad-print rule can't see (UBM0, March 2020)
+
+**Found:** 2026-10-05 (curve-structure diagnostics). **Where:** `Daily/Futures` raw store (Databento
+`statistics`), `infra.cycle.px.peer_outliers` / `infra.cycle.bad_prints`. **Status:** open.
+
+**The issue:** UBM0's settlement is 211.1875 on BOTH 2020-03-16 and 2020-03-17, while the NY1500
+quote mid moved +11.17 then -11.66 points (397 and 373 ticks off; every other bond future moved
+13-33bp on the 17th). It made the WN daily bp move -3 / 0 / -35.5bp over 16-18 March and put
+kurtosis > 110 on every structure with a WN leg. The bad-print rule cannot flag it: it needs the
+contract's OWN move to be large (|z| >= 5), and a stale print moves 0.
+**Scale:** settlement vs NY1500 bbo mid over 2015-2026 (16,987 front bond-future contract-days):
+median miss 1 tick, p99 8 ticks; this is the only genuine bad episode. The other >= 16-tick misses
+are snap timing on early-close days (Friday before Memorial Day 2016, year ends), not bad
+settlements. Unchanged settlements while the complex moved are mostly genuine (TU at the zero
+bound moves less than a tick).
+**Options:** a `settle_vs_quote` check in the px step (settlement change vs the change in the bbo
+mid at the settlement instant, in ticks; needs bbo-1m for the contract and an early-close
+calendar for the snap), treated like a bad print (NA / roll); or a stale-print clause in
+`peer_outliers` (own move ~0 while peers' median |z| is large, and the next session catches up).
+Not fixed now: found during research; downstream users (bmk pnl 2020-03, CTA, any daily structure
+study) should exclude 2020-03-16..18 for UB until then.
+
+## Strategies: layered structures - open items from the first build
+
+**Found:** 2026-10-05. **Where:** `infra/reference/structures.py`, `infra/pipeline/structures.py`,
+`infra/strategies/layered.py`, `infra/strategies/config/layers.py`. **Status:** open.
+
+*   **Budgets are placeholders** (macro $1m, front $0.3m, micro $0.5m, cap $1.5m a year). The
+    front end's LOWER vol budget is the user's interim choice (2026-10-05); the planned
+    replacement is a TAIL budget (expected shortfall, or the worst historical stress - SVB,
+    March 2020 - scaled to today's book), since 22% of the hedged TU's variance sits on 5 days
+    and a 60-day EWMA is lowest just before a jump (a longer span or a floor for that layer).
+*   **Cost-aware sizing:** vol-parity puts huge notional on low-vol structures (a full fly view
+    ~800 UXY contracts); round-trip cost is 26-77% of a day's vol for fly / front / micro
+    (strategies doc 5). Options: budgets net of expected cost, a minimum holding period per
+    layer, a size cap per leg vs the touch (`exceeds_top_of_book`), or only daily horizons for
+    those layers.
+*   **The hedged TU breaks at the zero bound:** 2021 betas (duration 0.38 vs ~0.8 otherwise); a
+    hedge fitted while the front is pinned under-hedges on the way out. Options: a regime-aware
+    window, betas floored at a long-run value, or a conventional TU_FV fallback when the fit's R2
+    collapses.
+*   **Execution routing TY <-> UXY** (user agreed as an optional later layer): duration is
+    defined in TY; execution could hold it in whichever is cheaper per bp at the moment (UXY in
+    quiet hours, TY at events for depth), a small cost minimisation subject to the structure
+    exposures.
+*   **CME inter-commodity spread books** (NOB, FYT, TUT...; user: research for later): curve /
+    fly costs are legged at outright half-spreads, probably overstated. Storing the spread
+    instruments' bbo would let the accounting price a structure trade as one.
+*   **P&L attribution per structure / layer** is not stored: the accounting reports per future.
+    Add `positions (usd_dv01:<structure>)` x structure bp moves per label as a research table.
+*   **Hedge warm-up:** hedged structures need 120 daily moves (DV01 history from 2018-10), so
+    structure P&L and layered positions start ~2019-04; days without a complete state use the
+    latest complete one before them.
+*   **No `struct:` series in `series_panel`** yet (structure daily bp moves for the regression /
+    PCA page and conditions): `infra.pipeline.structures.structure_state(...).moves` has them.
+
+## Event study / bmk: bp history starts 2018-10 (no Treasury DV01 before the funding model)
+
+**Found:** 2026-10-05. **Where:** `Bmk/Risk` (M0 futures DV01, `infra.pipeline.futures_basis.
+deterministic_futures_dv01`), `FUTURE_BPS_BBO` / `STRUCT_BPS_BBO`, `infra.pipeline.structures`.
+**Status:** open.
+
+**The issue:** every study and the layered structures work in bp (move x point value / prior-day
+DV01), and the Treasury futures DV01 needs the funding model, whose SOFR path starts 2018-10.
+So bp history is ~8 years (~95 NFPs) while quotes go back to 2015 (~140 NFPs in points). The
+real-data checks in the event-study doc (sections 5-6) were run in points for that reason and
+should be re-run in bp. **Option:** a DV01 PROXY before 2018-10 - the same cheapest-to-deliver
+forward DV01 / conversion factor, with funding replaced by a simple proxy (e.g. the CTD's own
+repo-free forward, or GC from the DTCC GCF index 2005-2024): funding barely moves a forward DV01
+(it changes the forward price by carry, a few 32nds), and the baskets (computed from 2016-01)
+and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so bp before
+2018-10 is visibly a proxy; check it against the real M0 DV01 over 2018-10..2026 first.
 

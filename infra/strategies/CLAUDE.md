@@ -96,7 +96,70 @@ headings "Strategies: ...". Built 2026-10-05.
     them at the 17:00 close (`TOFIX.md`); NFP trades up to 110 ZN contracts against 1-20 at the
     touch. Daily path checked on ZNU6 -> ZNZ6 (Aug-Sep 2026).
 
-## 5. Running it
+## 5. Layered views on curve structures (`layered.py`; definitions `infra/reference/structures.py`)
+*   **Why** (user discussion 2026-10-05): the six Treasury futures are 0.8-0.98 correlated, so
+    per-future views sized independently double-count one level bet (an NFP rally view on TY and
+    on FV is ~sqrt 2 the intended duration risk). Views live where signals live - level (NFP,
+    CPI), curve (supply), micro (CTD, specialness) - with a risk budget per layer, netted at the end.
+*   **The layers (user decisions 2026-10-05):**
+
+    | Layer | Structures (DV01 weights) | Budget (placeholder) |
+    |---|---|---|
+    | front | `FRONT__TU__H`: TU hedged on the macro layer | $0.3m/yr - lower: a jump factor (TOFIX: tail-based budget) |
+    | macro | `DUR__TY` (default; `DUR__UXY` option), `CURVE__FV__WN` (+FV -WN), `FLY__FV__UXY__WN` (+UXY -0.5 FV -0.5 WN) | $1m/yr |
+    | micro | `MICRO__TY__FV__H`, `MICRO__US__WN__H`, hedged on macro | $0.5m/yr |
+
+    Portfolio cap $1.5m/yr on the netted book (full covariance). Conventional DV01 weights for
+    duration, curve and fly (user lean, with the alternatives kept as options); hedged structures
+    = base legs minus rolling 250-day betas on the set's macro structures, fitted on moves before
+    the decision day.
+*   **Sizing:** structure position ($/bp) = view x budget / sqrt(structures in layer) /
+    structure annual bp vol (EWMA 60); exposures = W' x, netted; the book's vol with the legs'
+    EWMA-120 covariance, scaled down above the cap; contracts = exposure / DV01 (as of D-2).
+    Diagnostics per label: standalone vol per layer, their sum, the netted total, the scale.
+*   **Reconstruction:** with the six structures spanning the six futures, `to_structures` /
+    `to_legs` are exact inverses (condition number ~8). Expected moves and per-event moves of any
+    linear combination reconstruct exactly; test statistics (t, hit rate, Wilcoxon, FDR) do not -
+    rerun them on the reconstructed per-event moves, and declare up front which combinations are
+    tested (snooping). Signals (tanh, gate, aggregation) are nonlinear: combine estimates, never
+    signals.
+*   **Why these structures - the diagnostics** (daily bp moves 2018-10..2026-09, 1,996 days):
+    *   PCs of the six futures are stable outside 2020 (yearly cosine to the full sample: level
+        >= 0.96, slope >= 0.92, curvature >= 0.93; 2020: 0.83 / 0.76). Curvature is the TU and WN
+        wings against a TY / UXY belly.
+    *   Conventional content (share of variance by PC level / slope / curvature): CURVE__FV__WN
+        7/84/8%, FLY__FV__UXY__WN 13/8/38% (the least level of the 50/50 flies; TU_TY_WN is
+        38/0/61%), DUR__TY 99% level. Duration-curve correlation flips sign by regime
+        (-0.52 .. +0.58): handled by the portfolio covariance, not by the definitions.
+    *   **The front end is its own factor:** TU kurtosis 7.8 (others 1.5-2.8), 4-sigma days 4x
+        as often; TU hedged on macro: kurtosis 35, 22% of its variance on 5 days (SVB, Mar 2020,
+        CPI 2022-02-10, Feb 2021). Its hedge betas are stable outside the zero bound (duration
+        ~0.8, curve ~0.5, fly -1.1..-2.1) but broke in 2021 (duration 0.38).
+    *   **Micro dimensions:** with macro on FV / TY / UXY / WN, TY-FV and TY-UXY are the SAME
+        residual dimension (only one is in the set); hedged micro is uncorrelated with macro out of
+        sample (|corr| <= 0.12), betas stable in the 10y sector (sd 0.02-0.06), less at the long
+        end. Micro residuals correlate with each other and with the hedged TU (-0.56): the
+        portfolio check, not the definitions, carries that.
+    *   **TY vs UXY for duration** (kept TY): UXY is 25% cheaper per bp (half-spread 0.088 vs
+        0.118bp), but its book is 3x thinner in DV01 ($50k vs $151k at the touch) and its CTD
+        sits among the newest 10s (the most specialness of any contract). Both bp series start
+        2018-10 (DV01 history), so UXY's shorter history doesn't matter for bp work. Execution
+        could route duration to the cheaper of the two later (TOFIX).
+*   **Costs decide which layers can trade intraday** (2025 half-spreads x `spread_paid` 0.5,
+    in + out, against each structure's daily vol): DUR__TY 0.12bp (2% of a day's vol),
+    CURVE__FV__WN 0.17bp (4%), FLY__FV__UXY__WN 0.17bp (26%), FRONT__TU__H 0.54bp (43%: its
+    hedge legs sum to 5.7x its DV01), micro 0.22-0.25bp (44-77%). Vol-parity sizing therefore
+    puts huge notional on the low-vol structures (a full fly view ~ $65k/bp = ~800 UXY against
+    the wings): on the NFP family (`nfp_intraday_struct`, gate `passed`, 2021-2026 research run)
+    costs were 2.8x gross and 739 trades exceeded the top of book. The NFP fly effect (-0.14bp,
+    t -2.8) is smaller than its round-trip cost. Low-vol layers need multi-day holding, a
+    cost-aware budget, or both (TOFIX).
+*   **Event studies on structures:** use `ev_abs_min=None` (a 2bp floor set for single futures
+    excludes every fly / micro effect) and judge size against the structure's own vol
+    (`ev_vol`). NFP 08:15 -> 10:30 ET (89 events): CURVE__FV__WN steepens +0.96bp (t 2.3, net
+    of placebo 2.2), FLY__FV__UXY__WN -0.14bp (t -2.8), duration no consistent sign.
+
+## 6. Running it
 ```python
 from infra.jobs import family_runs, strategy_runs
 family_runs.create("nfp", "nfp_intraday", start="2020-01-03", history_start="2016-01-01")
@@ -104,5 +167,9 @@ family_runs.rebuild("nfp", "2026-09-30", promote=True)        # the family's his
 strategy_runs.run_daily("cevt_nfp", "2026-09-30")             # firm series, plan, accounting
 strategy_runs.account("cevt_nfp")                             # P&L and costs only
 strategy_runs.rebuild("cevt_nfp", "2026-09-30")               # recompute + reconcile, incl. P&L
+# layered: a CEVTSpec with instruments = structure names and layers="ust_layers", over a family
+# run on structures (family "nfp_intraday_struct"); everything else is the same
+from infra.pipeline.structures import structure_state             # the point-in-time state, for research
+st = structure_state("ust_layers", "2025-01-01", "2026-09-30"); st.W("2026-09-30")
 ```
 CLI: `scripts/strategy_run.py` (same verbs).

@@ -54,6 +54,9 @@ class StrategySpec:
     plan_vintages: bool = True
     cycle: str = "DEFAULT_CYCLE"
     accounting: str = "bbo_mid"                  # ACCOUNTING_MODELS (infra/strategies/config/accounting.py)
+    layers: str | None = None                    # LAYER_SIZINGS name: views are on curve STRUCTURES, sized per
+                                                 # layer and netted into futures (infra.strategies.layered);
+                                                 # None = views per future, sized per instrument
 
 
 def pnl(positions: pd.DataFrame, steps: pd.DataFrame, lag: int = 0) -> pd.DataFrame:
@@ -134,6 +137,23 @@ class Strategy(ABC):
         scale = (self.spec.target_vol_usd / realised).shift(1).dropna()
         k = asof(scale, signal.index)
         return raw.mul(k, axis=0)
+
+    def size(self, signal: pd.DataFrame, labels, *, vols: dict | None = None, state=None) -> pd.DataFrame:
+        """Contracts per relative future from the views: per instrument (``positions``) or, with
+        ``spec.layers``, per structure layer, netted (``infra.strategies.layered``)."""
+        if self.spec.layers:
+            from infra.strategies.layered import layered_positions
+            contracts, self.sizing_diagnostics_ = layered_positions(signal, self.spec.layers, state=state)
+            return contracts
+        return self.positions(signal, self.vols(pd.DatetimeIndex(labels), vols))
+
+    def futures(self) -> list[str]:
+        """The relative futures positions are held in."""
+        if self.spec.layers:
+            from infra.reference.structures import STRUCTURE_SETS
+            from infra.strategies.config.layers import get_layer_sizing
+            return STRUCTURE_SETS[get_layer_sizing(self.spec.layers).structure_set].legs()
+        return self.instruments
 
     def to_absolute(self, positions: pd.DataFrame, contracts: dict[str, pd.Series]) -> pd.DataFrame:
         """Long ``label, instrument, contract, position``: each relative ticker's position on

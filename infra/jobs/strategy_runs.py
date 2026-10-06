@@ -60,18 +60,22 @@ def _inputs(strategy, through, models_root: Path):
     return preds, fdr
 
 
+def inputs_state(inputs):
+    """A preloaded structure state, if the caller passed one (tests, batch runs)."""
+    return inputs[2] if isinstance(inputs, tuple) and len(inputs) > 2 else None
+
+
 def firm(strategy, through, *, models_root: Path = MODEL_RUNS_DIR, inputs=None, vols=None, contracts=None):
     """(views, positions, positions_abs) for every label up to the end of ``through``."""
-    preds, fdr = inputs if inputs is not None else _inputs(strategy, through, models_root)
+    preds, fdr = inputs[:2] if inputs is not None else _inputs(strategy, through, models_root)
     starts = [p.index.min() for p in preds.values() if len(p)]
     if not starts:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     end = pd.Timestamp(through).normalize() + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
     labels = grid_labels(strategy, min(starts), end)
     views = strategy.views(preds, fdr, labels)
-    v = strategy.vols(labels, vols)
-    pos = strategy.positions(strategy.signal(views), v)
-    con = contracts or {inst: contracts_at(inst, labels) for inst in strategy.instruments}
+    pos = strategy.size(strategy.signal(views), labels, vols=vols, state=inputs_state(inputs))
+    con = contracts or {inst: contracts_at(inst, labels) for inst in strategy.futures()}
     return views, pos, strategy.to_absolute(pos, con)
 
 
@@ -86,7 +90,7 @@ def plan(strategy, through, *, models_root: Path = MODEL_RUNS_DIR, upcoming=None
     if fdr is None:
         fdr = {f: family_runs.read_fdr(f, root=models_root) for f in strategy.spec.families}
     views = strategy.views(upcoming, fdr, labels)
-    pos = strategy.positions(strategy.signal(views), strategy.vols(labels, vols))
+    pos = strategy.size(strategy.signal(views), labels, vols=vols)
     return views.join(pos.add_prefix("pos:"))
 
 
