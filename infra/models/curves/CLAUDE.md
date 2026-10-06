@@ -45,6 +45,23 @@ cash flows, also gives carry, rolldown and z-spreads, and a check on CMT.
 *   **Speed:** 0.14s a day (Newton solves for yields / z-spreads; Svensson's objective
     vectorised over flattened cash flows) - 2008-2026 in ~10 minutes.
 
+## 2b. In the daily cycle (since 2026-10-05)
+*   The `derived` step's metric `treasury_curve` (`infra/cycle/derived.py`; root CLAUDE.md 12,
+    25a) runs `compute_curves` over each run's window, reading prices, securities, the OTR map
+    and the auctions (for the callables) through `CyclePaths`, and replaces those days in
+    TreasuryCurves and TreasuryRV (two stores from one compute: `DerivedMetric.extra_stores`).
+*   **Incremental = full rebuild, exactly.** Svensson is a nonlinear fit, so its answer can
+    depend (in the last digits) on where the optimiser starts. A sequential build starts each
+    day from the previous day's fit; the cycle does the same by seeding from the STORED fit of
+    the day before its window (`stored_svensson_seed`). After rebuilding 2008-2026 with that
+    chained seeding, recomputed windows match the store with 0 difference (the revision check
+    uses atol 1e-10). The spline is linear, so it never depended on a start.
+*   **Checks:** `treasury_curve_present` (days with END OF DAY prices but no curve, with the
+    reason - a day whose END OF DAY isn't posted yet is not an input day), one no-revision
+    check per store, `treasury_curve_fit_sane` (fit error <= 25bp, par in [-2, 25]%).
+*   **Fixed on the way (2026-10-05):** `read_otr`'s end is exclusive, so the last day of each
+    build chunk (every 31 December of the first build) had been fitted WITH its on-the-runs.
+
 ## 3. Validation (2008-09-02 .. 2026-10-01, 4,523 days)
 *   **Fit error** (median, bp): spline 1.0-3.0 from 2010 (2008 13, 2009 4 - the crisis);
     Svensson 1.6-3.0 most years, 6.5 in 2022 (its 6 parameters can't follow 2022's shape).
