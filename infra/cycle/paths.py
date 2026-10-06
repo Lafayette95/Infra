@@ -47,6 +47,7 @@ class CyclePaths:
     sec_lending_dir: Path
     sec_lending_coverage: Path
     treasury_curves_dir: Path
+    treasury_rv_dir: Path
     otr_yields_dir: Path
 
     @classmethod
@@ -88,6 +89,7 @@ class CyclePaths:
             sec_lending_dir=config.SEC_LENDING_DIR,
             sec_lending_coverage=config.SEC_LENDING_COVERAGE_FILE,
             treasury_curves_dir=config.TREASURY_CURVES_DIR,
+            treasury_rv_dir=config.TREASURY_RV_DIR,
             otr_yields_dir=config.OTR_YIELDS_DIR,
         )
 

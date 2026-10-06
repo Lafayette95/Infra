@@ -29,7 +29,7 @@ from infra.storage import parquet_store
 CURVE_KEYS = ["timestamp", "method"]
 
 
-def callable_cusips() -> set[str]:
+def callable_cusips(*, auctions_root: Path | None = None) -> set[str]:
     """CUSIPs auctioned as CALLABLE (Fiscal Data's ``callable`` field; 11 bonds, 1979-1984 -
     the Treasury stopped issuing callables in 1985). Out of the fit and the metrics: priced
     to their call, read as bullets they 'yield' 10-13% - found 2026-10-04, they put our
@@ -37,7 +37,7 @@ def callable_cusips() -> set[str]:
     were called (the last in 2014)."""
     import json
     from infra.pipeline.tsy_auctions import read_auctions
-    a = read_auctions()
+    a = read_auctions() if auctions_root is None else read_auctions(root=auctions_root)
     flag = a["raw_json"].map(lambda s: json.loads(s).get("callable") == "Yes")
     return set(a.loc[flag, "cusip"].astype(str))
 RV_KEYS = ["timestamp", "cusip", "method"]
@@ -96,34 +96,71 @@ def fit_day(day, prices: pd.DataFrame, sec: pd.DataFrame, excluded: set[str], *,
     return curves, rows, sv.params
 
 
-def build_curves(start, end, *, curves_root: Path = TREASURY_CURVES_DIR, rv_root: Path = TREASURY_RV_DIR,
-                 log=None) -> dict:
-    """Fit every business day with prices in ``[start, end]``; a rebuilt day replaces its
-    rows in both stores."""
-    start, end = pd.Timestamp(start), pd.Timestamp(end)
-    prices = read_prices(start, end + pd.Timedelta(days=1))
+def stored_svensson_seed(before, *, curves_root: Path = TREASURY_CURVES_DIR) -> np.ndarray | None:
+    """The Svensson parameters STORED for the last day before ``before`` - the warm start that
+    makes an incremental run (the daily cycle's window) identical to a full sequential build:
+    each day's fit starts from the previous day's fitted parameters either way. None if
+    nothing is stored before it (a cold start)."""
+    if not parquet_store.has_data(curves_root):
+        return None
+    c = read_curves(pd.Timestamp(before) - pd.Timedelta(days=30), pd.Timestamp(before) - pd.Timedelta(days=1),
+                    method="svensson", root=curves_root)
+    if c.empty:
+        return None
+    row = c.iloc[-1]
+    return np.array([row[f"p{k}"] for k in range(6)], dtype="float64")
+
+
+def compute_curves(start, end, *, prices_root: Path | None = None, securities_root: Path | None = None,
+                   otr_root: Path | None = None, auctions_root: Path | None = None,
+                   curves_root: Path = TREASURY_CURVES_DIR, log=None) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Fit every business day with prices in ``[start, end]`` - no writing. Returns (curve
+    rows, bond rows, diagnostics: ``days`` with prices, ``empty_days`` {day: reason}). Inputs
+    read from the given roots (the daily cycle's ``CyclePaths``) or the defaults. Svensson is
+    seeded from the stored fit of the day before ``start`` (``stored_svensson_seed``)."""
+    start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
+    kw = lambda root: {} if root is None else {"root": root}
+    prices = read_prices(start, end + pd.Timedelta(days=1), **kw(prices_root))
     prices = prices[prices["security_type"].astype(str).isin(["Note", "Bond"])]
     prices["cusip"] = prices["cusip"].astype(str)
-    sec = read_securities().drop_duplicates("cusip")[["cusip", "coupon", "maturity_date", "coupons_per_year"]]
+    sec = read_securities(**kw(securities_root)).drop_duplicates("cusip")[["cusip", "coupon", "maturity_date", "coupons_per_year"]]
     sec["cusip"] = sec["cusip"].astype(str)
-    sec = sec[~sec["cusip"].isin(callable_cusips())]
-    otr = read_otr(start - pd.Timedelta(days=5), end)
+    sec = sec[~sec["cusip"].isin(callable_cusips(auctions_root=auctions_root))]
+    # end is EXCLUSIVE in read_otr: +1 day, or the window's last day fits WITH its on-the-runs
+    # (found 2026-10-05: every 31 December of the first build)
+    otr = read_otr(start - pd.Timedelta(days=5), end + pd.Timedelta(days=1), **kw(otr_root))
     otr = otr[(otr["convention"] == "issue") & (otr["rank"] < CURVE_FIT_EXCLUDE_RANKS)]
     excl = otr.groupby("timestamp")["cusip"].apply(lambda s: set(s.astype(str)))
-    start_params, all_c, all_r = None, [], []
+    start_params = stored_svensson_seed(start, curves_root=curves_root)
+    all_c, all_r, days, empty = [], [], [], {}
     for i, (day, g) in enumerate(prices.groupby("timestamp")):
+        if not g["price_eod"].gt(0).any():
+            continue  # END OF DAY not posted yet (FedInvest posts day D ~10:00 New York on D+1): not an input day
+        days.append(pd.Timestamp(day))
         ex = excl.get(day, set())
         c, r, start_params = fit_day(day, g, sec, ex, svensson_start=start_params)
+        if not c:
+            empty[pd.Timestamp(day)] = f"too few priced notes / bonds to fit ({g['price_eod'].gt(0).sum()} with a price)"
         all_c += c; all_r += r
         if log and i % 50 == 0:
             log(f"{pd.Timestamp(day).date()} n_fit={c[0]['n_fit'] if c else 0}")
     cdf, rdf = pd.DataFrame(all_c), pd.DataFrame(all_r)
+    for df in (cdf, rdf):
+        if not df.empty:
+            df["timestamp"] = df["timestamp"].astype("datetime64[ms]")
+    return cdf, rdf, {"days": days, "empty_days": empty}
+
+
+def build_curves(start, end, *, curves_root: Path = TREASURY_CURVES_DIR, rv_root: Path = TREASURY_RV_DIR,
+                 log=None) -> dict:
+    """``compute_curves`` + write: a rebuilt day replaces its rows in both stores."""
+    cdf, rdf, _ = compute_curves(start, end, curves_root=curves_root, log=log)
     if not cdf.empty:
         days = sorted(cdf["timestamp"].unique())
         parquet_store.prune_rows(curves_root, "timestamp", days) if parquet_store.has_data(curves_root) else None
         parquet_store.prune_rows(rv_root, "timestamp", days) if parquet_store.has_data(rv_root) else None
-        parquet_store.write_partitioned(cdf.assign(timestamp=cdf["timestamp"].astype("datetime64[ms]")), curves_root, CURVE_KEYS)
-        parquet_store.write_partitioned(rdf.assign(timestamp=rdf["timestamp"].astype("datetime64[ms]")), rv_root, RV_KEYS)
+        parquet_store.write_partitioned(cdf, curves_root, CURVE_KEYS)
+        parquet_store.write_partitioned(rdf, rv_root, RV_KEYS)
     return {"days": int(cdf["timestamp"].nunique()) if not cdf.empty else 0, "bond_rows": len(rdf)}
 
 

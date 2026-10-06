@@ -1184,8 +1184,9 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
     net basis + model DV01 error.
 *   **Total-return bmk with carry** (user, planned): price action + carry + rolldown - financing,
     per CUSIP (TreasuryRV carry / rolldown, the funding model).
-*   **`yield_curve` stops at the last hand build** of TreasuryCurves (not in the cycle;
-    `yield_pnl_present` warns) - joins with the other parked derived jobs.
+*   ~~**`yield_curve` stops at the last hand build** of TreasuryCurves~~ - fixed 2026-10-05:
+    the curve is in the daily cycle's `derived` step (metric `treasury_curve`, stores
+    TreasuryCurves + TreasuryRV), so it advances every run.
 *   **CMT before 2016** isn't in our store (the Treasury's yearly CSVs go back to 1990, free):
     a backfill would give CMT-based daily studies 2008+ like the other sources.
 *   **Daily study defaults:** the 2bp size floor and overlap-unaware errors were set for intraday
