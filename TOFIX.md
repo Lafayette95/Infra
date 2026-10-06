@@ -1226,3 +1226,24 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **The `bmk:` source's availability is one conservative rule** (D+1 10:00 New York) for every
     yield source, though CMT is out the same evening.
 
+---
+
+## DTCC: the swap closes never applied corrections or cancellations
+
+**Found:** 2026-10-06, building the swaptions ledger. **Where:** `infra.processing.dtcc_trades.trade_events` (`trade_id` = `orig_id` or `diss_id` as STRINGS). **Status:** open - measured, fix not applied (it recomputes two years of closes, the OIS curve and the swap spreads: user's call).
+
+**The issue:** a correction's / cancellation's `Original Dissemination Identifier` never equals its trade's id as compared: (1) the ids are read as text that can carry a float form ("1174107000.0"), and (2) since 2025-11-02 DTCC's ids are `base x 10^9 + suffix` with a DIFFERENT suffix on later records (root CLAUDE.md 16, swaptions). Exact linking matched 0% of USD OIS CORR/EROR in Sep-Oct 2025 and Aug-Sep 2026; keyed by `infra.processing.dtcc_swaptions.trade_key` 45% / 74% within a two-month window (the rest correct earlier trades). So every swap close since the archive began priced trades as first reported, cancelled ones included. **Impact measured (Sep 2026, pure closes):** 2.1% of USD NY1530 closes change, |diff| max 0.78bp (all currencies/closes: 3.4% change, max 1.8bp) - the off-market filters had absorbed most of it; the OIS curve and swap spreads inherit it. **Fix:** key `trade_events` with `trade_key` (move it into `dtcc_trades`, shared), then recompute closes / OIS curve / swap spreads 2024-09..now and recheck the close calibration numbers in `SWAP_CLOSE_WEIGHTING`'s comments.
+
+---
+
+## Swaptions: open items from the first build
+
+**Found:** 2026-10-06. **Where:** `infra.pipeline.swaptions`, `infra.processing.dtcc_swaptions` (root CLAUDE.md 16). **Status:** open.
+
+*   **Gamma map (step 3) not built:** gross gamma per strike from `open_interest(as_of)` x the surface (`infra.analytics.swaptions.normal_gamma`, $DV01 per bp of the forward), plus a net view under a stated sign assumption - the report has no direction.
+*   **Offsetting unwinds aren't netted:** an unwind traded as a new opposite trade (same terms, months later, lower premium - seen in the identical-terms pairs: 2,880 same-label pairs open on 2026-10-05) adds open interest instead of removing it; without a side it can't be netted. Straddles (Call+Put pairs, 10,900) are genuinely two options.
+*   **Capped notionals** count at their floor (~25% of open notional): open interest is understated in the largest trades.
+*   **15% of open notional has no underlying maturity** (tenor bucket `unknown`).
+*   **Vols beyond ~2y expiry are implausible** (220-260bp normal at 5y-10y): a premium convention (deferred / forward premium? callables reported as swaptions?) not understood; the surface stops at 2.25y.
+*   **Intraday forward mismatch:** every print is priced on the 15:30 OIS curve; short expiries suffer (1m x 5y within-day IQR 21bp vs 1-6bp elsewhere). Fix: move the forward by the futures move between the print and the snap, as the adjusted swap closes do (needs the intraday fetch).
+*   **Linking dipped to 67% in 2026Q2** (81-93% other quarters): not investigated.

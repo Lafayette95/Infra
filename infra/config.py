@@ -90,6 +90,10 @@ WIRP_1S_DIR = DERIVED_ROOT / "WIRP_1s"
 SWAP_CLOSES_DIR = DERIVED_ROOT / "SwapCloses"
 OIS_CURVES_DIR = DERIVED_ROOT / "OisCurves"
 SWAP_SPREADS_DIR = DERIVED_ROOT / "SwapSpreads"
+SWAPTION_RECORDS_DIR = DERIVED_ROOT / "SwaptionRecords"
+SWAPTION_PRINTS_DIR = DERIVED_ROOT / "SwaptionPrints"
+SWAPTION_VOLS_DIR = DERIVED_ROOT / "SwaptionVols"
+SWAPTION_OI_DIR = DERIVED_ROOT / "SwaptionOI"
 # On-the-run yield benchmark (CLAUDE.md 18): per day and tenor, the END OF DAY yield of the
 # on-the-run CUSIP (issue-date convention, so it always has a price), stored under the SAME
 # tickers as the CMT par curve (US_BOND_10y) - a consumer picks the series by ``source``
@@ -594,6 +598,40 @@ SWAP_SPREAD_SOURCES = ("cmt", "otr")
 SWAP_SPREAD_OTR_RANKS = (0, 1)  # the 1-old too: the held-bond P&L diffs the previous day's bond across a roll
 SWAP_SPREAD_MAX_GAP_DAYS = 7
 SWAP_SPREAD_AGREE_BP = 3.0  # the two sources' daily moves disagreeing by more than this are listed (warn)
+
+
+@dataclass(frozen=True)
+class SwaptionSpec:
+    """Swaptions read from the DTCC archive (infra.processing.dtcc_swaptions,
+    infra.pipeline.swaptions): which records, the OIS curve their vols are implied on, the
+    print filters and the standard surface points.
+
+    Found in the 2-year survey (2026-10-06, USD): ~234 new trades a day; the report's
+    Call/Put label does NOT fix payer vs receiver (for both labels the premium only fits
+    the OUT-of-the-money reading), so a print's vol is implied as the OTM option - which is
+    also why the open-interest ledger keeps no payer/receiver side (gamma is the same for
+    both); ~10% of trades (26% of notional) are CAPPED (``250,000,000+``: counted at the
+    floor, flagged); ~0.1% of notionals are garbage (1e14) - dropped above
+    ``max_notional``; 43% are package legs (premium often 0 - no vol, still open interest);
+    vols from expiries beyond ~2y come out implausibly high (220-260bp normal: a premium
+    convention not yet understood), so the surface stops at ``surface_max_expiry_years``."""
+    fisn_pattern: str  # regex on ``UPI FISN``
+    curve: str  # an OIS_CURVES name
+    max_notional: float = 20e9
+    min_expiry_days: int = 7
+    min_tenor_years: float = 0.4
+    fresh_days: int = 1  # a NEWT TRAD counts as a new execution if disseminated within this many days of it
+    correction_days: int = 10  # a print's day reads corrections disseminated this many days later (SWAP_CORRECTION_DAYS)
+    atm_band_bp: float = 25.0
+    surface_expiries: tuple = (("1m", 0.05, 0.14), ("3m", 0.17, 0.33), ("6m", 0.42, 0.58), ("1y", 0.83, 1.17),
+                               ("2y", 1.75, 2.25))
+    surface_tenors: tuple = (2, 5, 10, 30)
+    surface_max_expiry_years: float = 2.25
+
+
+SWAPTIONS: dict[str, SwaptionSpec] = {
+    "USD_SOFR": SwaptionSpec(r"^NA/O (Call|P) Epn OIS USD$", "USD_SOFR"),
+}
 SWAP_TENOR_TOLERANCE_DAYS = 4
 # Off-market trades: a fixed coupon set by agreement (often round, e.g. 3.50%), with or
 # without a reported upfront fee, can sit 70-170bp from the market (found 2026-10-01 in the

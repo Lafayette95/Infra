@@ -315,10 +315,161 @@ SWAP_SPREADS = DerivedMetric(
     replace=_replace_swap_spreads, presence_severity=Severity.WARN,
 )
 
-# order matters: ois_curve reads what swap_closes just wrote, swap_spreads what ois_curve wrote
+# ------------------------------------------- swaptions (DTCC): records, prints, vols, OI
+SWAPTION_GAP_DAYS = 30  # archived files this far back without records are parsed too (a late archive)
+SWAPTION_LINKED_MIN = 0.5  # lifecycle records linked to an archived NEWT (81-93% a quarter; ~0 if ids change format again)
+SWAPTION_VOL_BOUNDS_BP = (10.0, 400.0)
+
+
+def _swaption_spec():
+    from infra.config import SWAPTIONS
+    return SWAPTIONS["USD_SOFR"]
+
+
+def compute_swaption_records(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> tuple[pd.DataFrame, dict]:
+    """The window's archived files plus any archived file in the last ``SWAPTION_GAP_DAYS``
+    with no records yet. A published file never changes, so nothing else is re-read."""
+    from infra.pipeline import dtcc, swaptions as sp
+    have = dtcc.archived_days(sp.REPORT, root=paths.dtcc_dir)
+    stored = sp.read_records(start - pd.Timedelta(days=SWAPTION_GAP_DAYS), end + pd.Timedelta(days=1),
+                             root=paths.swaption_records_dir)
+    done = set(pd.to_datetime(stored["file_day"]).dt.normalize()) if len(stored) else set()
+    days = sorted({d for d in have if start <= d <= end}
+                  | {d for d in have if start - pd.Timedelta(days=SWAPTION_GAP_DAYS) <= d < start and d not in done})
+    spec = _swaption_spec()
+    frames = [sp.parse_records(d, d, spec=spec, dtcc_root=paths.dtcc_dir) for d in days]
+    df = pd.concat([f for f in frames if len(f)], ignore_index=True) if any(len(f) for f in frames) else pd.DataFrame()
+    got = set(pd.to_datetime(df["file_day"]).dt.normalize()) if len(df) else set()
+    empty = {d: "archived DTCC file without a single swaption record" for d in days if d not in got and d.dayofweek < 5}
+    return df, {"days": days, "empty_days": empty, "parsed_days": days}
+
+
+def _replace_swaption_records(store, df, diag, start, end) -> None:
+    from infra.pipeline import swaptions as sp
+    for d in diag.get("parsed_days", []):
+        sp.store_records(df[pd.to_datetime(df["file_day"]).dt.normalize() == d] if len(df) else df, d, d, root=store)
+
+
+def _check_swaption_linking(ctx: StepContext):
+    """(c, warn) lifecycle records in the window linked to an archived NEWT: the share
+    collapses if DTCC changes its identifier format again (2025-11-02: exact matching fell
+    to 0 - infra.processing.dtcc_swaptions.trade_key)."""
+    from infra.pipeline import swaptions as sp
+    rec = sp.read_records(None, ctx.end + pd.Timedelta(days=1), root=ctx.paths.swaption_records_dir)
+    if rec.empty:
+        return True, "no swaption records", None
+    newt = set(rec.loc[rec["action"] == "NEWT", "trade_id"])
+    lc = rec[(rec["action"] != "NEWT") & (rec["file_day"] >= ctx.start)]
+    if lc.empty:
+        return True, "no lifecycle records in the window", None
+    share = float(lc["trade_id"].isin(newt).mean())
+    msg = f"{share:.0%} of {len(lc)} lifecycle records in the window link to an archived trade"
+    return share >= SWAPTION_LINKED_MIN, msg, None
+
+
+def compute_swaption_prints(start, end, paths: CyclePaths):
+    from infra.pipeline import swaptions as sp
+    spec = _swaption_spec()
+    lo = start - pd.Timedelta(days=spec.correction_days)
+    df, diag = sp.compute_prints(lo, end, spec=spec, records_root=paths.swaption_records_dir,
+                                 ois_root=paths.ois_curves_dir)
+    return df, {**diag, "range": (lo, end)}
+
+
+def _replace_swaption_prints(store, df, diag, start, end) -> None:
+    from infra.pipeline import swaptions as sp
+    lo, hi = diag.get("range", (start, end))
+    sp.store_prints(df, lo, hi, root=store)
+
+
+def compute_swaption_vols(start, end, paths: CyclePaths):
+    from infra.pipeline import swaptions as sp
+    spec = _swaption_spec()
+    lo = start - pd.Timedelta(days=spec.correction_days)
+    pr = sp.read_prints(lo, end + pd.Timedelta(days=1), root=paths.swaption_prints_dir)
+    df = sp.atm_surface(pr, spec)
+    days = sorted(set(pd.to_datetime(pr["timestamp"]).dt.normalize())) if len(pr) else []
+    return df, {"days": days, "empty_days": {}, "range": (lo, end)}
+
+
+def _replace_days(keys):
+    def replace(store, df, diag, start, end):
+        from infra.pipeline import swaptions as sp
+        lo, hi = diag.get("range", (start, end))
+        sp.store_days(df, lo, hi, root=store, keys=keys)
+    return replace
+
+
+def _check_swaption_vols(ctx: StepContext):
+    from infra.pipeline import swaptions as sp
+    v = sp.read_vols(ctx.start, ctx.end + pd.Timedelta(days=1), root=ctx.paths.swaption_vols_dir)
+    if v.empty:
+        return True, "no swaption vols in the window", None
+    lo, hi = SWAPTION_VOL_BOUNDS_BP
+    bad = v[~v["vol_bp"].between(lo, hi)]
+    if bad.empty:
+        return True, f"{len(v)} ATM vol points in [{lo:.0f}, {hi:.0f}]bp", None
+    return False, f"{len(bad)} ATM vol point(s) outside [{lo:.0f}, {hi:.0f}]bp", bad
+
+
+def compute_swaption_oi(start, end, paths: CyclePaths):
+    """Open interest per day over the prints' range: the ledger is rebuilt from every
+    stored record (a second), each day reading only records disseminated by then."""
+    from infra.pipeline import dtcc, swaptions as sp
+    spec = _swaption_spec()
+    lo = start - pd.Timedelta(days=spec.correction_days)
+    have = dtcc.archived_days(sp.REPORT, root=paths.dtcc_dir)
+    days = [d for d in pd.date_range(lo, end) if d in have]
+    v = sp.ledger(records_root=paths.swaption_records_dir)
+    df = sp.oi_summary(days, spec=spec, versions=v)
+    got = set(pd.to_datetime(df["timestamp"])) if len(df) else set()
+    empty = {d: "an archived file but no open swaption" for d in days if d not in got}
+    return df, {"days": days, "empty_days": empty, "range": (lo, end)}
+
+
+def _check_swaption_oi(ctx: StepContext):
+    from infra.pipeline import swaptions as sp
+    o = sp.read_oi(ctx.start, ctx.end + pd.Timedelta(days=1), root=ctx.paths.swaption_oi_dir)
+    if o.empty:
+        return True, "no open interest in the window", None
+    bad = o[(o["notional"] < 0) | (o["capped_notional"] > o["notional"] + 1e-6)]
+    tot = o[o["origin"] == "trade"].groupby("timestamp")["notional"].sum()
+    jump = tot.pct_change().abs()
+    big = jump[jump > 0.15]
+    ok = bad.empty and big.empty
+    msg = (f"open interest consistent on {o['timestamp'].nunique()} day(s), latest ${tot.iloc[-1] / 1e12:.2f}trn "
+           f"(executed-trade origin)" if ok else
+           f"{len(bad)} inconsistent row(s), {len(big)} day(s) with open interest moving > 15%")
+    return ok, msg, None if ok else pd.concat([bad, big.rename("jump").reset_index()], ignore_index=True)
+
+
+SWAPTION_RECORDS = DerivedMetric(
+    "swaption_records", lambda p: p.swaption_records_dir, ("timestamp", "diss_id"), compute_swaption_records,
+    checks=(Check("swaption_records_linked", _check_swaption_linking, Severity.WARN),),
+    replace=_replace_swaption_records, presence_severity=Severity.WARN,
+)
+SWAPTION_PRINTS = DerivedMetric(
+    "swaption_prints", lambda p: p.swaption_prints_dir, ("timestamp", "trade_id"), compute_swaption_prints,
+    replace=_replace_swaption_prints, presence_severity=Severity.WARN,
+)
+SWAPTION_VOLS = DerivedMetric(
+    "swaption_vols", lambda p: p.swaption_vols_dir, ("timestamp", "expiry", "tenor"), compute_swaption_vols,
+    checks=(Check("swaption_vols_sane", _check_swaption_vols, Severity.WARN),),
+    replace=_replace_days(("timestamp", "expiry", "tenor")), presence_severity=Severity.WARN,
+)
+SWAPTION_OI = DerivedMetric(
+    "swaption_oi", lambda p: p.swaption_oi_dir, ("timestamp", "expiry_bucket", "tenor_bucket", "origin"),
+    compute_swaption_oi, checks=(Check("swaption_oi_sane", _check_swaption_oi, Severity.WARN),),
+    replace=_replace_days(("timestamp", "expiry_bucket", "tenor_bucket", "origin")), presence_severity=Severity.WARN,
+)
+
+# order matters: ois_curve reads what swap_closes just wrote, swap_spreads what ois_curve wrote;
+# swaption prints need the records and the OIS curve, vols the prints, OI the records
 DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE,
                                              "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE,
-                                             "swap_spreads": SWAP_SPREADS}
+                                             "swap_spreads": SWAP_SPREADS, "swaption_records": SWAPTION_RECORDS,
+                                             "swaption_prints": SWAPTION_PRINTS, "swaption_vols": SWAPTION_VOLS,
+                                             "swaption_oi": SWAPTION_OI}
 
 
 # ------------------------------------------------------------------------------ step

@@ -146,3 +146,12 @@ def test_swap_spreads_registered_last_and_bmk_checks():
     from infra.cycle.bmk import PNL_STEP
     checks = {c.name for c in PNL_STEP.checks}
     assert {"swap_spread_pnl_present", "swap_spread_pnl_sane", "swap_spread_sources_agree"} <= checks
+
+
+def test_swaption_metrics_registered_after_the_ois_curve():
+    names = list(derived.DERIVED_METRICS)
+    assert names.index("ois_curve") < names.index("swaption_prints")
+    assert names.index("swaption_records") < names.index("swaption_prints") < names.index("swaption_vols")
+    assert names.index("swaption_records") < names.index("swaption_oi")
+    checks = {c.name: c for c in derived.DERIVED_STEP.checks}
+    assert checks["swaption_records_linked"].severity.value == "warn"

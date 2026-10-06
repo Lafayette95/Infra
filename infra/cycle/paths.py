@@ -39,6 +39,10 @@ class CyclePaths:
     swap_closes_dir: Path
     ois_curves_dir: Path
     swap_spreads_dir: Path
+    swaption_records_dir: Path
+    swaption_prints_dir: Path
+    swaption_vols_dir: Path
+    swaption_oi_dir: Path
     cme_tcf_dir: Path
     treasury_securities_dir: Path
     treasury_otr_dir: Path
@@ -84,6 +88,10 @@ class CyclePaths:
             swap_closes_dir=config.SWAP_CLOSES_DIR,
             ois_curves_dir=config.OIS_CURVES_DIR,
             swap_spreads_dir=config.SWAP_SPREADS_DIR,
+            swaption_records_dir=config.SWAPTION_RECORDS_DIR,
+            swaption_prints_dir=config.SWAPTION_PRINTS_DIR,
+            swaption_vols_dir=config.SWAPTION_VOLS_DIR,
+            swaption_oi_dir=config.SWAPTION_OI_DIR,
             cme_tcf_dir=config.CME_TCF_DIR,
             treasury_securities_dir=config.TREASURY_SECURITIES_DIR,
             treasury_otr_dir=config.TREASURY_OTR_DIR,
