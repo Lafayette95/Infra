@@ -529,6 +529,8 @@ day's vintage would have been lost.
 
 ## Derived: OTR yields, swap closes and futures snaps are not in the daily cycle yet
 
+**Update 2026-10-06 - the PURE swap closes are in `derived`** (metric `swap_closes`, user decision: step 1 of the swap-spread plan below), recomputing the last `SWAP_CORRECTION_DAYS` and replacing only pure rows. Still open here: the futures-ADJUSTED closes (hand build, `Derived/SwapCloses` adjusted rows stop at 2026-09-30 - the half this entry warned about, now an explicit known gap, not silent: `swap_closes_present` judges the pure method only), the OTR yields, the futures snaps.
+
 **Found:** 2026-10-02, wiring the Treasury reference data and prices into the cycle (CLAUDE.md 12, 16, 18).
 **Where:** `infra.pipeline.bond_yields.build_otr_yields`, `infra.pipeline.swap_closes.backfill_swap_closes`; the `derived` step (`infra/cycle/derived.py`, `DERIVED_METRICS`).
 **Status:** open, deferred (user decision 2026-10-02: hold `derived` until the intraday data is scheduled).
@@ -1198,3 +1200,12 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
     daily layered run): the bond futures' 2-day volume lookback still left v.0 on the expiring
     contract that day. Check how often any bond root's v.0 sits on or after first notice.
 
+---
+
+## Swap spread bmk P&L: plan, and the CTD-aware version for later
+
+**Found:** 2026-10-06 (user discussion). **Where:** swap closes (root CLAUDE.md 16), our Treasury curve (25a), the bmk yield P&L sources.
+**Status:** planned - not built.
+
+**Agreed order:** (1) the PURE swap closes into the daily cycle's `derived` step (no intraday dependency, like the curve); (2) a SOFR discount curve bootstrapped from them (reusing the curve code: spline on the discount function, cash-flow based); (3) two swap-spread series, the way the bond P&L has OTR / CMT / our-curve sources: **CMT swap spread** (SOFR swap par at NY1530 minus the CMT par yield at the same tenor - market convention, includes the on-the-run premium; CMT chosen as the reference: it is ~the on-the-run's own 15:30 bid yield interpolated to the tenor, and synchronous with the NY1530 close; convention to verify: swap annual ACT/360 vs CMT semi-annual bond basis, convert before subtracting) and the **on-the-run's par-par ASW** ((PV of the bond's cash flows on the SOFR curve - dirty price) / the floating leg's annuity on the SOFR curve; z-spread to SOFR as a cross-check). Then the bmk P&L with carry + rolldown on both legs (bond: coupon - repo via funding v1, rolldown on our curve; swap: fixed - compounded SOFR, rolldown on the SOFR curve).
+**Later (user, 2026-10-06):** the **CTD-aware** version - the swap spread / ASW of the futures' cheapest-to-deliver (what a basis trader holds) - the same way a CTD-aware cash-bond P&L comes later. Also later: our-curve (off-the-run, premium-free) swap spread as an RV variant; a held-position (level 3) P&L.

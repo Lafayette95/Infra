@@ -48,6 +48,10 @@ class DerivedMetric:
     compute: ComputeFn
     checks: tuple[Check, ...] = ()  # custom checks (c); presence/revision are generated
     extra_stores: tuple[ExtraStore, ...] = ()
+    # how a run replaces its rows (default: delete the window's days by ``timestamp``, write):
+    # (store, df, diag, start, end) -> None - for stores keyed by an instant, or shared with
+    # rows the cycle doesn't own (the swap closes' hand-built adjusted rows)
+    replace: Callable | None = None
 
 
 # ----------------------------------------------------------------------------- WIRP
@@ -156,7 +160,71 @@ TREASURY_CURVE = DerivedMetric(
     extra_stores=(ExtraStore("treasury_rv", lambda p: p.treasury_rv_dir, RV_KEYS),),
 )
 
-DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE}
+# ----------------------------------------------------------- swap closes (PURE method)
+SWAP_CLOSE_KEYS = ("timestamp", "close", "currency", "tenor", "method")
+SWAP_RATE_BOUNDS_PCT = (-1.0, 15.0)
+
+
+def compute_swap_closes(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> tuple[pd.DataFrame, dict]:
+    """The PURE benchmark swap closes (root CLAUDE.md 16) for every day with an archived DTCC
+    file in ``[start - SWAP_CORRECTION_DAYS, end]``: a day's close reads the corrections in
+    the files after it, so each run recomputes the last ``SWAP_CORRECTION_DAYS`` and a late
+    correction lands (95% of cancellations arrive within a day, 99% within 33). Pure only:
+    the futures-adjusted method needs intraday quotes and stays a hand build (TOFIX)."""
+    from infra.config import SWAP_CORRECTION_DAYS
+    from infra.pipeline import dtcc
+    from infra.pipeline.swap_closes import REPORT, compute_closes
+    lo = start - pd.Timedelta(days=SWAP_CORRECTION_DAYS)
+    have = dtcc.archived_days(REPORT, root=paths.dtcc_dir)
+    days = [d for d in pd.date_range(lo, end) if d in have]
+    from infra.analytics.sofr_curve import business_days
+    bdays = set(business_days(lo, end))  # federal holidays out: a holiday file has few or no prints
+    frames, empty, cache = [], {}, {}
+    for d in days:
+        for k in [k for k in cache if k < d]:
+            del cache[k]
+        c = compute_closes(d, dtcc_root=paths.dtcc_dir, cache=cache, methods=("pure",))
+        if c.empty and d in bdays:
+            empty[d] = "no plain par-swap print in any close window that day"
+        frames.append(c)
+    df = pd.concat([f for f in frames if not f.empty], ignore_index=True) if any(not f.empty for f in frames) \
+        else pd.DataFrame(columns=list(SWAP_CLOSE_KEYS))
+    if not df.empty:
+        df = df.astype({"timestamp": "datetime64[ms]", "tenor": "int32", "n_trades": "int32", "half_window_min": "int32"})
+    return df, {"days": [d for d in days if d in bdays], "empty_days": empty, "range": (lo, end)}
+
+
+def _replace_pure_closes(store, df: pd.DataFrame, diag: dict, start, end) -> None:
+    """Delete the recomputed range's PURE rows only (the hand-built adjusted rows stay),
+    by the snap INSTANT (closes are keyed by it, not by midnight), then write."""
+    lo, hi = diag.get("range", (start, end))
+    hi = pd.Timestamp(hi) + pd.Timedelta(days=1)
+    parquet_store.delete_where(store, lambda part: pd.to_datetime(part["timestamp"]).ge(pd.Timestamp(lo))
+                               & pd.to_datetime(part["timestamp"]).lt(hi) & part["method"].astype(str).eq("pure"))
+    if not df.empty:
+        parquet_store.write_partitioned(df, store, list(SWAP_CLOSE_KEYS))
+
+
+def _check_swap_closes(ctx: StepContext):
+    """(c) every pure close in the window: rate in bounds, >= 1 trade, finite standard error."""
+    df = parquet_store.read_partitioned(ctx.paths.swap_closes_dir, start=ctx.start, end=ctx.end + pd.Timedelta(days=1))
+    if df is None or df.empty:
+        return True, "no swap closes in window", None
+    df = df[df["method"].astype(str) == "pure"]
+    lo, hi = SWAP_RATE_BOUNDS_PCT
+    bad = df[~df["rate"].between(lo, hi) | (df["n_trades"] < 1) | ~np.isfinite(df["se_bp"].astype(float))]
+    if bad.empty:
+        return True, f"{len(df)} pure closes in window, all sane", None
+    return False, f"{len(bad)} implausible swap close(s)", bad[["timestamp", "close", "currency", "tenor", "rate", "n_trades", "se_bp"]]
+
+
+SWAP_CLOSES_PURE = DerivedMetric(
+    "swap_closes", lambda p: p.swap_closes_dir, SWAP_CLOSE_KEYS, compute_swap_closes,
+    checks=(Check("swap_closes_sane", _check_swap_closes),), replace=_replace_pure_closes,
+)
+
+DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE,
+                                             "swap_closes": SWAP_CLOSES_PURE}
 
 
 # ------------------------------------------------------------------------------ step
@@ -176,9 +244,12 @@ def backfill_daily_derived(
     for name, metric in metrics.items():
         df, diag = metric.compute(start, end, paths)
         store = metric.store(paths)
-        parquet_store.prune_rows(store, "timestamp", pd.date_range(start, end, freq="D"))
-        if not df.empty:
-            parquet_store.write_partitioned(df, store, list(metric.key_columns))
+        if metric.replace is not None:
+            metric.replace(store, df, diag, start, end)
+        else:
+            parquet_store.prune_rows(store, "timestamp", pd.date_range(start, end, freq="D"))
+            if not df.empty:
+                parquet_store.write_partitioned(df, store, list(metric.key_columns))
         for extra in metric.extra_stores:
             edf = diag.get("extra", {}).get(extra.name, pd.DataFrame())
             estore = extra.store(paths)

@@ -37,3 +37,24 @@ def test_curve_metric_registered_with_both_revision_checks():
     names = [c.name for c in derived.DERIVED_STEP.checks]
     assert {"treasury_curve_present", "treasury_curve_no_revisions", "treasury_rv_no_revisions",
             "treasury_curve_fit_sane"} <= set(names)
+
+
+def test_swap_closes_replace_only_pure_rows_by_instant(tmp_path):
+    """The cycle owns the PURE closes only: a run replaces them (keyed by the snap instant,
+    not midnight) and leaves the hand-built adjusted rows alone."""
+    from infra.storage import parquet_store as ps
+    store = tmp_path / "SwapCloses"
+    def rows(method, rate):
+        return pd.DataFrame({"timestamp": pd.to_datetime(["2026-09-30 19:30"]).astype("datetime64[ms]"), "close": "NY1530",
+                             "currency": "USD", "tenor": pd.Series([10], dtype="int32"), "method": method, "rate": rate,
+                             "n_trades": pd.Series([5], dtype="int32"), "half_window_min": pd.Series([30], dtype="int32"),
+                             "dispersion_bp": 0.3, "se_bp": 0.2})
+    ps.write_partitioned(pd.concat([rows("pure", 3.50), rows("adjusted", 3.51)]), store, list(derived.SWAP_CLOSE_KEYS))
+    derived._replace_pure_closes(store, rows("pure", 3.55), {"range": (D("2026-09-30"), D("2026-09-30"))}, None, None)
+    back = ps.read_partitioned(store).set_index("method")["rate"].to_dict()
+    assert back == {"pure": 3.55, "adjusted": 3.51}
+
+
+def test_swap_closes_metric_registered():
+    names = [c.name for c in derived.DERIVED_STEP.checks]
+    assert {"swap_closes_present", "swap_closes_no_revisions", "swap_closes_sane"} <= set(names)

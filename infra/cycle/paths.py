@@ -36,6 +36,7 @@ class CyclePaths:
     cpi_weights_dir: Path
     cpi_weights_coverage: Path
     dtcc_dir: Path
+    swap_closes_dir: Path
     cme_tcf_dir: Path
     treasury_securities_dir: Path
     treasury_otr_dir: Path
@@ -78,6 +79,7 @@ class CyclePaths:
             cpi_weights_dir=config.CPI_WEIGHTS_DIR,
             cpi_weights_coverage=config.CPI_WEIGHTS_COVERAGE_FILE,
             dtcc_dir=config.DTCC_DIR,
+            swap_closes_dir=config.SWAP_CLOSES_DIR,
             cme_tcf_dir=config.CME_TCF_DIR,
             treasury_securities_dir=config.TREASURY_SECURITIES_DIR,
             treasury_otr_dir=config.TREASURY_OTR_DIR,

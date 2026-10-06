@@ -82,11 +82,14 @@ def _window_inside_day(instant: pd.Timestamp, spec: SwapCloseSpec, day: pd.Times
 
 def compute_closes(day, *, closes: dict[str, SwapCloseSpec] = SWAP_CLOSES, as_of=None,
                    dtcc_root: Path = DTCC_DIR, cache: dict | None = None,
-                   book: HedgeBook | None = None) -> pd.DataFrame:
+                   book: HedgeBook | None = None, methods: tuple[str, ...] = ("pure", "adjusted")) -> pd.DataFrame:
     """Every close in ``closes`` x currency on ``day``, both methods where possible. No
-    network, no writes. ``book`` (hedges) is built for the day if not given."""
+    network, no writes. ``book`` (hedges) is built for the day if not given. ``methods``:
+    ``("pure",)`` skips the futures-adjusted closes and their hedge book (which reads
+    intraday ``bbo-1m`` quotes) - the daily cycle's ``derived`` step runs pure only."""
     day = pd.Timestamp(day).normalize()
-    hedged = sorted({c for spec in closes.values() for c in spec.currencies if c in SWAP_HEDGES})
+    hedged = sorted({c for spec in closes.values() for c in spec.currencies if c in SWAP_HEDGES}) \
+        if "adjusted" in methods else []
     if book is None and hedged:
         book = build_hedge_book(day, day, currencies=hedged)
     events = day_events(day, as_of=as_of, dtcc_root=dtcc_root, cache=cache)
