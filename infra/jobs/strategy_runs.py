@@ -33,6 +33,11 @@ log = logging.getLogger(__name__)
 STRATEGY_GROUPS = {"cevt": (CEVT, CEVT_STRATEGIES)}
 
 
+def strategy_root(root: Path, strategy) -> Path:
+    """Stores live under ``<root>/<frequency>/<name>`` (daily and intraday strategies apart)."""
+    return Path(root) / strategy.spec.frequency
+
+
 def make_strategy(name: str):
     for group, (cls, registry) in STRATEGY_GROUPS.items():
         if name in registry:
@@ -116,6 +121,7 @@ def account(name: str, through=None, *, root: Path = STRATEGIES_DIR, marks=None,
     """Strategy P&L and costs from the STORED firm positions (``positions_abs``), recomputed
     whole and upserted (a changed past P&L row is counted and logged); checks replaced."""
     _, s = make_strategy(name)
+    root = strategy_root(root, s)
     pabs = store.read_series(name, "positions_abs", root=root)
     pos = store.read_series(name, "positions", root=root)
     if pos.empty:
@@ -138,6 +144,7 @@ def account(name: str, through=None, *, root: Path = STRATEGIES_DIR, marks=None,
 def run_daily(name: str, through, *, root: Path = STRATEGIES_DIR, models_root: Path = MODEL_RUNS_DIR,
               update_families: bool = False, **inputs) -> dict:
     group, s = make_strategy(name)
+    root = strategy_root(root, s)
     if update_families:
         for f in s.spec.families:
             family_runs.run_daily(f, through, root=models_root)
@@ -149,7 +156,7 @@ def run_daily(name: str, through, *, root: Path = STRATEGIES_DIR, models_root: P
     for k in ("signals", "positions"):
         if out[k]["changed"]:
             log.warning("%s: %d firm %s row(s) changed on recompute (an upstream revision)", name, out[k]["changed"], k)
-    out["accounting"] = account(name, through, root=root, marks=inputs.get("marks"),
+    out["accounting"] = account(name, through, root=root.parent, marks=inputs.get("marks"),
                                 calendar=inputs.get("calendar"))["summary"]
     if s.spec.plan_vintages:
         pl = plan(s, through, models_root=models_root, upcoming=inputs.get("upcoming"),
@@ -164,6 +171,7 @@ def rebuild(name: str, through, *, root: Path = STRATEGIES_DIR, models_root: Pat
             promote: bool = False, **inputs) -> dict:
     """Recompute the firm series into ``<name>/_rebuild`` and compare with the stored ones."""
     _, s = make_strategy(name)
+    root = strategy_root(root, s)
     views, pos, pabs = firm(s, through, models_root=models_root, inputs=inputs.get("inputs"),
                             vols=inputs.get("vols"), contracts=inputs.get("contracts"))
     rep = {}

@@ -46,6 +46,8 @@ class CyclePaths:
     repo_coverage: Path
     sec_lending_dir: Path
     sec_lending_coverage: Path
+    treasury_curves_dir: Path
+    otr_yields_dir: Path
 
     @classmethod
     def default(cls) -> CyclePaths:
@@ -85,6 +87,8 @@ class CyclePaths:
             repo_coverage=config.REPO_COVERAGE_FILE,
             sec_lending_dir=config.SEC_LENDING_DIR,
             sec_lending_coverage=config.SEC_LENDING_COVERAGE_FILE,
+            treasury_curves_dir=config.TREASURY_CURVES_DIR,
+            otr_yields_dir=config.OTR_YIELDS_DIR,
         )
 
     @classmethod

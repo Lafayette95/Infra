@@ -44,9 +44,12 @@ class CycleSpec:
     timezone: str
     calendar: str = "market"  # trading days (infra.processing.schedule_rules.business_days)
     note: str = ""
+    frequency: str = "intraday"   # intraday | daily (one point a day: start == end)
 
     @property
     def points_per_day(self) -> int:
+        if self.start == self.end:
+            return 1
         h0, m0 = map(int, self.start.split(":"))
         h1, m1 = map(int, self.end.split(":"))
         span = (h1 * 60 + m1) - (h0 * 60 + m0)
@@ -74,9 +77,15 @@ CYCLES: dict[str, CycleSpec] = {c.name: c for c in (
     CycleSpec("15MIN_NO_OVERNIGHT", 15, "06:00", "19:00", NEW_YORK,
               note="New York day, no overnight: 06:00-19:00 ET every 15 minutes"),
     CycleSpec("1MIN_NO_OVERNIGHT", 1, "06:00", "19:00", NEW_YORK, note="the same hours on the 1-minute grid"),
+    # DAILY: one point per trading day at CME's rates settlement (14:00 CT): the decision is
+    # taken just before it and trades AT it (user decision 2026-10-05, option (a)). A step = one
+    # trading day (settlement to settlement); step lags other than 0 leave the day (illegal), day
+    # lags move the window. Daily P&L sources stamp day D's close-to-close move at D's point.
+    CycleSpec("DAILY_SETTLE", 1440, "14:00", "14:00", CHICAGO, frequency="daily",
+              note="one point per trading day at the 14:00 CT settlement"),
 )}
 
-CYCLE_ALIASES: dict[str, str] = {"DEFAULT_CYCLE": "15MIN_NO_OVERNIGHT"}
+CYCLE_ALIASES: dict[str, str] = {"DEFAULT_CYCLE": "15MIN_NO_OVERNIGHT", "DEFAULT_DAILY_CYCLE": "DAILY_SETTLE"}
 
 
 def resolve_cycle(name: str) -> CycleSpec:

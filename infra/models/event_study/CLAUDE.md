@@ -86,6 +86,20 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
     `nfp_intraday_struct`. Use `ev_abs_min=None` on structures: the 2bp floor is for single
     futures, and a fly moves 0.8bp a day.
 
+## 3a. Daily studies (root CLAUDE.md 29, built 2026-10-05)
+*   **The same model**, with `frequency="daily"` (validated: daily cycle, daily P&L source),
+    registries `EVENT_STUDIES_DAILY` / `EVENT_FAMILIES_DAILY` next to the intraday ones.
+*   **Clock:** `DAILY_SETTLE`, one point a day at the 14:00 CT settlement; windows are
+    `(day i, day j]` settlement to settlement; legs use `%0` (the day's point) - `&` (the
+    event's clock time) is off the daily grid and illegal; day lags move them.
+*   **P&L:** `YIELD_BPS_CMT` / `_OTR` / `_CURVE` (persisted bmk yield P&L, bp, + = rally; the
+    default instrument is `US_BOND_10y`), `FUTURE_BPS_SETTLE`, `STRUCT_BPS_SETTLE`. No bbo
+    needed; the yield sources reach back to 2008-09 (CMT 2016 in our store).
+*   **Defaults to revisit for daily:** the 2bp size floor (daily moves are ~6bp a day), and
+    overlapping multi-day windows (clustered events) need overlap-aware errors (TOFIX).
+*   **First result:** NFP days sell off ~1bp (10y t -2.0 / -2.2 on the 2008+ OTR / curve P&L,
+    -1.7 CMT 2016+, -1.2 futures 2018-10+), failing the 2bp floor in every source.
+
 ## 4. The tests (`stats.py`, thresholds in the spec; `None` = off)
 *   Size: n, mean, median, std, t / p (one-sample). Robustness: hit rate with a two-sided
     binomial p, Wilcoxon signed-rank p (the median: one large event can't carry it), trimmed mean

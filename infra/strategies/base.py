@@ -43,6 +43,8 @@ ANNUAL = np.sqrt(252.0)
 class StrategySpec:
     name: str = "custom"
     description: str = ""
+    frequency: str | None = None                 # REQUIRED: "intraday" | "daily" (validated with the cycle and
+                                                 # the accounting marks; stores live under Strategies/<frequency>)
     instruments: tuple[str, ...] = ()           # relative tickers
     target_vol_usd: float = 1_000_000.0          # annual $ volatility
     vol_span: int = 60                           # EWMA span of daily changes, days
@@ -57,6 +59,37 @@ class StrategySpec:
     layers: str | None = None                    # LAYER_SIZINGS name: views are on curve STRUCTURES, sized per
                                                  # layer and netted into futures (infra.strategies.layered);
                                                  # None = views per future, sized per instrument
+
+    def __post_init__(self):
+        from infra.reference.event_grid import resolve_cycle
+        from infra.strategies.config.accounting import get_accounting_spec
+        if self.frequency not in ("intraday", "daily"):
+            raise ValueError(f"strategy {self.name!r}: frequency is required, 'intraday' or 'daily' "
+                             f"(got {self.frequency!r})")
+        cf = resolve_cycle(self.cycle).frequency
+        if cf != self.frequency:
+            raise ValueError(f"strategy {self.name!r} is {self.frequency} but its cycle {self.cycle!r} is {cf}")
+        marks = get_accounting_spec(self.accounting).marks
+        if (marks == "settlement") != (self.frequency == "daily"):
+            raise ValueError(f"strategy {self.name!r} is {self.frequency} but its accounting {self.accounting!r} "
+                             f"marks with {marks!r} (daily <-> settlement, intraday <-> bbo)")
+
+
+# Presets: what a frequency implies; a spec states only what differs (root CLAUDE.md 29)
+INTRADAY = dict(frequency="intraday")
+DAILY = dict(frequency="daily", cycle="DAILY_SETTLE", accounting="settlement")
+
+
+def strategy_registry(frequency: str, specs) -> dict:
+    """A frequency's registry of specs: rejects a spec of the other frequency (the guard)."""
+    out = {}
+    for s in specs:
+        if s.frequency != frequency:
+            raise ValueError(f"strategy {s.name!r} is {s.frequency}: it can't go in the {frequency} registry")
+        if s.name in out:
+            raise ValueError(f"duplicate strategy name {s.name!r}")
+        out[s.name] = s
+    return out
 
 
 def pnl(positions: pd.DataFrame, steps: pd.DataFrame, lag: int = 0) -> pd.DataFrame:
@@ -145,6 +178,12 @@ class Strategy(ABC):
             from infra.strategies.layered import layered_positions
             contracts, self.sizing_diagnostics_ = layered_positions(signal, self.spec.layers, state=state)
             return contracts
+        from infra.relative.symbology import parse_relative
+        untradeable = [i for i in self.instruments if parse_relative(i) is None]
+        if untradeable and vols is None:            # vols passed in = the caller defines the risk unit
+            raise NotImplementedError(
+                f"strategy {self.spec.name!r}: views on {untradeable} (yields, not futures) need an execution map "
+                "into futures - not built yet (TOFIX); use futures or curve structures (layers)")
         return self.positions(signal, self.vols(pd.DatetimeIndex(labels), vols))
 
     def futures(self) -> list[str]:

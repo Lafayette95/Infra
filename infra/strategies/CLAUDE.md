@@ -159,6 +159,26 @@ headings "Strategies: ...". Built 2026-10-05.
     (`ev_vol`). NFP 08:15 -> 10:30 ET (89 events): CURVE__FV__WN steepens +0.96bp (t 2.3, net
     of placebo 2.2), FLY__FV__UXY__WN -0.14bp (t -2.8), duration no consistent sign.
 
+## 5a. Daily strategies (root CLAUDE.md 29; user decisions 2026-10-05)
+*   **The same classes**; `frequency` is a REQUIRED field validated against the cycle and the
+    accounting marks, presets `INTRADAY` / `DAILY` (`base.py`), two guarded registries per
+    config file (`CEVT_STRATEGIES_INTRADAY` / `CEVT_STRATEGIES_DAILY`), stores under
+    `Strategies/<frequency>/<name>`.
+*   **Decision instant (a):** one decision a day just before the 14:00 CT settlement, traded at
+    it (`DAILY_SETTLE` cycle + `settlement` accounting; `exec_lag=1` = decide after the close,
+    trade the next settlement).
+*   **Sign:** + = long duration, - = short, for views, positions and every benchmark P&L (bp,
+    `-dy` for yields): P&L = position x benchmark P&L.
+*   **Default daily instrument is the 10y yield** (`US_BOND_10y`), measured against several
+    benchmark P&Ls (CMT, on-the-run, our curve; root CLAUDE.md 12), with futures as (a) another
+    benchmark - a sanity check, compared at the NY1530 snap - and later (b) an RV view against
+    cash. Yields can't be held: views on them need an execution map into futures (TOFIX), so the
+    daily strategies so far trade futures or structures.
+*   **First run** (`cevt_nfp_days_layers`, gate `passed`, research, 2021-2026): $1.15m gross,
+    Sharpe 0.50 (t 1.2); -$0.30m net - day windows on the low-vol layers trade large notional
+    (~1,100 TY vs -1,500 UXY on one micro view). Its checks caught a ZB position on ZBU1's
+    first-notice day (2021-08-31): `ZB.v.0` rolled late that cycle.
+
 ## 6. Running it
 ```python
 from infra.jobs import family_runs, strategy_runs

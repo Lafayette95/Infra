@@ -14,8 +14,11 @@ stored with a NaN value and the reason in ``method``; a warning-level check list
 every run.
 
 Pnl: ``bmk`` names the benchmark pnl definition. Futures use ``futures_price`` = change
-in settlement x point value, per 1 long contract; cash bonds will add their own (total
-return, yield-change based). ``pnl_per_dv01`` divides by the PRIOR day's DV01 (the risk
+in settlement x point value, per 1 long contract. Yields (since 2026-10-05,
+``infra.cycle.bmk_yields``): ``yield_cmt`` / ``yield_otr`` / ``yield_curve`` per
+``US_BOND_<t>y`` = -(yield change) in bp, price action of a long position (a total-return
+definition with carry comes later). ``pnl_per_dv01`` is bp for EVERY bmk: + = long duration
+made money, so P&L = position x pnl_per_dv01. ``pnl_per_dv01`` divides by the PRIOR day's DV01 (the risk
 held over the day) - for STIR futures that is simply the rate move in bp.
 
 Both stores upsert (keys are deterministic from the universe, unlike WIRP's
@@ -261,6 +264,8 @@ def _check_pnl_consistent(ctx: StepContext):
     """(c): pnl == price change x the root's point value, exactly - catches a wrong spec
     or a unit slip the moment it happens."""
     df = _read(ctx, _pnl_dir)
+    if "bmk" in df:
+        df = df[df["bmk"].astype(str) == "futures_price"]      # yield rows (bmk_yields) have no point value
     if df.empty:
         return True, "no pnl rows in window", None
     pv = df["root"].map(lambda r: FUTURES_ROOTS[r].point_value).astype("float64")
@@ -270,6 +275,11 @@ def _check_pnl_consistent(ctx: StepContext):
     return False, f"{len(bad)} pnl row(s) inconsistent with point value", bad
 
 
+def _yields_check(name: str, ctx: StepContext):
+    from infra.cycle import bmk_yields
+    return getattr(bmk_yields, name)(ctx)
+
+
 def _run_risk(ctx: StepContext) -> dict:
     return backfill_daily_risk(ctx.start, ctx.end, paths=ctx.paths,
                                risk=ctx.options.get("risk", "DV01"),
@@ -277,9 +287,12 @@ def _run_risk(ctx: StepContext) -> dict:
 
 
 def _run_pnl(ctx: StepContext) -> dict:
-    return backfill_daily_pnl(ctx.start, ctx.end, paths=ctx.paths,
-                              risk=ctx.options.get("risk", "DV01"),
-                              **{k: ctx.options[k] for k in ("specs",) if k in ctx.options})
+    from infra.cycle.bmk_yields import backfill_daily_yield_pnl
+    out = backfill_daily_pnl(ctx.start, ctx.end, paths=ctx.paths,
+                             risk=ctx.options.get("risk", "DV01"),
+                             **{k: ctx.options[k] for k in ("specs",) if k in ctx.options})
+    out["yields"] = backfill_daily_yield_pnl(ctx.start, ctx.end, paths=ctx.paths)
+    return out
 
 
 RISK_STEP = Step("bmk_risk", _run_risk, depends_on=("px",), checks=(
@@ -293,4 +306,7 @@ PNL_STEP = Step("bmk_pnl", _run_pnl, depends_on=("px", "bmk_risk"), checks=(
     Check("pnl_present", _presence(_pnl_dir, "pnl", needs_prior=True)),
     revision_check(_pnl_dir, PNL_KEYS, name="pnl_no_revisions", atol=1e-9),
     Check("pnl_consistent", _check_pnl_consistent),
+    Check("yield_pnl_present", lambda ctx: _yields_check("check_yield_present", ctx), severity=Severity.WARN),
+    Check("yield_pnl_sane", lambda ctx: _yields_check("check_yield_sane", ctx), severity=Severity.WARN),
+    Check("yield_sources_agree", lambda ctx: _yields_check("check_yield_sources_agree", ctx), severity=Severity.WARN),
 ))

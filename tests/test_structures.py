@@ -141,10 +141,27 @@ def test_a_strategy_with_layers_sizes_structure_views_into_futures(monkeypatch):
     from infra.strategies.cevt import CEVT
     from infra.strategies.config.cevt import CEVTSpec
     st = _state_for_sizing()
-    s = CEVT(CEVTSpec("t", instruments=("CURVE__FV__WN", "FLY__FV__UXY__WN"), layers="ust_layers"))
+    s = CEVT(CEVTSpec("t", instruments=("CURVE__FV__WN", "FLY__FV__UXY__WN"), layers="ust_layers", frequency="intraday"))
     assert sorted(s.futures()) == sorted(LEGS)
     labels = pd.DatetimeIndex([st.days[300] + pd.Timedelta(hours=14)])
     sig = pd.DataFrame({"CURVE__FV__WN": [0.5], "FLY__FV__UXY__WN": [-1.0]}, index=labels)
     pos = s.size(sig, labels, state=st)
     assert list(pos.columns) == LEGS and pos.iloc[0]["TN.v.0"] < 0 and pos.iloc[0]["ZT.v.0"] == 0
     assert "vol:macro" in s.sizing_diagnostics_.columns
+
+
+def test_yield_pnl_signs_and_on_the_run_switches():
+    from infra.processing import yield_pnl as yp
+    days = pd.bdate_range("2024-01-02", periods=4)
+    y = pd.DataFrame({"timestamp": days, "ticker": "US_BOND_10y", "yield": [4.00, 4.10, 4.05, 4.05]})
+    r = yp.level_change_pnl(y, "yield_cmt")
+    np.testing.assert_allclose(r["pnl_per_dv01"], [-10.0, 5.0, 0.0])     # yields up 10bp = a long loses 10bp
+    # an on-the-run switch on day 3: the new bond yields 4bp more, the old one moved -2bp
+    otr = pd.DataFrame({"timestamp": days, "ticker": "US_BOND_10y", "cusip": ["A", "A", "B", "B"]})
+    by = pd.DataFrame({"timestamp": list(days) + list(days[2:]), "cusip": ["A"] * 4 + ["B"] * 2,
+                       "yield": [4.00, 4.10, 4.08, 4.07, 4.12, 4.10]})
+    h = yp.held_bond_pnl(otr, by, "yield_otr").set_index("timestamp")["pnl_per_dv01"]
+    np.testing.assert_allclose(h.to_numpy(), [-10.0, 2.0, 2.0])         # day 3 = A's move, not the jump to B
+    gap = yp.level_change_pnl(pd.DataFrame({"timestamp": [D("2024-01-02"), D("2024-02-02")], "ticker": "T",
+                                            "yield": [4.0, 4.2]}), "x")
+    assert gap.empty                                                     # a month's change is not a day's P&L

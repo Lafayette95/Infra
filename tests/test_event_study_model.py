@@ -318,3 +318,30 @@ def test_a_family_leg_can_be_a_union_of_rules():
     for name in ("nfp_intraday", "nfp_intraday_struct"):
         codes = EVENT_FAMILIES[name].codes()
         assert len(codes) == 24 and not any("%1_1" in c or "%1_8" in c for c in codes)
+
+
+def test_daily_studies_are_guarded_and_run_on_the_daily_grid(monkeypatch):
+    from infra.models.event_study.config import EVENT_STUDIES_DAILY, EventStudySpec, registry
+    with pytest.raises(ValueError, match="P&L source"):
+        EventStudySpec("x", code=f"{NFP};;;&0_0_&_-1__&0_0_&_8;;DEFAULT_CYCLE", source="YIELD_BPS_CMT")
+    with pytest.raises(ValueError, match="cycle"):
+        EventStudySpec("x", code=f"{NFP};GRID_START;;&0_-1_%0_0__&0_0_%0_0;;DAILY_SETTLE", frequency="intraday")
+    with pytest.raises(ValueError, match="registry"):
+        registry("daily", (EventStudySpec("i"),))
+    # a daily NFP study: (D-1 settlement, D settlement], one point a day, a planted -3bp on NFP days
+    import infra.pipeline.event_pnl as ep
+    spec = EVENT_STUDIES_DAILY["nfp_day"]
+    m = EventStudy(spec, instruments=("US_BOND_10y",), ev_abs_min=None, min_obs=5)
+    g = ew.make_grid(resolve_cycle("DAILY_SETTLE"), business_days("2022-01-01", "2024-12-31", "market"))
+    pts = g.instants()
+    rng = np.random.default_rng(0)
+    panel = pd.DataFrame({"US_BOND_10y": rng.normal(0, 1.0, len(pts))}, index=pd.DatetimeIndex(pts, name="timestamp"))
+    fridays = [d for d in g.days if d.weekday() == 4 and d.day <= 7]
+    occ = _occ(NFP, [pd.Timestamp(d) + pd.Timedelta(hours=12, minutes=30) for d in fridays])
+    for d in fridays:
+        panel.iloc[g.days.get_loc(d), 0] -= 3.0
+    data = m.prepare(panel, occurrences=occ)
+    m.fit(data, as_of="2024-12-31")
+    t = m.fitted_.table.loc["US_BOND_10y"]
+    assert t["n"] >= 30 and t["mean"] == pytest.approx(-3.0, abs=0.5) and t["passed"] == 1.0
+    assert ep.PNL_SOURCES["YIELD_BPS_CMT"].frequency == "daily" and resolve_cycle("DAILY_SETTLE").points_per_day == 1

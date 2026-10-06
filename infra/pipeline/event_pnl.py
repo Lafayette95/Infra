@@ -186,6 +186,7 @@ class PnlSource:
     fn: Callable
     units: str
     description: str
+    frequency: str = "intraday"     # the cycles it serves: intraday | daily
 
 
 def _structures_bbo(structures, grid, *, structure_set: str = "ust_layers", state=None, **kw) -> pd.DataFrame:
@@ -212,6 +213,47 @@ def _structures_bbo(structures, grid, *, structure_set: str = "ust_layers", stat
     return pd.DataFrame(out, index=points)
 
 
+def _on_daily_grid(by_day: pd.DataFrame, grid) -> pd.DataFrame:
+    """A trading-day x instrument frame -> the grid's points (one per day): day D's move at D's
+    point. A grid day without a row is NaN."""
+    points = grid.instants()
+    days = pd.DatetimeIndex(grid.days)
+    out = by_day.copy()
+    out.index = pd.DatetimeIndex(out.index).normalize()
+    out = out[~out.index.duplicated(keep="last")].reindex(days)
+    out.index = points
+    return out
+
+
+def _yield_settle(instruments, grid, *, source: str, bmk_root: Path | None = None, **kw) -> pd.DataFrame:
+    """Daily yield P&L in bp of a long position (``-dy``), the persisted bmk ``yield_<source>``
+    rows (infra.cycle.bmk_yields): instruments are ``US_BOND_<t>y`` tickers."""
+    days = pd.DatetimeIndex(grid.days)
+    raw = parquet_store.read_partitioned((bmk_root or BMK_ROOT) / "Pnl", start=days.min(), end=days.max() + _ONE_DAY,
+                                         equals_in={"bmk": [f"yield_{source}"], "ticker": list(instruments)})
+    if raw is None or raw.empty:
+        return pd.DataFrame(np.nan, index=grid.instants(), columns=list(instruments))
+    raw = raw.assign(ticker=raw["ticker"].astype(str))
+    wide = raw.pivot_table(index="timestamp", columns="ticker", values="pnl_per_dv01").reindex(columns=list(instruments))
+    return _on_daily_grid(wide, grid)
+
+
+def _futures_settle(instruments, grid, **kw) -> pd.DataFrame:
+    """Daily settlement-to-settlement bp of relative futures (the contract held that day, prior-day
+    DV01: ``infra.pipeline.structures.daily_bp_moves``)."""
+    from infra.pipeline.structures import daily_bp_moves
+    days = pd.DatetimeIndex(grid.days)
+    return _on_daily_grid(daily_bp_moves(list(instruments), days.min() - pd.Timedelta(days=10), days.max()), grid)
+
+
+def _structures_settle(structures, grid, *, structure_set: str = "ust_layers", **kw) -> pd.DataFrame:
+    """Daily bp of curve STRUCTURES: the legs' settlement bp x the day's point-in-time weights."""
+    from infra.pipeline.structures import structure_state
+    days = pd.DatetimeIndex(grid.days)
+    st = structure_state(structure_set, days.min(), days.max(), with_dv01=False)
+    return _on_daily_grid(st.moves.reindex(columns=list(structures)), grid)
+
+
 PNL_SOURCES: dict[str, PnlSource] = {
     "FUTURE_BPS_BBO": PnlSource(lambda inst, grid, **kw: _futures_bbo(inst, grid, bps=True, **kw), "bp",
                                 "bbo-1m mid changes of the mapped futures contract, bp (/ prior-day DV01)"),
@@ -220,6 +262,17 @@ PNL_SOURCES: dict[str, PnlSource] = {
     "STRUCT_BPS_BBO": PnlSource(lambda inst, grid, **kw: _structures_bbo(inst, grid, **kw), "bp",
                                 "curve structures (infra.reference.structures): legs' bp steps x point-in-time "
                                 "DV01 weights, bp per unit of structure"),
+    # DAILY sources (cycle DAILY_SETTLE; root CLAUDE.md 29): bp, + = a long position made money
+    "YIELD_BPS_CMT": PnlSource(lambda inst, grid, **kw: _yield_settle(inst, grid, source="cmt", **kw), "bp",
+                               "daily -dy of the CMT par yield (bmk yield_cmt)", "daily"),
+    "YIELD_BPS_OTR": PnlSource(lambda inst, grid, **kw: _yield_settle(inst, grid, source="otr", **kw), "bp",
+                               "daily -dy of the on-the-run bond held the previous day (bmk yield_otr)", "daily"),
+    "YIELD_BPS_CURVE": PnlSource(lambda inst, grid, **kw: _yield_settle(inst, grid, source="curve", **kw), "bp",
+                                 "daily -dy of our fitted curve's par yield (bmk yield_curve)", "daily"),
+    "FUTURE_BPS_SETTLE": PnlSource(lambda inst, grid, **kw: _futures_settle(inst, grid, **kw), "bp",
+                                   "settlement-to-settlement bp of the mapped futures contract", "daily"),
+    "STRUCT_BPS_SETTLE": PnlSource(lambda inst, grid, **kw: _structures_settle(inst, grid, **kw), "bp",
+                                   "settlement-to-settlement bp of curve structures", "daily"),
 }
 
 

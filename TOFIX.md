@@ -1170,3 +1170,27 @@ repo-free forward, or GC from the DTCC GCF index 2005-2024): funding barely move
 and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so bp before
 2018-10 is visibly a proxy; check it against the real M0 DV01 over 2018-10..2026 first.
 
+## Daily: open items from the first build (frequency, yield P&L, daily studies and strategies)
+
+**Found:** 2026-10-05. **Where:** root CLAUDE.md 12 (bmk yield P&L), 29. **Status:** open.
+
+*   **Views on yields have no execution map:** a daily strategy on `US_BOND_10y` raises at sizing.
+    Needed: yield view -> futures exposure via the measured yield beta of each future (TY tracks
+    ~7y, UXY the on-the-run 10y; the swap-hedge regression `SWAP_HEDGE_CMT` is the template), or
+    cash bonds in the accounting.
+*   **Futures as a benchmark P&L (sanity check (a)) not stored yet:** futures bp vs the yield P&L
+    at the same instant - the futures at the NY1530 snap against the 15:30 cash marks (UXY vs the
+    on-the-run 10y, TY vs its CTD's yield) - as a stored daily comparison / check; the residual is
+    net basis + model DV01 error.
+*   **Total-return bmk with carry** (user, planned): price action + carry + rolldown - financing,
+    per CUSIP (TreasuryRV carry / rolldown, the funding model).
+*   **`yield_curve` stops at the last hand build** of TreasuryCurves (not in the cycle;
+    `yield_pnl_present` warns) - joins with the other parked derived jobs.
+*   **CMT before 2016** isn't in our store (the Treasury's yearly CSVs go back to 1990, free):
+    a backfill would give CMT-based daily studies 2008+ like the other sources.
+*   **Daily study defaults:** the 2bp size floor and overlap-unaware errors were set for intraday
+    windows (see the event-study open items).
+*   **`ZB.v.0` held into first notice on 2021-08-31** (ZBU1; caught by `held_in_delivery` in the
+    daily layered run): the bond futures' 2-day volume lookback still left v.0 on the expiring
+    contract that day. Check how often any bond root's v.0 sits on or after first notice.
+

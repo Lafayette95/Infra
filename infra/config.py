@@ -113,7 +113,18 @@ MODEL_RUNS_DIR = DERIVED_ROOT / "ModelRuns"
 # Strategies (infra/strategies, root CLAUDE.md 27): per strategy, its firm signals and positions
 # (relative and absolute tickers) and its plan vintages, written by infra.jobs.strategy_runs.
 STRATEGIES_DIR = DATABASE_ROOT / "Strategies"
-BOND_YIELD_SOURCES = ("cmt", "otr")
+BOND_YIELD_SOURCES = ("cmt", "otr", "curve")   # curve = our fitted spline's par yield (TREASURY_CURVES_DIR)
+# Benchmark yield P&L persisted by the daily cycle's bmk_pnl step (infra/cycle/bmk_yields.py,
+# root CLAUDE.md 12): per ticker and source, the day's PRICE-ACTION P&L in bp of a long
+# position = -(yield change) x 100, stored under bmk "yield_<source>" in Bmk/Pnl. Sign: + = long
+# duration (gains when yields fall), so P&L = position x pnl_per_dv01 for yields and futures
+# alike (user decision 2026-10-05). "otr" is computed on the bond held the PREVIOUS day (an
+# on-the-run switch is never a move); "cmt" / "curve" are constant-maturity points (no carry or
+# rolldown: a total-return definition including carry comes later).
+BMK_YIELD_TICKERS = tuple(f"US_BOND_{t}y" for t in (2, 3, 5, 7, 10, 20, 30))
+BMK_YIELD_SOURCES = ("cmt", "otr", "curve")
+BMK_YIELD_MAX_GAP_DAYS = 7          # a change spanning a longer gap (missing data) is not a day's P&L
+BMK_YIELD_AGREE_BP = 5.0            # sources disagreeing on a day's move by more than this are listed
 
 # Repo rates and the NY Fed's Treasury securities lending (CLAUDE.md 19), both fetched by
 # the px step. Free sources, verified 2026-10-02 (source facts in each infra/api client).

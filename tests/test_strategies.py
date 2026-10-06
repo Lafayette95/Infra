@@ -63,14 +63,14 @@ def test_full_strength_scaling_and_realised_targeting():
     days = pd.bdate_range("2020-01-01", periods=800)
     vols = pd.DataFrame({"A": 10_000.0, "B": 40_000.0}, index=days)
     sig = pd.DataFrame({"A": 1.0, "B": -0.5}, index=days)
-    s = _Plain(StrategySpec(instruments=("A", "B"), target_vol_usd=1e6, scaling="full_strength"))
+    s = _Plain(StrategySpec(frequency="intraday", instruments=("A", "B"), target_vol_usd=1e6, scaling="full_strength"))
     pos = s.positions(sig, vols)
     assert pos["A"].iloc[0] == pytest.approx(1e6 / np.sqrt(2) / 10_000) and pos["B"].iloc[0] == pytest.approx(
         -0.5 * 1e6 / np.sqrt(2) / 40_000)
     # realised: steps with the stated $ vol per contract -> the scaled strategy hits the target
     steps = pd.DataFrame({"A": rng.normal(0, 10_000 / np.sqrt(252), len(days)),
                           "B": rng.normal(0, 40_000 / np.sqrt(252), len(days))}, index=days)
-    s2 = _Plain(StrategySpec(instruments=("A", "B"), target_vol_usd=1e6, scaling="realised"))
+    s2 = _Plain(StrategySpec(frequency="intraday", instruments=("A", "B"), target_vol_usd=1e6, scaling="realised"))
     p2 = s2.positions(sig * 0.3, vols, steps)          # weak views get levered back up to the target
     real = pnl(p2, steps).sum(axis=1, min_count=1).iloc[300:].std() * np.sqrt(252)
     assert real == pytest.approx(1e6, rel=0.15)
@@ -137,7 +137,8 @@ def test_cevt_views_positions_and_rebuild(family_env, monkeypatch):
     panel, occ, root = family_env
     fr.create("f", FAM.name, start="2024-01-05", history_start="2022-01-01", refit="ME", root=root)
     fr.rebuild("f", "2024-12-31", root=root, panel=panel, promote=True)
-    spec = CEVTSpec("t_cevt", families=("f",), instruments=("X",), target_vol_usd=1e6, plan_vintages=False)
+    spec = CEVTSpec("t_cevt", families=("f",), instruments=("X",), target_vol_usd=1e6, plan_vintages=False,
+                    frequency="intraday")
     monkeypatch.setitem(CEVT_STRATEGIES, spec.name, spec)
     vols = {"X": pd.Series([20_000.0], index=[D("2020-01-01")])}
     labels_all = pd.date_range("2022-01-01", "2025-01-01", freq="15min")
@@ -146,8 +147,8 @@ def test_cevt_views_positions_and_rebuild(family_env, monkeypatch):
     cal = pd.DataFrame({"point_value": [1000.0], "last_trade": [pd.NaT], "first_notice": [pd.NaT]}, index=["ZNH4"])
     kw = dict(root=root / "S", models_root=root, vols=vols, contracts=contracts, marks=marks, calendar=cal)
     sr.run_daily("t_cevt", "2024-12-31", **kw)
-    sig = sstore.read_series("t_cevt", "signals", root=root / "S")
-    pos = sstore.read_series("t_cevt", "positions", root=root / "S")
+    sig = sstore.read_series("t_cevt", "signals", root=root / "S" / "intraday")
+    pos = sstore.read_series("t_cevt", "positions", root=root / "S" / "intraday")
     preds = fr.predictions("f", root=root)
     fdr = fr.read_fdr("f", root=root)
     # a view is held over start <= L < end, with the windows' sign; flat elsewhere
@@ -161,9 +162,9 @@ def test_cevt_views_positions_and_rebuild(family_env, monkeypatch):
     assert fdr["passed_fdr"].sum() > 0
     # positions: full strength = target / vol; abs positions carry the contract
     assert pos["X"].max() <= 1e6 / 20_000 + 1e-9 and pos.loc[on, "X"].min() > 0
-    pabs = sstore.read_series("t_cevt", "positions_abs", root=root / "S")
+    pabs = sstore.read_series("t_cevt", "positions_abs", root=root / "S" / "intraday")
     assert set(pabs["contract"].dropna()) == {"ZNH4"}
-    pnl_t = sstore.read_series("t_cevt", "pnl", root=root / "S")
+    pnl_t = sstore.read_series("t_cevt", "pnl", root=root / "S" / "intraday")
     traded = pos["X"].diff().abs().fillna(pos["X"].abs()).sum()
     assert pnl_t["gross"].sum() == 0 and pnl_t["cost"].sum() == pytest.approx(traded / 128 * 0.5 * 1000)
     assert sr.rebuild("t_cevt", "2024-12-31", **kw)["identical"] is True
@@ -308,5 +309,31 @@ def test_cevt_views_have_no_nan_where_one_instrument_is_flat():
     preds = pd.DataFrame({"end": lab[2], "legal": 1.0, "code": 0, "fit_as_of": D("2024-01-01"),
                           "t:A": 2.0, "expected:A": 1.0, "passed:A": 1.0,
                           "t:B": np.nan, "expected:B": np.nan, "passed:B": 0.0}, index=lab[:1])
-    v = CEVT(CEVTSpec("t", instruments=("A", "B"), gate="passed")).views({"f": preds}, {}, lab)
+    v = CEVT(CEVTSpec("t", instruments=("A", "B"), gate="passed", frequency="intraday")).views({"f": preds}, {}, lab)
     assert not v.isna().any().any() and v.loc[lab[0], "tsig:B"] == 0 and v.loc[lab[0], "tsig:A"] > 0
+
+
+def test_frequency_is_required_and_consistent():
+    from infra.strategies.base import DAILY, INTRADAY, strategy_registry
+    with pytest.raises(ValueError, match="frequency is required"):
+        StrategySpec(instruments=("ZN.v.0",))
+    with pytest.raises(ValueError, match="cycle"):
+        StrategySpec(frequency="daily", instruments=("ZN.v.0",))              # intraday cycle on a daily spec
+    with pytest.raises(ValueError, match="accounting"):
+        StrategySpec(frequency="daily", cycle="DAILY_SETTLE", instruments=("ZN.v.0",))   # bbo marks on daily
+    d = StrategySpec(name="d", instruments=("ZN.v.0",), **DAILY)
+    i = StrategySpec(name="i", instruments=("ZN.v.0",), **INTRADAY)
+    assert d.accounting == "settlement" and d.cycle == "DAILY_SETTLE"
+    with pytest.raises(ValueError, match="registry"):
+        strategy_registry("intraday", (i, d))
+    from infra.strategies.config.cevt import CEVT_STRATEGIES_DAILY, CEVT_STRATEGIES_INTRADAY
+    assert all(s.frequency == "daily" for s in CEVT_STRATEGIES_DAILY.values())
+    assert all(s.frequency == "intraday" for s in CEVT_STRATEGIES_INTRADAY.values())
+
+
+def test_yield_views_need_an_execution_map():
+    s = CEVT(CEVTSpec("y", instruments=("US_BOND_10y",), frequency="daily", cycle="DAILY_SETTLE",
+                      accounting="settlement"))
+    lab = pd.DatetimeIndex([D("2024-03-05 20:00")])
+    with pytest.raises(NotImplementedError, match="execution map"):
+        s.size(pd.DataFrame({"US_BOND_10y": [1.0]}, index=lab), lab)

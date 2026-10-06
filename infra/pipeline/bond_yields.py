@@ -3,8 +3,9 @@ series, and ONE reader over every source of a ``<country>_BOND_<tenor>y`` ticker
 
 ``read_bond_yields(tickers, start, end, source=...)`` returns the same columns whatever
 the source, so a consumer that only knows ``US_BOND_10y`` (a backtest's pnl) switches
-between the CMT par curve (``"cmt"``, Daily/Bonds) and the on-the-run bond's yield
-(``"otr"``, Derived/OTRYields) by the source alone. Reads disk only.
+between the CMT par curve (``"cmt"``, Daily/Bonds), the on-the-run bond's yield
+(``"otr"``, Derived/OTRYields) and our own fitted curve's par yield at the tenor (``"curve"``,
+Derived/TreasuryCurves, spline method) by the source alone. Reads disk only.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import pandas as pd
 
 from infra.config import (
     BOND_YIELD_SOURCES,
+    TREASURY_CURVES_DIR,
     DAILY_BONDS_DIR,
     DAILY_TREASURY_PRICES_DIR,
     OTR_YIELDS_DIR,
@@ -57,8 +59,24 @@ def read_otr_yields(tickers, start, end, *, root: Path = OTR_YIELDS_DIR) -> pd.D
     return oy.decode(raw[oy.OTR_YIELD_COLUMNS]).sort_values(oy.OTR_YIELD_KEYS).reset_index(drop=True)
 
 
+def read_curve_yields(tickers, start, end, *, method: str = "spline", root: Path = TREASURY_CURVES_DIR) -> pd.DataFrame:
+    """Our fitted curve's PAR yield at each ticker's tenor (``US_BOND_10y`` -> ``par_10y``), in
+    ``[start, end)``: ``timestamp, ticker, yield``."""
+    from infra.pipeline.treasury_curves import read_curves
+    c = read_curves(pd.Timestamp(start), pd.Timestamp(end) - _ONE_DAY, method=method, root=root)
+    rows = []
+    for t in tickers:
+        col = "par_" + str(t).rsplit("_", 1)[-1]
+        if col in c.columns:
+            rows.append(pd.DataFrame({"timestamp": pd.to_datetime(c["timestamp"]), "ticker": t,
+                                      "yield": c[col].astype("float64")}))
+    out = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=["timestamp", "ticker", "yield"])
+    return out.dropna(subset=["yield"])
+
+
 def read_bond_yields(tickers, start, end, *, source: str = "cmt", details: bool = False,
-                     cmt_root: Path = DAILY_BONDS_DIR, otr_root: Path = OTR_YIELDS_DIR) -> pd.DataFrame:
+                     cmt_root: Path = DAILY_BONDS_DIR, otr_root: Path = OTR_YIELDS_DIR,
+                     curve_root: Path = TREASURY_CURVES_DIR) -> pd.DataFrame:
     """``timestamp, ticker, source, yield`` (percent) in ``[start, end)`` from ``source``
     (BOND_YIELD_SOURCES). ``details=True`` adds the bond behind each ``"otr"`` row
     (``cusip``, ``coupon``, ``maturity_date``, ``price_eod``)."""
@@ -67,6 +85,8 @@ def read_bond_yields(tickers, start, end, *, source: str = "cmt", details: bool 
     if source == "cmt":
         df = read_bonds_from_disk(list(tickers), pd.Timestamp(start), pd.Timestamp(end), root=cmt_root)
         df = df.rename(columns={"par_yield": "yield"})
+    elif source == "curve":
+        df = read_curve_yields(tickers, start, end, root=curve_root)
     else:
         df = read_otr_yields(tickers, start, end, root=otr_root)
     df = df.assign(source=source)

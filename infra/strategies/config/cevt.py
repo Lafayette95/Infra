@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from infra.strategies.base import StrategySpec
+from infra.strategies.base import DAILY, INTRADAY, StrategySpec, strategy_registry
 
 
 @dataclass(frozen=True)
@@ -26,10 +26,24 @@ class CEVTSpec(StrategySpec):
     scaling: str = "full_strength"              # sparse strategy (StrategySpec docstring)
 
 
-CEVT_STRATEGIES: dict[str, CEVTSpec] = {s.name: s for s in (
+STRUCTURES_UST = ("DUR__TY", "CURVE__FV__WN", "FLY__FV__UXY__WN", "FRONT__TU__H", "MICRO__TY__FV__H",
+                  "MICRO__US__WN__H")
+
+CEVT_STRATEGIES_INTRADAY: dict[str, CEVTSpec] = strategy_registry("intraday", (
     CEVTSpec("cevt_nfp", "NFP intraday family on ZT / ZN", families=("nfp",), instruments=("ZT.v.0", "ZN.v.0"),
-             target_vol_usd=1_000_000.0),
-)}
+             target_vol_usd=1_000_000.0, **INTRADAY),
+    CEVTSpec("cevt_nfp_layers", "NFP intraday family on the curve structures, layered", families=("nfps",),
+             instruments=STRUCTURES_UST, layers="ust_layers", **INTRADAY),
+))
+
+# DAILY: one decision a day just before the 14:00 CT settlement, traded at it (root CLAUDE.md 29)
+CEVT_STRATEGIES_DAILY: dict[str, CEVTSpec] = strategy_registry("daily", (
+    CEVTSpec("cevt_nfp_days_layers", "NFP day-windows on the curve structures (daily family nfp_days_struct)",
+             families=("nfp_days_s",), instruments=STRUCTURES_UST, layers="ust_layers", **DAILY),
+))
+
+CEVT_STRATEGIES: dict[str, CEVTSpec] = {**CEVT_STRATEGIES_INTRADAY, **CEVT_STRATEGIES_DAILY}
+assert len(CEVT_STRATEGIES) == len(CEVT_STRATEGIES_INTRADAY) + len(CEVT_STRATEGIES_DAILY), "a name in both"
 
 
 def get_cevt_spec(spec: CEVTSpec | str, **overrides) -> CEVTSpec:
