@@ -46,12 +46,16 @@ def held_bond_pnl(otr: pd.DataFrame, bond_yields: pd.DataFrame, bmk: str, *, max
     bond on the run on D-1 (``prev_cusip``); its own yield on D must exist."""
     if otr.empty or bond_yields.empty:
         return pd.DataFrame(columns=PNL_COLUMNS)
-    o = otr.sort_values(["ticker", "timestamp"]).copy()
-    o["cusip"] = o["cusip"].astype(str)
-    g = o.groupby("ticker")
-    o["prev_timestamp"], o["prev_cusip"] = g["timestamp"].shift(1), g["cusip"].shift(1)
     by = bond_yields.assign(cusip=bond_yields["cusip"].astype(str)).dropna(subset=["yield"])
     by = by.drop_duplicates(["timestamp", "cusip"]).set_index(["timestamp", "cusip"])["yield"]
+    o = otr.sort_values(["ticker", "timestamp"]).copy()
+    o["cusip"] = o["cusip"].astype(str)
+    # only days the on-the-run bond has a price: the map has rows on market holidays (no FedInvest
+    # page), and the day after one must diff against the last PRICED day (found 2026-10-05: 191
+    # missing days per tenor 2009-2026, every post-holiday day)
+    o = o[pd.MultiIndex.from_arrays([o["timestamp"], o["cusip"]]).isin(by.index)]
+    g = o.groupby("ticker")
+    o["prev_timestamp"], o["prev_cusip"] = g["timestamp"].shift(1), g["cusip"].shift(1)
     o["yield"] = by.reindex(pd.MultiIndex.from_arrays([o["timestamp"], o["prev_cusip"].fillna("")])).to_numpy()
     o["prev_yield"] = by.reindex(pd.MultiIndex.from_arrays([o["prev_timestamp"], o["prev_cusip"].fillna("")])).to_numpy()
     return _finish(o, bmk, max_gap_days)

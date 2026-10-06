@@ -114,3 +114,21 @@ STRUCTURE_SETS: dict[str, StructureSet] = {s.name: s for s in (
     StructureSet("ust_layers_uxy", ("DUR__UXY", "CURVE__FV__WN", "FLY__FV__UXY__WN", "FRONT__TU__H", "MICRO__TY__FV__H",
                                     "MICRO__US__WN__H"), description="the same with duration in UXY"),
 )}
+
+
+# --------------------------------------------------------------------------- yield structures
+YIELD_KIND_WEIGHTS = {"CURVE": (1.0, -1.0), "FLY": (-0.5, 1.0, -0.5)}
+
+
+def yield_structure_weights(name: str) -> dict[str, float]:
+    """A structure on YIELD tickers -> DV01 weights per ticker, legs listed front to back:
+    ``CURVE__US_BOND_5y__US_BOND_30y`` is long the front leg and short the back (a steepener: P&L
+    in bp = the change of back minus front yield); ``FLY__<front>__<belly>__<back>`` is long the
+    belly against 50/50 wings. Each leg's benchmark P&L is -dy in bp, so the structure's P&L is
+    the weighted sum (root CLAUDE.md 28-29). Futures structures are ``STRUCTURES`` instead."""
+    kind, legs, hedged = parse_name(name)
+    if hedged or kind not in YIELD_KIND_WEIGHTS or len(legs) != len(YIELD_KIND_WEIGHTS[kind]):
+        raise ValueError(f"{name!r}: a yield structure is CURVE__<front>__<back> or FLY__<front>__<belly>__<back>")
+    if not all("_BOND_" in leg for leg in legs):
+        raise ValueError(f"{name!r}: legs must be yield tickers (<COUNTRY>_BOND_<t>y)")
+    return dict(zip(legs, YIELD_KIND_WEIGHTS[kind]))

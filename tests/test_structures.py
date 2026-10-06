@@ -180,3 +180,26 @@ def test_yield_presence_judges_each_source_on_its_own_input():
                 {"yield_cmt": "2026-10-02", "yield_otr": "2026-10-01", "yield_curve": "2026-10-01"})
     passed, msg, _ = check_yield_present(stale)
     assert not passed and "yield_curve" in msg and "yield_otr" not in msg
+
+
+def test_yield_structures_weights_and_sign():
+    from infra.reference.structures import yield_structure_weights
+    assert yield_structure_weights("CURVE__US_BOND_5y__US_BOND_30y") == {"US_BOND_5y": 1.0, "US_BOND_30y": -1.0}
+    assert yield_structure_weights("FLY__US_BOND_2y__US_BOND_5y__US_BOND_10y")["US_BOND_5y"] == 1.0
+    for bad in ("CURVE__US_BOND_5y", "CURVE__FV__WN", "CURVE__US_BOND_5y__US_BOND_30y__H"):
+        with pytest.raises(ValueError):
+            yield_structure_weights(bad)
+    # 5y yield +2bp, 30y +5bp (a steepening): leg P&L -2 and -5 -> the steepener makes +3
+    leg = {"US_BOND_5y": -2.0, "US_BOND_30y": -5.0}
+    w = yield_structure_weights("CURVE__US_BOND_5y__US_BOND_30y")
+    assert sum(w[k] * leg[k] for k in w) == 3.0
+
+
+def test_held_bond_pnl_skips_unpriced_map_days():
+    from infra.processing import yield_pnl as yp
+    days = pd.DatetimeIndex([D("2009-07-02"), D("2009-07-03"), D("2009-07-06")])   # 07-03: holiday, no price
+    otr = pd.DataFrame({"timestamp": days, "ticker": "US_BOND_30y", "cusip": "A"})
+    by = pd.DataFrame({"timestamp": [days[0], days[2]], "cusip": "A", "yield": [4.30, 4.35]})
+    r = yp.held_bond_pnl(otr, by, "yield_otr")
+    assert len(r) == 1 and r["pnl_per_dv01"].iloc[0] == pytest.approx(-5.0)
+    assert r["prev_timestamp"].iloc[0] == days[0]

@@ -227,14 +227,20 @@ def _on_daily_grid(by_day: pd.DataFrame, grid) -> pd.DataFrame:
 
 def _yield_settle(instruments, grid, *, source: str, bmk_root: Path | None = None, **kw) -> pd.DataFrame:
     """Daily yield P&L in bp of a long position (``-dy``), the persisted bmk ``yield_<source>``
-    rows (infra.cycle.bmk_yields): instruments are ``US_BOND_<t>y`` tickers."""
+    rows (infra.cycle.bmk_yields): instruments are ``US_BOND_<t>y`` tickers or yield STRUCTURES on
+    them (``CURVE__US_BOND_5y__US_BOND_30y``: ``infra.reference.structures.yield_structure_weights``)."""
+    from infra.reference.structures import yield_structure_weights
+    weights = {i: (yield_structure_weights(i) if "__" in i else {i: 1.0}) for i in instruments}
+    tickers = sorted({t for w in weights.values() for t in w})
     days = pd.DatetimeIndex(grid.days)
     raw = parquet_store.read_partitioned((bmk_root or BMK_ROOT) / "Pnl", start=days.min(), end=days.max() + _ONE_DAY,
-                                         equals_in={"bmk": [f"yield_{source}"], "ticker": list(instruments)})
+                                         equals_in={"bmk": [f"yield_{source}"], "ticker": tickers})
     if raw is None or raw.empty:
         return pd.DataFrame(np.nan, index=grid.instants(), columns=list(instruments))
     raw = raw.assign(ticker=raw["ticker"].astype(str))
-    wide = raw.pivot_table(index="timestamp", columns="ticker", values="pnl_per_dv01").reindex(columns=list(instruments))
+    legs = raw.pivot_table(index="timestamp", columns="ticker", values="pnl_per_dv01").reindex(columns=tickers)
+    # a structure = its legs' bp x DV01 weights; NaN if any leg is missing that day
+    wide = pd.DataFrame({i: legs[list(w)].mul(pd.Series(w)).sum(axis=1, min_count=len(w)) for i, w in weights.items()})
     return _on_daily_grid(wide, grid)
 
 
