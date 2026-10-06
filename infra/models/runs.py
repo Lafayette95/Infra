@@ -34,7 +34,7 @@ from infra.models.walk_forward import WalkForwardResult, refit_dates, walk_forwa
 
 log = logging.getLogger(__name__)
 
-KINDS = ("regression", "pca", "regime_pca", "event_study", "autocorr")
+KINDS = ("regression", "pca", "regime_pca", "event_study", "autocorr", "forecast")
 
 
 def _tuplify(x):
@@ -50,7 +50,7 @@ def _tuplify(x):
 class RunConfig:
     """Everything that defines a run - stored as the run's ``meta.json``."""
     name: str
-    kind: str                                   # regression | pca | regime_pca | event_study | autocorr
+    kind: str                                   # regression | pca | regime_pca | event_study | autocorr | forecast
     spec: str | None
     series: tuple[str, ...]                     # regression: y first; pca / regime_pca: the K;
                                                 # event_study: the instruments
@@ -91,6 +91,9 @@ class RunConfig:
         if self.kind == "autocorr":
             kw.update(target=self.series[0], x=self.series[1])
             return kw
+        if self.kind == "forecast":
+            kw.update(target=self.series[0])          # regressors come from the named spec (not JSON-serialisable)
+            return kw
         if self.kind == "regression":
             kw.update(y=self.series[0], x=tuple(self.series[1:]))
         else:
@@ -105,22 +108,24 @@ class RunConfig:
     def make_model(self):
         from infra.models.autocorr.model import make_autocorr
         from infra.models.event_study.model import make_event_study
+        from infra.models.forecast.model import make_forecast
         maker = {"regression": make_regression, "pca": make_pca, "regime_pca": make_regime_pca,
-                 "event_study": make_event_study, "autocorr": make_autocorr}[self.kind]
+                 "event_study": make_event_study, "autocorr": make_autocorr, "forecast": make_forecast}[self.kind]
         return maker(self.spec, **self.model_kwargs())
 
     def from_params(self, params: pd.DataFrame):
         from infra.models.autocorr.model import ConditionalAutocorr
         from infra.models.event_study.model import EventStudy
+        from infra.models.forecast.model import ForecastModel
         cls = {"regression": Regression, "pca": PCA, "regime_pca": RegimePCA, "event_study": EventStudy,
-               "autocorr": ConditionalAutocorr}[self.kind]
+               "autocorr": ConditionalAutocorr, "forecast": ForecastModel}[self.kind]
         return cls.from_params(params, self.spec, **self.model_kwargs())
 
 
 def read_inputs(config: RunConfig, through) -> pd.DataFrame:
     """The run's input panel from disk, ``history_start`` .. ``through`` (an event study:
     the grid step P&L of its instruments from its source, on its code's cycle)."""
-    if config.kind == "event_study":
+    if config.kind in ("event_study", "forecast"):
         return config.make_model().read_panel(config.history_start, through)
     from infra.pipeline.series_panel import read_panel
     return read_panel(config.all_series, config.history_start, through)

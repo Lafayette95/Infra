@@ -1275,3 +1275,22 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **`surprise` availability** uses the registry event's usual time; a release that moved time
     (or one with no registry time - the day's end is used) is not modelled per occurrence.
 
+## Forecast: open items from the first build (framework A)
+
+**Found:** 2026-10-06. **Where:** `infra/models/forecast`. **Status:** open.
+
+*   **CPI has only 5 consensus prints** in the harvested calendar (the CPI release's
+    `calendar_pattern` barely matches the calendar's report names): surprises exist for 14 releases
+    with 100+ prints, not CPI / PCE. Check the pattern against the stored report names
+    (`backfill_econ_calendar.py --names`).
+*   **Evaluation code is duplicated in spirit between B1 and A** (`infra/models/autocorr/evaluate.py`,
+    `infra/models/forecast/evaluate.py`; A imports B1's `staggered_pnl` / joint spanning): move the
+    shared pieces (staggered books, Clark-West, spanning, placebos, BH families) into one
+    `infra/models/evaluation.py`.
+*   **B1 is a special case of A** (its regressor is sign(past) x X): it could be re-expressed as an A
+    spec once A is proven; kept separate for now.
+*   **Cross-sectional A** (a panel / rank model across countries x structures) is not built.
+*   **Surprises test post-release drift only** (decisions at 15:00 New York, after the morning's
+    reaction). The release-day move itself, and its reversal (NFP / GDP hint), belong to the
+    event-study and autocorrelation frameworks.
+

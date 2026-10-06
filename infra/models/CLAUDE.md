@@ -495,6 +495,12 @@ specification). Use case (a) of 0a, run live.
     tests against placebo windows, families of codes with false-discovery control; a run kind
     on the 0b operating model. Read that file before touching it.
 
+## 14. Directional forecasts (framework A)
+*   **Its own sub-project, `infra/models/forecast/`, with its own `CLAUDE.md`**: forward moves on
+    point-in-time features (the feature maker), three modes (ex-ante / fitted OLS-HAC / prior: sign
+    fixed, size fitted), swappable gates and evaluations, families with a per-fit-date FDR gate; run
+    kind `forecast`. Read that file before touching it.
+
 ## 13. Conditional autocorrelation (framework B1)
 *   **Its own sub-project, `infra/models/autocorr/`, with its own `CLAUDE.md`**: does a third
     variable decide whether an instrument chases or fades? Buckets plus an interaction regression,
