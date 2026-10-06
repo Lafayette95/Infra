@@ -88,6 +88,7 @@ WIRP_1S_DIR = DERIVED_ROOT / "WIRP_1s"
 # Benchmark swap closes snapped from DTCC trades (SWAP_CLOSES; CLAUDE.md 16) - one row per
 # (snap instant, close, currency, tenor, method).
 SWAP_CLOSES_DIR = DERIVED_ROOT / "SwapCloses"
+OIS_CURVES_DIR = DERIVED_ROOT / "OisCurves"
 # On-the-run yield benchmark (CLAUDE.md 18): per day and tenor, the END OF DAY yield of the
 # on-the-run CUSIP (issue-date convention, so it always has a price), stored under the SAME
 # tickers as the CMT par curve (US_BOND_10y) - a consumer picks the series by ``source``
@@ -549,6 +550,37 @@ SWAP_CURVES: dict[str, SwapCurveSpec] = {
 # trade + spot lag (holidays, which plain business days ignore); maturity may miss
 # effective + N years by this many days (date rolling) and still count as tenor N.
 SWAP_SPOT_TOLERANCE_DAYS = 2
+
+
+@dataclass(frozen=True)
+class OisCurveSpec:
+    """An OIS discount curve bootstrapped from stored swap closes (infra.analytics.swap_curve,
+    infra.pipeline.ois_curves): the close, the closes' method, the short end below the first
+    swap pillar, and the fewest tenors a day needs."""
+    currency: str
+    close: str  # a SWAP_CLOSES name: the snap the curve is AT
+    method: str = "pure"  # the swap closes' method ("pure" / "adjusted")
+    short_end: str = "sofr_path"  # "sofr_path" (SR1-fitted overnight path, monthly nodes) / "none" (flat to 1y)
+    short_end_months: int = 6
+    min_tenors: int = 6  # tenors with a close (fills not counted)
+    fill_missing: bool = True  # fill an interior missing tenor by its last fly residual
+    fill_max_age_days: int = 14  # ... observed at most this many calendar days before
+
+
+# SOFR's front end comes from the SR1-fitted overnight path (financing layer 1, CLAUDE.md 20):
+# a flat forward to the 1y pillar misses a priced hiking / cutting path (2026-10-05: path
+# 4.18% to 6 months, 4.70% from 6 months to 1y; flat-to-1y gave 4.45% throughout). The path
+# and the 1y swap close agree: its 1y compounded rate 4.486% vs the 1y close 4.490%. Six
+# months, not twelve, so the 6m-1y forward absorbs any gap between the two (the settlement
+# is 15:00 New York, the close 15:30) instead of a kink right at the pillar.
+# Missing interior tenors (15y absent on 15% of days, 20y 8%, 7y 5%) are FILLED, not
+# interpolated over: bootstrapping across the gap bends the forwards with the curve's hump
+# (106 forward segments jumped > 15bp and reversed next day, mostly on such days). The fill
+# (infra.analytics.swap_curve.fill_missing_tenors) misses observed tenors by 0.5-0.6bp
+# out of sample, unbiased, against 0.7-7bp biased for the bare line (2026-10-06).
+OIS_CURVES: dict[str, OisCurveSpec] = {
+    "USD_SOFR": OisCurveSpec("USD", "NY1530"),
+}
 SWAP_TENOR_TOLERANCE_DAYS = 4
 # Off-market trades: a fixed coupon set by agreement (often round, e.g. 3.50%), with or
 # without a reported upfront fee, can sit 70-170bp from the market (found 2026-10-01 in the

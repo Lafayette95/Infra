@@ -21,7 +21,7 @@ import pandas as pd
 
 from infra.cycle.checks import revision_check
 from infra.pipeline.treasury_curves import compute_curves
-from infra.cycle.core import Check, Step, StepContext
+from infra.cycle.core import Check, Severity, Step, StepContext
 from infra.cycle.paths import CyclePaths
 from infra.pipeline.wirp import available_days, build_schedule
 from infra.storage import parquet_store
@@ -52,6 +52,9 @@ class DerivedMetric:
     # (store, df, diag, start, end) -> None - for stores keyed by an instant, or shared with
     # rows the cycle doesn't own (the swap closes' hand-built adjusted rows)
     replace: Callable | None = None
+    # the generated presence check's severity: WARN where a day can legitimately lack the
+    # inputs (a thin DTCC day - a half-day before a holiday prints one swap tenor)
+    presence_severity: Severity = Severity.FAIL
 
 
 # ----------------------------------------------------------------------------- WIRP
@@ -221,10 +224,72 @@ def _check_swap_closes(ctx: StepContext):
 SWAP_CLOSES_PURE = DerivedMetric(
     "swap_closes", lambda p: p.swap_closes_dir, SWAP_CLOSE_KEYS, compute_swap_closes,
     checks=(Check("swap_closes_sane", _check_swap_closes),), replace=_replace_pure_closes,
+    presence_severity=Severity.WARN,  # like every DTCC check: a thin day must not cost the vintage
 )
 
+# ------------------------------------------------- OIS (SOFR) curves from the swap closes
+OIS_CURVE_KEYS = ("timestamp", "curve", "node")
+OIS_FORWARD_BOUNDS_PCT = (-1.0, 15.0)
+OIS_REPRICE_TOL_BP = 0.01
+
+
+def compute_ois_curve(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> tuple[pd.DataFrame, dict]:
+    """Every ``OIS_CURVES`` curve over the swap closes' recomputed range (their last
+    ``SWAP_CORRECTION_DAYS``: a corrected close moves its curve too). Runs AFTER
+    ``swap_closes`` (registry order)."""
+    from infra.config import SWAP_CORRECTION_DAYS
+    from infra.pipeline.ois_curves import compute_ois_curves
+    lo = start - pd.Timedelta(days=SWAP_CORRECTION_DAYS)
+    df, diag = compute_ois_curves(lo, end, swap_closes_root=paths.swap_closes_dir, futures_root=paths.daily_futures_dir,
+                                  contracts_file=paths.contracts_file, repo_root=paths.repo_dir)
+    return df, {**diag, "range": (lo, end)}
+
+
+def _replace_ois_curves(store, df: pd.DataFrame, diag: dict, start, end) -> None:
+    from infra.pipeline.ois_curves import store_ois_curves
+    lo, hi = diag.get("range", (start, end))
+    store_ois_curves(df, lo, hi, root=store)
+
+
+def _check_ois_curve(ctx: StepContext):
+    """(c) every stored curve in the window: each swap pillar reprices its input close
+    (within ``OIS_REPRICE_TOL_BP``), and every forward between nodes lies in bounds."""
+    from infra.analytics import swap_curve as sc
+    from infra.config import OIS_CURVES, SWAP_CURVES
+    from infra.pipeline.ois_curves import read_ois_curves
+    df = read_ois_curves(ctx.start, ctx.end + pd.Timedelta(days=1), root=ctx.paths.ois_curves_dir)
+    if df.empty:
+        return True, "no OIS curves in window", None
+    bad, worst = [], 0.0
+    for (ts, name), g in df.groupby(["timestamp", "curve"]):
+        c, day = sc.curve_from_nodes(g), pd.Timestamp(ts).normalize()
+        lag = SWAP_CURVES[OIS_CURVES[name].currency].spot_lag_days
+        for r in g[g["source"] != "short_end"].itertuples():
+            err = abs(sc.par_rate(c, day, sc.swap_schedule(day, int(r.node[:-1]), lag)) - r.input_rate) * 100.0
+            worst = max(worst, err)
+            if err > OIS_REPRICE_TOL_BP:
+                bad.append({"timestamp": ts, "curve": name, "node": r.node, "issue": f"reprices {err:.3f}bp off"})
+        t = np.concatenate([[1e-9], g.sort_values("t_years")["t_years"].to_numpy()])
+        f = c.forward(t[:-1], t[1:])
+        lo, hi = OIS_FORWARD_BOUNDS_PCT
+        for k in np.where((f < lo) | (f > hi))[0]:
+            bad.append({"timestamp": ts, "curve": name, "node": g.sort_values("t_years")["node"].iloc[k],
+                        "issue": f"forward {f[k]:.2f}% out of bounds"})
+    n = df.groupby(["timestamp", "curve"]).ngroups
+    if not bad:
+        return True, f"{n} curve(s), max repricing error {worst:.1e}bp, forwards in bounds", None
+    return False, f"{len(bad)} problem(s) in {n} curve(s)", pd.DataFrame(bad)
+
+
+OIS_CURVE = DerivedMetric(
+    "ois_curve", lambda p: p.ois_curves_dir, OIS_CURVE_KEYS, compute_ois_curve,
+    checks=(Check("ois_curve_sane", _check_ois_curve),), replace=_replace_ois_curves,
+    presence_severity=Severity.WARN,  # too few tenors on a thin day (2025-06-18, 2026-01-02, 2026-07-02)
+)
+
+# order matters: ois_curve reads what swap_closes just wrote
 DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE,
-                                             "swap_closes": SWAP_CLOSES_PURE}
+                                             "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE}
 
 
 # ------------------------------------------------------------------------------ step
@@ -272,7 +337,7 @@ def _presence_check(metric: DerivedMetric) -> Check:
         details = pd.DataFrame({"timestamp": list(empty), "reason": list(empty.values())})
         return False, f"{len(empty)} day(s) with input data produced no {metric.name}", details
 
-    return Check(f"{metric.name}_present", fn)
+    return Check(f"{metric.name}_present", fn, metric.presence_severity)
 
 
 def derived_checks(metrics: dict[str, DerivedMetric]) -> tuple[Check, ...]:

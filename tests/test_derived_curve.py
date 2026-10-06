@@ -58,3 +58,39 @@ def test_swap_closes_replace_only_pure_rows_by_instant(tmp_path):
 def test_swap_closes_metric_registered():
     names = [c.name for c in derived.DERIVED_STEP.checks]
     assert {"swap_closes_present", "swap_closes_no_revisions", "swap_closes_sane"} <= set(names)
+
+
+# ----------------------------------------------------------------------- OIS (SOFR) curve
+def test_ois_bootstrap_reprices_every_pillar_and_short_nodes_hold():
+    from infra.analytics import swap_curve as sc
+    day = D("2026-10-05")
+    quotes = {1: 4.49, 2: 4.69, 3: 4.74, 5: 4.78, 7: 4.84, 10: 4.92, 30: 5.00}
+    short = [(1 / 12, 0.9966), (0.5, 0.9793)]
+    curve, nodes = sc.bootstrap_ois(day, quotes, short_nodes=short)
+    assert nodes.loc[nodes.source == "swap", "reprice_bp"].abs().max() < 1e-8
+    assert abs(curve.discount([0.5])[0] - 0.9793) < 1e-12  # short-end nodes are kept exactly
+    # beyond the last pillar the last forward continues
+    f1, f2 = curve.forward(25.0, 30.0)[0], curve.forward(30.5, 35.0)[0]
+    assert abs(f1 - f2) < 1e-9
+
+
+def test_fill_missing_tenor_carries_its_fly_residual_point_in_time():
+    from infra.analytics import swap_curve as sc
+    days = pd.bdate_range("2026-09-01", periods=3)
+    r = pd.DataFrame({10: [4.0, 4.1, 4.2], 15: [4.3, None, None], 20: [4.4, 4.5, 4.6]}, index=days)
+    out, filled = sc.fill_missing_tenors(r, max_age_days=1)
+    # day 1: line 10y-20y at 15y = 4.20, residual +0.10 carried (1 day old) -> 4.30 + 0.10
+    assert abs(out.loc[days[1], 15] - 4.40) < 1e-12 and filled.loc[days[1], 15]
+    # day 2: the residual is 2 days old (> max_age_days): not filled; nothing learnt from a fill
+    assert pd.isna(out.loc[days[2], 15]) and not filled.loc[days[2], 15]
+    assert not filled[10].any() and not filled[20].any()  # end tenors never filled
+
+
+def test_ois_curve_metric_registered_after_swap_closes_with_warn_presence():
+    names = list(derived.DERIVED_METRICS)
+    assert names.index("ois_curve") > names.index("swap_closes")
+    checks = {c.name: c for c in derived.DERIVED_STEP.checks}
+    assert {"ois_curve_present", "ois_curve_no_revisions", "ois_curve_sane"} <= set(checks)
+    assert checks["ois_curve_present"].severity.value == "warn"
+    assert checks["swap_closes_present"].severity.value == "warn"
+    assert checks["treasury_curve_present"].severity.value == "fail"
