@@ -165,3 +165,18 @@ def test_yield_pnl_signs_and_on_the_run_switches():
     gap = yp.level_change_pnl(pd.DataFrame({"timestamp": [D("2024-01-02"), D("2024-02-02")], "ticker": "T",
                                             "yield": [4.0, 4.2]}), "x")
     assert gap.empty                                                     # a month's change is not a day's P&L
+
+
+def test_yield_presence_judges_each_source_on_its_own_input():
+    from infra.cycle.bmk_yields import check_yield_present
+
+    class Ctx:
+        def __init__(self, last, expected):
+            self.output = {"yields": {"last_day": last, "expected_last": expected}}
+    ok = Ctx({"yield_cmt": "2026-10-02", "yield_otr": "2026-10-01", "yield_curve": "2026-10-01"},
+             {"yield_cmt": "2026-10-02", "yield_otr": "2026-10-01", "yield_curve": "2026-10-01"})
+    assert check_yield_present(ok)[0]                     # otr / curve a day behind CMT is normal
+    stale = Ctx({"yield_cmt": "2026-10-02", "yield_otr": "2026-10-01", "yield_curve": "2026-09-25"},
+                {"yield_cmt": "2026-10-02", "yield_otr": "2026-10-01", "yield_curve": "2026-10-01"})
+    passed, msg, _ = check_yield_present(stale)
+    assert not passed and "yield_curve" in msg and "yield_otr" not in msg

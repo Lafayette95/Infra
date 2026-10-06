@@ -74,6 +74,23 @@ def compute_yield_pnl(start, end, *, paths: CyclePaths | None = None, tickers=BM
     return df[(df["timestamp"] >= start) & (df["timestamp"] <= end)].reset_index(drop=True)
 
 
+def input_last_days(start, end, *, paths: CyclePaths, tickers=BMK_YIELD_TICKERS) -> dict:
+    """Per bmk, the latest day in ``[start, end]`` its INPUT published - what its P&L should
+    reach: CMT (Daily/Bonds); FedInvest END OF DAY yields (``otr``); and for ``curve`` the same
+    FedInvest day (the curve is fitted on those prices - a curve built short of it is stale)."""
+    from infra.pipeline.treasury_prices import read_prices
+    lo, hi = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize() + _ONE_DAY
+    out = {}
+    cmt = _yields("cmt", tickers, lo, hi, paths)
+    if len(cmt):
+        out["yield_cmt"] = str(pd.Timestamp(cmt["timestamp"].max()).date())
+    px = read_prices(lo, hi, root=paths.treasury_prices_dir)
+    px = px.dropna(subset=["yield_eod"]) if len(px) else px
+    if len(px):
+        out["yield_otr"] = out["yield_curve"] = str(pd.Timestamp(px["timestamp"].max()).date())
+    return out
+
+
 def backfill_daily_yield_pnl(start, end, *, paths: CyclePaths | None = None, **kw) -> dict:
     paths = paths or CyclePaths.default()
     df = compute_yield_pnl(start, end, paths=paths, **kw)
@@ -84,7 +101,8 @@ def backfill_daily_yield_pnl(start, end, *, paths: CyclePaths | None = None, **k
         parquet_store.write_partitioned(out, _pnl_dir(paths), PNL_KEYS)
     by = df.groupby("bmk").size().to_dict() if len(df) else {}
     last = df.groupby("bmk")["timestamp"].max().dt.date.astype(str).to_dict() if len(df) else {}
-    return {"rows": len(df), "by_bmk": by, "last_day": last}
+    return {"rows": len(df), "by_bmk": by, "last_day": last,
+            "expected_last": input_last_days(start, end, paths=paths)}
 
 
 # ------------------------------------------------------------------------ checks
@@ -97,18 +115,19 @@ def _read(ctx: StepContext) -> pd.DataFrame:
 
 
 def check_yield_present(ctx: StepContext):
-    """Every source has a row for every ticker on the window's latest day it published (warn):
-    lists a source whose rows stop early - the curve until it joins the cycle."""
+    """Each source's P&L reaches the latest day ITS OWN input published in the window (warn):
+    the on-the-run and curve P&L legitimately trail CMT by a day (FedInvest posts day D's END OF
+    DAY ~10:00 New York on D+1, after the 06:00 run), so sources are never compared with each
+    other's dates. A curve built short of the prices it is fitted on shows here."""
     out = ctx.output.get("yields", {})
-    last = out.get("last_day", {})
-    missing = [f"yield_{s}" for s in BMK_YIELD_SOURCES if f"yield_{s}" not in last]
-    if not last:
-        return False, "no yield P&L in the window", None
-    newest = max(last.values())
-    stale = {k: v for k, v in last.items() if v < newest}
-    if not missing and not stale:
-        return True, f"yield P&L for every source through {newest}", None
-    return False, f"missing {missing}, behind {stale} (latest {newest})", None
+    last, expected = out.get("last_day", {}), out.get("expected_last", {})
+    if not expected:
+        return True, "no yield inputs in the window", None
+    behind = {k: f"{last.get(k, 'none')} < {v}" for k, v in expected.items() if last.get(k, "") < v}
+    if not behind:
+        return True, "every source's yield P&L reaches its input's latest day: " + \
+            ", ".join(f"{k} {v}" for k, v in sorted(expected.items())), None
+    return False, "behind their input: " + "; ".join(f"{k} {v}" for k, v in sorted(behind.items())), None
 
 
 def check_yield_sane(ctx: StepContext):
