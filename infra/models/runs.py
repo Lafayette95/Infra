@@ -34,7 +34,7 @@ from infra.models.walk_forward import WalkForwardResult, refit_dates, walk_forwa
 
 log = logging.getLogger(__name__)
 
-KINDS = ("regression", "pca", "regime_pca", "event_study")
+KINDS = ("regression", "pca", "regime_pca", "event_study", "autocorr")
 
 
 def _tuplify(x):
@@ -50,7 +50,7 @@ def _tuplify(x):
 class RunConfig:
     """Everything that defines a run - stored as the run's ``meta.json``."""
     name: str
-    kind: str                                   # regression | pca | regime_pca | event_study
+    kind: str                                   # regression | pca | regime_pca | event_study | autocorr
     spec: str | None
     series: tuple[str, ...]                     # regression: y first; pca / regime_pca: the K;
                                                 # event_study: the instruments
@@ -88,6 +88,9 @@ class RunConfig:
         if self.kind == "event_study":
             kw["instruments"] = tuple(self.series)
             return kw
+        if self.kind == "autocorr":
+            kw.update(target=self.series[0], x=self.series[1])
+            return kw
         if self.kind == "regression":
             kw.update(y=self.series[0], x=tuple(self.series[1:]))
         else:
@@ -100,14 +103,17 @@ class RunConfig:
         return kw
 
     def make_model(self):
+        from infra.models.autocorr.model import make_autocorr
         from infra.models.event_study.model import make_event_study
         maker = {"regression": make_regression, "pca": make_pca, "regime_pca": make_regime_pca,
-                 "event_study": make_event_study}[self.kind]
+                 "event_study": make_event_study, "autocorr": make_autocorr}[self.kind]
         return maker(self.spec, **self.model_kwargs())
 
     def from_params(self, params: pd.DataFrame):
+        from infra.models.autocorr.model import ConditionalAutocorr
         from infra.models.event_study.model import EventStudy
-        cls = {"regression": Regression, "pca": PCA, "regime_pca": RegimePCA, "event_study": EventStudy}[self.kind]
+        cls = {"regression": Regression, "pca": PCA, "regime_pca": RegimePCA, "event_study": EventStudy,
+               "autocorr": ConditionalAutocorr}[self.kind]
         return cls.from_params(params, self.spec, **self.model_kwargs())
 
 

@@ -129,6 +129,6 @@ def yield_structure_weights(name: str) -> dict[str, float]:
     kind, legs, hedged = parse_name(name)
     if hedged or kind not in YIELD_KIND_WEIGHTS or len(legs) != len(YIELD_KIND_WEIGHTS[kind]):
         raise ValueError(f"{name!r}: a yield structure is CURVE__<front>__<back> or FLY__<front>__<belly>__<back>")
-    if not all("_BOND_" in leg for leg in legs):
-        raise ValueError(f"{name!r}: legs must be yield tickers (<COUNTRY>_BOND_<t>y)")
+    if not all("_BOND_" in leg or "_SWSP_" in leg for leg in legs):
+        raise ValueError(f"{name!r}: legs must be yield or swap-spread tickers (<COUNTRY>_BOND_<t>y, <COUNTRY>_SWSP_<t>y)")
     return dict(zip(legs, YIELD_KIND_WEIGHTS[kind]))

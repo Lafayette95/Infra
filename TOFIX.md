@@ -1199,3 +1199,30 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 
 **Agreed order:** (1) the PURE swap closes into the daily cycle's `derived` step (no intraday dependency, like the curve); (2) a SOFR discount curve bootstrapped from them (reusing the curve code: spline on the discount function, cash-flow based); (3) two swap-spread series, the way the bond P&L has OTR / CMT / our-curve sources: **CMT swap spread** (SOFR swap par at NY1530 minus the CMT par yield at the same tenor - market convention, includes the on-the-run premium; CMT chosen as the reference: it is ~the on-the-run's own 15:30 bid yield interpolated to the tenor, and synchronous with the NY1530 close; convention to verify: swap annual ACT/360 vs CMT semi-annual bond basis, convert before subtracting) and the **on-the-run's par-par ASW** ((PV of the bond's cash flows on the SOFR curve - dirty price) / the floating leg's annuity on the SOFR curve; z-spread to SOFR as a cross-check). Then the bmk P&L with carry + rolldown on both legs (bond: coupon - repo via funding v1, rolldown on our curve; swap: fixed - compounded SOFR, rolldown on the SOFR curve).
 **Later (user, 2026-10-06):** the **CTD-aware** version - the swap spread / ASW of the futures' cheapest-to-deliver (what a basis trader holds) - the same way a CTD-aware cash-bond P&L comes later. Also later: our-curve (off-the-run, premium-free) swap spread as an RV variant; a held-position (level 3) P&L.
+
+## Autocorr: open items from the first build (framework B1)
+
+**Found:** 2026-10-06. **Where:** `infra/models/autocorr`. **Status:** open.
+
+*   ~~The (k, h, X feature, source) grid is a family~~ built 2026-10-06 (`infra/models/autocorr/family.py`,
+    point-in-time FDR gate per fit date; the duration-flies grid of 216 members found nothing).
+    Still open: **cross-family control** - each new X is a new family; `global_q` corrects several
+    families together but nothing does it routinely, and online FDR (LORD / alpha-investing) would
+    be the principled version once many X's have been tried.
+*   **Cell tests and correlated cells:** the corrected cell test gives FEWER raw p < 0.05 than chance
+    (79.5 vs 130 a fit) - the 9 cells share one regression and overlapping windows, and HAC on
+    non-contiguous cell members is approximate. Conservative, not wrong; a block bootstrap of the
+    cell excess would calibrate it.
+*   **Long horizons on short samples over-reject:** the only FDR discoveries in the grid were
+    k20 / h20 members in 2012-2013 (fits on ~4 years, HAC with 20 lags on few independent
+    windows). Options: non-overlapping sampling for long h, a minimum of independent windows
+    (n / h) as a gate, or a fixed-b / bootstrap correction of the HAC t.
+*   **Not wired into a strategy:** predictions carry `signal` / `expected_bp`; a strategy would turn
+    them into views (the common forecast object discussed 2026-10-06) - not built.
+*   **Evaluation P&L ignores costs:** the staggered book trades a little every day; net-of-cost
+    comparisons (the conditional rule flips with the regime) are not computed yet.
+*   **Placebos are slow-ish** (~0.9 s per walk-forward; 100 placebos = 1.5 min per evaluation):
+    fine for research, too slow for a large grid - vectorise the fit across refit dates if needed.
+*   **The `bmk:` source's availability is one conservative rule** (D+1 10:00 New York) for every
+    yield source, though CMT is out the same evening.
+

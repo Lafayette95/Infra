@@ -245,6 +245,40 @@ class SeriesSource:
     availability: Availability | Callable[[str], Availability] = Availability()
 
 
+def _bmk(keys, start, end, as_of):
+    """Daily benchmark P&L in bp (+ = a long position made money), from ``Bmk/Pnl``: key
+    ``<source>:<ticker or structure>`` - ``curve:US_BOND_10y``,
+    ``otr:FLY__US_BOND_5y__US_BOND_7y__US_BOND_10y`` (bmk ``yield_<source>`` for the yield sources
+    cmt / otr / curve), ``swsp_cmt:US_SWSP_10y`` (any other bmk name as is: the swap-spread P&L);
+    a structure is its legs' P&L x ``infra.reference.structures.yield_structure_weights``."""
+    from infra.config import BMK_ROOT
+    from infra.reference.structures import yield_structure_weights
+    from infra.storage import parquet_store
+    out = {}
+    by_src: dict[str, list[str]] = {}
+    for k in keys:
+        src, _, name = k.partition(":")
+        by_src.setdefault(src, []).append(name)
+    for src, names in by_src.items():
+        weights = {n: (yield_structure_weights(n) if "__" in n else {n: 1.0}) for n in names}
+        tickers = sorted({t for w in weights.values() for t in w})
+        from infra.config import BMK_YIELD_SOURCES
+        bmk = f"yield_{src}" if src in BMK_YIELD_SOURCES else src     # curve -> yield_curve; swsp_cmt as is
+        raw = parquet_store.read_partitioned(BMK_ROOT / "Pnl", start=pd.Timestamp(start), end=pd.Timestamp(end) + pd.Timedelta(days=1),
+                                             equals_in={"bmk": [bmk], "ticker": tickers})
+        if raw is None or raw.empty:
+            for n in names:
+                out[f"{src}:{n}"] = pd.Series(dtype="float64")
+            continue
+        raw = raw.assign(ticker=raw["ticker"].astype(str))
+        legs = raw.pivot_table(index="timestamp", columns="ticker", values="pnl_per_dv01").reindex(columns=tickers)
+        for n, w in weights.items():
+            out[f"{src}:{n}"] = legs[list(w)].mul(pd.Series(w)).sum(axis=1, min_count=len(w))
+    df = pd.DataFrame(out)
+    df.index = pd.DatetimeIndex(df.index).normalize()
+    return df.reindex(columns=list(keys))
+
+
 SERIES_SOURCES: dict[str, SeriesSource] = {
     "fut": SeriesSource(_fut, "back-adjusted continuous futures settlement",
                         ("fut:ZN.v.0", "fut:ZF.v.0", "fut:ZT.v.0", "fut:TN.v.0", "fut:ZB.v.0", "fut:UB.v.0"),
@@ -262,6 +296,12 @@ SERIES_SOURCES: dict[str, SeriesSource] = {
                         availability=Availability("day", 1, "10:00", "America/New_York",
                                                   note="FedInvest END OF DAY: posted D+1 06:00-~10:00 New York "
                                                        "(root CLAUDE.md 18)")),
+    "bmk": SeriesSource(_bmk, "daily benchmark P&L in bp of a long position (bmk yield_<source>; yield structures too)",
+                        ("bmk:curve:US_BOND_10y", "bmk:otr:FLY__US_BOND_5y__US_BOND_7y__US_BOND_10y"),
+                        availability=Availability("day", 1, "10:00", "America/New_York", calendar="market",
+                                                  verified=False,
+                                                  note="yield P&L: FedInvest-based (otr, curve) posts D+1 ~10:00 New "
+                                                       "York; CMT is out the same evening - one rule, the late one")),
     "swap": SeriesSource(_swap, "swap close (currency:tenor[:close[:method]]), %",
                          tuple(f"swap:USD:{t}y" for t in (1, 2, 3, 5, 7, 10, 15, 20, 30)), availability=_swap_avail),
     "repo": SeriesSource(_repo, "repo rate, %", ("repo:SOFR", "repo:TGCR", "repo:BGCR"), availability=_repo_avail),

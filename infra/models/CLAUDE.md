@@ -494,3 +494,10 @@ specification). Use case (a) of 0a, run live.
     day and grid-step lags, a trading grid), window P&L from a pluggable source, per-instrument
     tests against placebo windows, families of codes with false-discovery control; a run kind
     on the 0b operating model. Read that file before touching it.
+
+## 13. Conditional autocorrelation (framework B1)
+*   **Its own sub-project, `infra/models/autocorr/`, with its own `CLAUDE.md`**: does a third
+    variable decide whether an instrument chases or fades? Buckets plus an interaction regression,
+    swappable in-sample gates, an out-of-sample suite (Clark-West, spanning regression, placebos);
+    run kind `autocorr` on the 0b operating model. Read that file before touching it.
+
