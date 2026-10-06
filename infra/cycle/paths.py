@@ -43,6 +43,8 @@ class CyclePaths:
     swaption_prints_dir: Path
     swaption_vols_dir: Path
     swaption_oi_dir: Path
+    vrp_dir: Path
+    daily_options_dir: Path
     cme_tcf_dir: Path
     treasury_securities_dir: Path
     treasury_otr_dir: Path
@@ -92,6 +94,8 @@ class CyclePaths:
             swaption_prints_dir=config.SWAPTION_PRINTS_DIR,
             swaption_vols_dir=config.SWAPTION_VOLS_DIR,
             swaption_oi_dir=config.SWAPTION_OI_DIR,
+            vrp_dir=config.VRP_DIR,
+            daily_options_dir=config.DAILY_OPTIONS_DIR,
             cme_tcf_dir=config.CME_TCF_DIR,
             treasury_securities_dir=config.TREASURY_SECURITIES_DIR,
             treasury_otr_dir=config.TREASURY_OTR_DIR,

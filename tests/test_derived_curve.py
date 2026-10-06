@@ -155,3 +155,26 @@ def test_swaption_metrics_registered_after_the_ois_curve():
     assert names.index("swaption_records") < names.index("swaption_oi")
     checks = {c.name: c for c in derived.DERIVED_STEP.checks}
     assert checks["swaption_records_linked"].severity.value == "warn"
+
+
+def test_vrp_metric_last_and_its_ex_post_fills_are_not_revisions(tmp_path):
+    import numpy as np
+    from infra.cycle import vintage
+    from infra.cycle.core import StepContext
+    names = list(derived.DERIVED_METRICS)
+    assert names[-1] == "vrp" and names.index("swaption_vols") < names.index("vrp")
+    assert derived.VRP_METRIC.expected_fills == ("rv_life", "vrp_life", "life_end")
+    # a vintage without the ex-post value, the live store with it: no revision; a changed iv: one
+    paths = CyclePaths.under(tmp_path)
+    row = lambda iv, life: pd.DataFrame({"timestamp": [D("2026-09-01")], "instrument": ["SWPT_1m_10y"], "iv": [iv],
+                                         "rv_life": [life], "vrp_life": [iv - life if life == life else np.nan]})
+    vdir = tmp_path / "_vintages" / "2026-09-02"
+    old_root = vintage.in_vintage(paths.vrp_dir, vdir, paths)
+    parquet_store.write_partitioned(row(86.0, np.nan), old_root, ["timestamp", "instrument"])
+    parquet_store.write_partitioned(row(86.0, 71.0), paths.vrp_dir, ["timestamp", "instrument"])
+    check = [c for c in derived.DERIVED_STEP.checks if c.name == "vrp_no_revisions"][0]
+    ctx = StepContext(D("2026-09-01"), D("2026-09-01"), D("2026-10-06"), paths, output={})
+    ctx.reference_vintage = vdir
+    assert check.fn(ctx)[0]
+    parquet_store.write_partitioned(row(87.0, 71.0), paths.vrp_dir, ["timestamp", "instrument"])
+    assert not check.fn(ctx)[0]

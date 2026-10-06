@@ -52,7 +52,7 @@ def test_a_cancelled_trade_is_dropped_and_a_corrected_one_replaced():
             _row("2", rate="0.0490"),
             _row("8", action="CORR", event=None, orig="2", rate="0.04881", event_ts="2026-09-29T19:05:00Z")]
     out = _par(rows)
-    assert out["trade_id"].tolist() == ["2"] and out["rate"].tolist() == [4.881]
+    assert out["trade_id"].tolist() == ["S2"] and out["rate"].tolist() == [4.881]
 
 
 def test_corrections_respect_the_as_of_cutoff():
@@ -75,19 +75,19 @@ def test_packages_forward_starts_odd_dates_uncleared_and_other_products_are_excl
             _row("5", freq="MNTH"),
             _row("6", fisn="NA/Swap Fxd Flt USD", underlier="USD-SOFR CME Term"),
             _row("7")]
-    assert _par(rows)["trade_id"].tolist() == ["7"]
+    assert _par(rows)["trade_id"].tolist() == ["S7"]
 
 
 def test_spot_allows_a_holiday_but_not_a_week():
     ok = _row("1", effective="2026-10-02", maturity="2036-10-02")  # spot + 1 day (a holiday)
     late = _row("2", effective="2026-10-08", maturity="2036-10-08")
-    assert _par([ok, late])["trade_id"].tolist() == ["1"]
+    assert _par([ok, late])["trade_id"].tolist() == ["S1"]
 
 
 def test_an_upfront_fee_swap_is_not_a_par_trade():
     row = _row("1", rate="0.035")
     row["Other payment amount"] = "1225890.00"
-    assert _par([row, _row("2")])["trade_id"].tolist() == ["2"]
+    assert _par([row, _row("2")])["trade_id"].tolist() == ["S2"]
 
 
 def test_an_off_market_coupon_is_dropped_against_its_tenors_market():
@@ -111,4 +111,23 @@ def test_a_thin_tenor_is_judged_against_its_neighbours():
 def test_excluded_platforms_are_not_market_prints():
     bilateral = _row("1")
     bilateral["Platform identifier"] = "BILT"
-    assert _par([bilateral, _row("2")])["trade_id"].tolist() == ["2"]
+    assert _par([bilateral, _row("2")])["trade_id"].tolist() == ["S2"]
+
+
+def test_corrections_link_whatever_the_id_format():
+    """Found 2026-10-06: ids read as float text never equalled the trade's id, and since
+    2025-11-02 a later record carries the trade's BASE with another suffix - neither
+    correction nor cancellation had ever reached the closes."""
+    rows = [_row("1174107000"),
+            _row("1174107999", action="EROR", event=None, orig="1174107000.0", event_ts="2026-09-29T19:00:00Z"),
+            _row("4896008322000000301", rate="0.0490"),
+            _row("4896008399000000101", action="CORR", event=None, orig="4896008322000000512", rate="0.04881",
+                 event_ts="2026-09-29T19:05:00Z")]
+    out = _par(rows)
+    assert out["trade_id"].tolist() == ["L4896008322"] and out["rate"].tolist() == [4.881]
+
+
+def test_trade_key_namespaces():
+    k = dt.trade_key(pd.Series(["1174107000.0", "4896008322000000301", "4896008322000000512", "4896008322", None, "x"]))
+    assert k.tolist()[:4] == ["S1174107000", "L4896008322", "L4896008322", "S4896008322"]
+    assert pd.isna(k.iloc[4]) and k.iloc[5] == "x"

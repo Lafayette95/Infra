@@ -55,6 +55,8 @@ class DerivedMetric:
     # the generated presence check's severity: WARN where a day can legitimately lack the
     # inputs (a thin DTCC day - a half-day before a holiday prints one swap tenor)
     presence_severity: Severity = Severity.FAIL
+    # columns that fill in later by design (not revisions when they do): revision_check
+    expected_fills: tuple[str, ...] = ()
 
 
 # ----------------------------------------------------------------------------- WIRP
@@ -463,13 +465,53 @@ SWAPTION_OI = DerivedMetric(
     replace=_replace_days(("timestamp", "expiry_bucket", "tenor_bucket", "origin")), presence_severity=Severity.WARN,
 )
 
+# --------------------------------------------------------------- volatility risk premium
+VRP_LOOKBACK_DAYS = 100  # the longest option life (3m) plus slack: its ex-post vol fills in that late
+VRP_RATIO_BOUNDS = (0.2, 5.0)
+
+
+def compute_vrp(start, end, paths: CyclePaths):
+    """Implied vs realised over the last ``VRP_LOOKBACK_DAYS``: a day's ex-post vol is known
+    only once its option's life is over, so recent days are recomputed until it is."""
+    from infra.pipeline import vrp
+    lo = start - pd.Timedelta(days=VRP_LOOKBACK_DAYS)
+    df = vrp.compute_vrp(lo, end, vols_root=paths.swaption_vols_dir, ois_root=paths.ois_curves_dir,
+                         options_root=paths.daily_options_dir, futures_root=paths.daily_futures_dir)
+    days = sorted(set(pd.to_datetime(df["timestamp"]))) if len(df) else []
+    return df, {"days": days, "empty_days": {}, "range": (lo, end)}
+
+
+def _replace_vrp(store, df, diag, start, end) -> None:
+    from infra.pipeline import vrp
+    lo, hi = diag.get("range", (start, end))
+    vrp.store_vrp(df, lo, hi, root=store)
+
+
+def _check_vrp(ctx: StepContext):
+    from infra.pipeline import vrp
+    v = vrp.read_vrp(ctx.start, ctx.end + pd.Timedelta(days=1), root=ctx.paths.vrp_dir)
+    if v.empty:
+        return True, "no VRP rows in the window", None
+    lo, hi = VRP_RATIO_BOUNDS
+    bad = v[v["ratio_ewma"].notna() & ~v["ratio_ewma"].between(lo, hi)]
+    if bad.empty:
+        return True, f"{len(v)} VRP rows, implied/realised within [{lo}, {hi}]", None
+    return False, f"{len(bad)} row(s) with implied/realised outside [{lo}, {hi}]", bad[["timestamp", "instrument", "iv", "rv_ewma", "ratio_ewma"]]
+
+
+VRP_METRIC = DerivedMetric(
+    "vrp", lambda p: p.vrp_dir, ("timestamp", "instrument"), compute_vrp,
+    checks=(Check("vrp_sane", _check_vrp, Severity.WARN),), replace=_replace_vrp, presence_severity=Severity.WARN,
+    expected_fills=("rv_life", "vrp_life", "life_end"),  # known at the option's expiry
+)
+
 # order matters: ois_curve reads what swap_closes just wrote, swap_spreads what ois_curve wrote;
-# swaption prints need the records and the OIS curve, vols the prints, OI the records
+# swaption prints need the records and the OIS curve, vols the prints, OI the records; vrp the vols
 DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE,
                                              "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE,
                                              "swap_spreads": SWAP_SPREADS, "swaption_records": SWAPTION_RECORDS,
                                              "swaption_prints": SWAPTION_PRINTS, "swaption_vols": SWAPTION_VOLS,
-                                             "swaption_oi": SWAPTION_OI}
+                                             "swaption_oi": SWAPTION_OI, "vrp": VRP_METRIC}
 
 
 # ------------------------------------------------------------------------------ step
@@ -525,7 +567,7 @@ def derived_checks(metrics: dict[str, DerivedMetric]) -> tuple[Check, ...]:
     for m in metrics.values():
         checks += [_presence_check(m),
                    revision_check(m.store, list(m.key_columns), name=f"{m.name}_no_revisions",
-                                  rtol=0.0, atol=1e-10),
+                                  rtol=0.0, atol=1e-10, expected_fills=m.expected_fills),
                    *[revision_check(e.store, list(e.key_columns), name=f"{e.name}_no_revisions",
                                     rtol=0.0, atol=1e-10) for e in m.extra_stores],
                    *m.checks]

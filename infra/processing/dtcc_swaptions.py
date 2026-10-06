@@ -28,6 +28,8 @@ import re
 import numpy as np
 import pandas as pd
 
+from infra.processing.dtcc_trades import trade_key  # noqa: F401 - shared with the swap closes
+
 RAW_COLUMNS = {
     "Dissemination Identifier": "diss_id",
     "Original Dissemination Identifier": "orig_id",
@@ -53,22 +55,6 @@ STATE_FIELDS = ["executed", "expiry", "maturity", "strike", "notional", "capped"
                 "platform"]
 _ORDER = {"NEWT": 0, "MODI": 1, "CORR": 2, "REVI": 3, "TERM": 4, "EROR": 5}
 DECIMAL_NOTATION = "3"  # CFTC price notation 3 = decimal (0.0425 = 4.25%)
-
-
-LONG_ID = 10 ** 12  # ids at or above: the post-2025-11-02 format
-ID_SUFFIX = 10 ** 9
-
-
-def trade_key(ids: pd.Series) -> pd.Series:
-    """Dissemination ids (Int64) -> the key every record of one trade shares: ``S<id>``
-    for the old format, ``L<id // 10^9>`` for the new one."""
-    x = ids.astype("Int64")
-    out = pd.Series(pd.NA, index=ids.index, dtype="string")
-    long_ = x >= LONG_ID
-    out[long_.fillna(False)] = "L" + (x[long_.fillna(False)] // ID_SUFFIX).astype(str)
-    short = (x < LONG_ID).fillna(False)
-    out[short] = "S" + x[short].astype(str)
-    return out
 
 
 def _num(s: pd.Series) -> pd.Series:

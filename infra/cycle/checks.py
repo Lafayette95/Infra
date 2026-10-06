@@ -95,10 +95,13 @@ def revision_check(
     severity: Severity = Severity.WARN,
     rtol: float = 0.0,
     atol: float = 1e-12,
+    expected_fills: tuple[str, ...] = (),
 ) -> Check:
     """Test (b): data for past days as of THIS run matches the same days as of the
     previous vintage - i.e. "T-1 as of T" == "T-1 as of T-1". Skipped (passes, says so)
-    when no earlier vintage exists yet.
+    when no earlier vintage exists yet. ``expected_fills``: columns that fill in LATER by
+    design (an option's ex-post realised vol, known at its expiry) - a gap filling there
+    is not a revision; a value that CHANGES still is.
 
     Any difference - changed, retracted, or a value filling a gap - IS a revision, but a
     revision is an EXCEPTION to record, not a reason to stop: severity defaults to WARN
@@ -114,6 +117,8 @@ def revision_check(
             ctx.start, ctx.end, equals_in=equals_in(ctx) if equals_in else None, rtol=rtol, atol=atol,
         )
         against = ctx.reference_vintage.name
+        if expected_fills and not diffs.empty:
+            diffs = diffs[~((diffs["kind"] == "filled") & diffs["column"].isin(expected_fills))]
         if diffs.empty:
             return True, f"no revisions vs vintage {against}", None
         kinds = ", ".join(f"{n} {k}" for k, n in diffs["kind"].value_counts().items())

@@ -94,6 +94,7 @@ SWAPTION_RECORDS_DIR = DERIVED_ROOT / "SwaptionRecords"
 SWAPTION_PRINTS_DIR = DERIVED_ROOT / "SwaptionPrints"
 SWAPTION_VOLS_DIR = DERIVED_ROOT / "SwaptionVols"
 SWAPTION_OI_DIR = DERIVED_ROOT / "SwaptionOI"
+VRP_DIR = DERIVED_ROOT / "VolRiskPremium"
 # On-the-run yield benchmark (CLAUDE.md 18): per day and tenor, the END OF DAY yield of the
 # on-the-run CUSIP (issue-date convention, so it always has a price), stored under the SAME
 # tickers as the CMT par curve (US_BOND_10y) - a consumer picks the series by ``source``
@@ -632,6 +633,34 @@ class SwaptionSpec:
 SWAPTIONS: dict[str, SwaptionSpec] = {
     "USD_SOFR": SwaptionSpec(r"^NA/O (Call|P) Epn OIS USD$", "USD_SOFR"),
 }
+
+
+@dataclass(frozen=True)
+class VrpSpec:
+    """Volatility risk premium = implied minus realised vol of the same rate
+    (infra.analytics.vrp, infra.pipeline.vrp, store ``Derived/VolRiskPremium``).
+
+    Implied: the swaption ATM surface (``SwaptionVols``, normal bp/yr) at ``swaption_points``,
+    and the futures options' ATM vol at ``futures_horizon_days`` (``infra.pipeline.
+    futures_iv``; lognormal x future = points/yr). Realised, in the same units:
+    * EX ANTE (known on the day): trailing ``windows`` (trading days) and an EWMA
+      (``ewma_lambda``) of the daily changes of the CONSTANT-MATURITY forward swap rate
+      (start = day + expiry, the tenor's length) on each day's OIS curve, or of the futures'
+      front contract (most open interest the day before);
+    * EX POST (known only at the option's expiry): realised over the option's own life
+      on its FIXED underlying (the forward swap with the option's start and end dates; the
+      futures over the horizon) - ``life_end`` says when it became known."""
+    swaption_points: tuple = (("1m", 1, 2), ("3m", 3, 2), ("1m", 1, 5), ("3m", 3, 5), ("1m", 1, 10), ("3m", 3, 10),
+                              ("1m", 1, 30), ("3m", 3, 30))  # (surface expiry, months, tenor years)
+    futures: tuple = ("ZN",)
+    futures_horizon_days: int = 30
+    windows: tuple = (21, 63)
+    ewma_lambda: float = 0.94
+    trading_days: int = 252
+    min_obs: int = 15  # fewest daily changes behind a realised vol
+
+
+VRP = VrpSpec()
 SWAP_TENOR_TOLERANCE_DAYS = 4
 # Off-market trades: a fixed coupon set by agreement (often round, e.g. 3.50%), with or
 # without a reported upfront fee, can sit 70-170bp from the market (found 2026-10-01 in the

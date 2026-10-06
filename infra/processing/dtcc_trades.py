@@ -3,7 +3,11 @@
 How the reports encode a trade's life (verified on the RATES files, 2026-09):
 * every record has its OWN ``Dissemination Identifier``; any action after the first
   points back to the trade through ``Original Dissemination Identifier`` - possibly into
-  an earlier day's file (a trade executed 09-23 corrected 09-28);
+  an earlier day's file (a trade executed 09-23 corrected 09-28). Compare them through
+  ``trade_key``, never as raw text: the ids can be read as float text ("1174107000.0"),
+  and since 2025-11-02 an id is ``base x 10^9 + suffix`` with a DIFFERENT suffix on the
+  later records (found 2026-10-06: raw-text linking matched none of them, so until then
+  no correction or cancellation ever reached the swap closes);
 * ``NEWT`` + event ``TRAD`` is an executed trade. Other ``NEWT`` events (clearing,
   novation, compression, exercise) re-report EXISTING risk - counting them would count a
   trade twice;
@@ -58,6 +62,27 @@ TRADE_COLUMNS = ["executed", "currency", "tenor", "rate", "notional", "notional_
                  "block", "trade_id"]
 
 
+LONG_ID = 10 ** 12  # ids at or above: the post-2025-11-02 format, base x 10^9 + suffix
+ID_SUFFIX = 10 ** 9
+
+
+def trade_key(ids: pd.Series) -> pd.Series:
+    """Dissemination ids -> the key every record of one trade shares: ``S<id>`` for the
+    old format, ``L<id // 10^9>`` for the new one (the bases overlap the old ids' range,
+    hence the namespaces). Numeric text in any form ("1174107000.0") is parsed; a
+    non-numeric id is kept as it is; missing stays missing."""
+    raw = ids.astype("string")
+    x = pd.to_numeric(raw, errors="coerce")
+    out = raw.copy()
+    long_ = (x >= LONG_ID).fillna(False)
+    short = (x < LONG_ID).fillna(False)
+    # a long id's base comes from its TEXT: ids reach ~5e18, float64 is exact only to ~9e15
+    digits = raw.str.replace(r"\.0+$", "", regex=True)
+    out[long_] = "L" + digits[long_].str[:-9]
+    out[short] = "S" + x[short].astype("int64").astype(str)
+    return out
+
+
 def _utc(s: pd.Series) -> pd.Series:
     return pd.to_datetime(s, utc=True, errors="coerce").dt.tz_localize(None).astype("datetime64[ms]")
 
@@ -103,7 +128,7 @@ def trade_events(df: pd.DataFrame) -> pd.DataFrame:
     Dissemination Identifier)."""
     keep = ((df["action"] == "NEWT") & (df["event"] == "TRAD")) | df["action"].isin(["CORR", "EROR"])
     out = df[keep].copy()
-    out["trade_id"] = out["orig_id"].fillna(out["diss_id"]) if len(out) else out["diss_id"]
+    out["trade_id"] = trade_key(out["orig_id"]).fillna(trade_key(out["diss_id"])) if len(out) else out["diss_id"]
     return out
 
 

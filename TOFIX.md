@@ -1228,14 +1228,6 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 
 ---
 
-## DTCC: the swap closes never applied corrections or cancellations
-
-**Found:** 2026-10-06, building the swaptions ledger. **Where:** `infra.processing.dtcc_trades.trade_events` (`trade_id` = `orig_id` or `diss_id` as STRINGS). **Status:** open - measured, fix not applied (it recomputes two years of closes, the OIS curve and the swap spreads: user's call).
-
-**The issue:** a correction's / cancellation's `Original Dissemination Identifier` never equals its trade's id as compared: (1) the ids are read as text that can carry a float form ("1174107000.0"), and (2) since 2025-11-02 DTCC's ids are `base x 10^9 + suffix` with a DIFFERENT suffix on later records (root CLAUDE.md 16, swaptions). Exact linking matched 0% of USD OIS CORR/EROR in Sep-Oct 2025 and Aug-Sep 2026; keyed by `infra.processing.dtcc_swaptions.trade_key` 45% / 74% within a two-month window (the rest correct earlier trades). So every swap close since the archive began priced trades as first reported, cancelled ones included. **Impact measured (Sep 2026, pure closes):** 2.1% of USD NY1530 closes change, |diff| max 0.78bp (all currencies/closes: 3.4% change, max 1.8bp) - the off-market filters had absorbed most of it; the OIS curve and swap spreads inherit it. **Fix:** key `trade_events` with `trade_key` (move it into `dtcc_trades`, shared), then recompute closes / OIS curve / swap spreads 2024-09..now and recheck the close calibration numbers in `SWAP_CLOSE_WEIGHTING`'s comments.
-
----
-
 ## Swaptions: open items from the first build
 
 **Found:** 2026-10-06. **Where:** `infra.pipeline.swaptions`, `infra.processing.dtcc_swaptions` (root CLAUDE.md 16). **Status:** open.
@@ -1247,3 +1239,15 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **Vols beyond ~2y expiry are implausible** (220-260bp normal at 5y-10y): a premium convention (deferred / forward premium? callables reported as swaptions?) not understood; the surface stops at 2.25y.
 *   **Intraday forward mismatch:** every print is priced on the 15:30 OIS curve; short expiries suffer (1m x 5y within-day IQR 21bp vs 1-6bp elsewhere). Fix: move the forward by the futures move between the print and the snap, as the adjusted swap closes do (needs the intraday fetch).
 *   **Linking dipped to 67% in 2026Q2** (81-93% other quarters): not investigated.
+*   **Skew fit tried, not viable yet (2026-10-06):** a pooled fit (5 days, vol on moneyness and moneyness^2 with a level per day) gave a 1m x 10y risk reversal swinging +-60-180bp day to day; keeping only prints >= 15bp from the forward and <= 3h from 15:30 (10-day pool) made it stable (sd 21bp, median ~0) but left 48 days at 1m x 10y and 14 at 3m x 10y. Cause: each print's forward comes from the 15:30 curve, so a print hours away is off by the intraday move - a near-the-money option lands on the wrong side and its in-the-money premium implies a huge vol. **Fix first:** move each print's forward to its trade time by the hedge futures' quote move, as the adjusted swap closes do (`infra.pipeline.swap_hedge`; `bbo-1m` is on disk through 2026-09-30, but daily it needs the intraday fetch scheduled); then refit.
+
+---
+
+## Volatility risk premium: open items
+
+**Found:** 2026-10-06. **Where:** `infra.pipeline.vrp` (root CLAUDE.md 16). **Status:** open.
+
+*   **Short swaption history** (2 years, one regime): ZN since 2019 shows the premium near zero or negative for whole years (2019, 2022-23) - don't read the swaption numbers as a constant.
+*   **Realised side from pure-close curves:** the forward swap rate's daily changes carry the pure closes' noise (~0.35bp a close, ~1% of the daily variance at 10y; more in the 15-30y segment) - switch to the adjusted-close curve when it exists.
+*   **Implied is the surface's ATM median**, at a surface point whose prints span an expiry bucket (1m = 0.05-0.14y), against a realised horizon of exactly 1 / 3 months.
+*   **ZN is price vol** (points/yr): comparable to the swaptions only through the ratio; a yield-vol version needs the futures DV01 (bmk risk store).
