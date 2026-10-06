@@ -13,7 +13,9 @@ class ConditionSpec:
     """Condition the windows on a third series (infra.models.event_study.conditions): its
     point-in-time feature at each window's start, partitioned into -1 / 0 / +1."""
     series: str                                 # a series id (infra.pipeline.series_panel), e.g. "fut:ZN.v.0"
-    steps: tuple[str, ...] = ()                 # feature: prep steps along its timeline ("diff", "ewm_z:20")
+    feature: str | None = None                  # the feature GRAMMAR along its timeline (infra.processing.features,
+                                                # e.g. "chg:20", "chg:5|norm:vol:60"); None -> the legacy `steps`
+    steps: tuple[str, ...] = ()                 # LEGACY: prep steps ("diff:20", "ewm_z:20") = literal grammar aliases
     period_diff: bool = False                   # vintage series: the latest period's change vs the previous
     partition: str = "rolling_tercile:252"      # PARTITIONERS rule, W in timeline rows
     lag_steps: int = 1                          # grid steps BEFORE the window start, on top of availability
@@ -95,7 +97,7 @@ EVENT_STUDIES_INTRADAY: dict[str, EventStudySpec] = registry("intraday", (
                    "(change of the back-adjusted settlement over 20 days, rolling terciles over 2 years)",
                    code="US_EMPLOYMENT_SITUATION;;;&0_0_&_-1__&0_0_&_8;;DEFAULT_CYCLE",
                    instruments=("ZT.v.0", "ZN.v.0", "ZB.v.0"),
-                   condition=ConditionSpec("fut:ZN.v.0", steps=("diff:20",), partition="rolling_tercile:504")),
+                   condition=ConditionSpec("fut:ZN.v.0", feature="chg:20", partition="rolling_tercile:504")),
     EventStudySpec("refunding_day", "Refunding statement: 08:30 -> grid end",
                    code="US_TSY_REFUNDING;GRID_END;;&0_0_&_0__&0_0_%0_0;;DEFAULT_CYCLE",
                    instruments=("ZN.v.0", "ZB.v.0", "UB.v.0")),

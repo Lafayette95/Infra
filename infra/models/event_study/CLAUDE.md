@@ -144,6 +144,7 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
     next N days with the latest fit (a plan, not stored by the run).
 
 ## 5. Conditional studies
+*   **The condition's feature is a grammar string** (`ConditionSpec.feature`, e.g. `chg:20`; kind-aware - since 2026-10-06), `steps` is the legacy literal alias (`diff:20` = `lvl|diff:20`, identical).
 *   **Partitions and timelines live in the central feature maker** (`infra.processing.features`, root CLAUDE.md 31, since 2026-10-06); `conditions.partition`, `PARTITIONERS` and `state_timeline` re-export them unchanged. (`conditions.py`, `ConditionSpec`; built 2026-10-05)
 *   **The condition is another series** (`ConditionSpec.series`, any `series_panel` id: a price
     we track, a yield, a repo rate, a macro print), one per study for now (user decision).

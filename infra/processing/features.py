@@ -19,10 +19,14 @@ boxcar); ``chg:ewm:HL`` (EWMA of daily changes); ``x:F:S`` (EWMA(level, F) - EWM
 minus over S, F < S); ``range:N`` (position in the trailing range, 0..1); ``dd:N`` (drawdown from
 the trailing high, <= 0).
 
+Literal transforms (act on the CURRENT series, whatever the input kind - ``infra.models.prep``'s
+stateless steps map one-to-one onto them): ``diff:N``, ``log``, ``pct:N``, ``logdiff:N``,
+``mult:K``, ``add:K``, ``neg``, ``ffill:N``.
+
 Modifiers: ``norm:vol:SPAN`` (/ EWMA vol of daily changes x the kind's scale: sqrt N for chg:N -
 the user's choice, 2026-10-06: it assumes independent daily changes; the EWMA-variance factor for
 chg:ewm; sqrt(1/F - 1/S) for accr; sqrt(2N) for acc; 1 otherwise), ``norm:z:W`` (demeaned),
-``norm:z0:W`` (not demeaned: / RMS), ``norm:rank:W`` (trailing percentile 0..1),
+``norm:z0:W`` (not demeaned: / RMS), ``norm:ewmz:HL`` (EWM mean / std), ``norm:rank:W`` (trailing percentile 0..1),
 ``norm:robust:W`` (median / MAD); ``abs``, ``sign``, ``clip:K``, ``pow:P`` (signed power),
 ``lag:N``; partitions ``part:tercile:W``, ``part:z:W:K``, ``part:sign``, ``part:fixed:A:B``
 (-1 / 0 / +1).
@@ -198,13 +202,18 @@ def _norm(st: _State, args):
         return (x - x.rolling(w, min_periods=mp).mean()) / x.rolling(w, min_periods=mp).std()
     if how == "z0":
         return x / np.sqrt((x ** 2).rolling(w, min_periods=mp).mean())
+    if how == "ewmz":                            # EWM mean / std (prep's ewm_z, same warm-up)
+        hl = float(args[1])
+        m = x.ewm(halflife=hl, min_periods=max(2, int(hl))).mean()
+        sd = x.ewm(halflife=hl, min_periods=max(2, int(hl))).std()
+        return (x - m) / sd
     if how == "rank":
         return x.rolling(w, min_periods=mp).rank(pct=True)
     if how == "robust":
         med = x.rolling(w, min_periods=mp).median()
         mad = (x - med).abs().rolling(w, min_periods=mp).median()
         return (x - med) / (1.4826 * mad)
-    raise ValueError(f"norm:{how} (vol | z | z0 | rank | robust)")
+    raise ValueError(f"norm:{how} (vol | z | z0 | ewmz | rank | robust)")
 
 
 def _modify(st: _State, name: str, args) -> pd.Series:
@@ -223,6 +232,26 @@ def _modify(st: _State, name: str, args) -> pd.Series:
         return np.sign(x) * x.abs() ** p
     if name == "lag":
         return x.shift(int(args[0]))
+    # LITERAL transforms of the current series, whatever the input kind (infra.models.prep's
+    # stateless steps map one-to-one onto these - user decision 2026-10-06: prep stays literal)
+    n = int(args[0]) if args and name in ("diff", "pct", "logdiff") else 1
+    if name == "diff":
+        return x - x.shift(n)
+    if name == "log":
+        return np.log(x.where(x > 0))
+    if name == "pct":
+        return x / x.shift(n) - 1.0
+    if name == "logdiff":
+        lg = np.log(x.where(x > 0))
+        return lg - lg.shift(n)
+    if name == "mult":
+        return x * float(args[0])
+    if name == "add":
+        return x + float(args[0])
+    if name == "neg":
+        return -x
+    if name == "ffill":
+        return x.ffill(limit=int(args[0]) if args else None)
     if name == "part":
         rule, *rest = args
         if rule not in PARTITIONS:
@@ -251,3 +280,23 @@ def partition(x: pd.Series, rule: str) -> np.ndarray:
     if name not in PARTITIONS:
         raise KeyError(f"unknown partition {rule!r}; known: {sorted(PARTITIONS)}")
     return PARTITIONS[name](x, *args)
+
+
+PREP_ALIASES = {"diff": "diff", "log": "log", "pct": "pct", "logdiff": "logdiff", "lag": "lag", "mult": "mult",
+                "add": "add", "neg": "neg", "ffill": "ffill", "ewm_z": "norm:ewmz"}
+
+
+def prep_grammar(steps) -> str:
+    """A chain of ``infra.models.prep`` stateless steps (``("diff", "mult:100")``) as the grammar,
+    LITERAL: ``lvl | diff:1 | mult:100``, to be applied with input kind ``level`` (prep never knew
+    kinds - a ``diff`` is a difference even of a P&L series; user decision 2026-10-06)."""
+    out = ["lvl"]
+    for step in steps:
+        name, _, rest = step.partition(":")
+        if name not in PREP_ALIASES:
+            raise ValueError(f"prep step {step!r} has no feature alias (stateful steps and resample stay in prep)")
+        alias = PREP_ALIASES[name]
+        if name in ("diff", "pct", "logdiff", "lag") and not rest:
+            rest = "1"
+        out.append(f"{alias}:{rest}" if rest else alias)
+    return " | ".join(out)

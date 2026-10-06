@@ -17,7 +17,9 @@ from its label. Inputs:
 * ``surprise:<release ticker>``: actual - MarketWatch consensus (``infra.pipeline.econ_calendar
   .consensus``, NOT Bloomberg's survey), available at the release instant (its event's time);
 * ``model:<run>:<column>``: a stored model run's prediction column, available the day after its
-  row's label (conservative).
+  row's label (conservative);
+* ``pdiff:<series id>``: a vintage series' latest period's change against the previous period, as
+  known at each availability instant (the event study's ``period_diff``).
 
 ``align(series, index, source)``: a feature onto another timeline (a model's daily index), the
 latest value at or before each instant, carried at most ``FEATURE_FFILL_LIMITS[source]``.
@@ -159,6 +161,13 @@ def input_series(inp: str, start, end) -> tuple[pd.Series, str, str]:
         return _events(event, start, end, direction), "level", "evt"
     if inp.startswith("surprise:"):
         return _surprise(inp.split(":", 1)[1]), "level", "surprise"
+    if inp.startswith("pdiff:"):                 # a vintage series' latest-period change, as known then
+        from infra.pipeline.series_panel import read_available
+        from infra.processing.features import state_timeline
+        sid = inp.split(":", 1)[1]
+        tl = state_timeline(read_available(sid, start, end), period_diff=True)
+        s = pd.Series(tl["value"].to_numpy(dtype="float64"), index=pd.DatetimeIndex(tl["available_at"]))
+        return s.sort_index(), "level", parse_id(sid)[0]
     if inp.startswith("model:"):
         _, run, col = inp.split(":", 2)
         return _model(run, col), "level", "model"

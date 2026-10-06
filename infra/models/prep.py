@@ -35,6 +35,10 @@ Steps:
 ``winsor:k``             clip at fit mean +- k std                  (stateful)
 =====================  =======================================================
 
+Every stateless step except ``resample`` runs through the central feature maker's LITERAL
+transforms (``infra.processing.features.prep_grammar``, root CLAUDE.md 31; outputs identical -
+tested): ``prep`` never knows input kinds, so a ``diff`` is always a difference.
+
 Granularities: ``prepare(..., skip=("resample",))`` prepares new data WITHOUT the
 fit's resampling - e.g. 1-minute levels run through a model fitted on daily levels.
 """
@@ -71,36 +75,19 @@ def resample(df: pd.DataFrame, freq: str, how: str = "last") -> pd.DataFrame:
 
 
 def apply_stateless(df: pd.DataFrame, step: str) -> pd.DataFrame:
+    """One stateless step on every column. ``resample`` is prep's own (it changes the index);
+    every other step runs through the central feature maker's LITERAL transforms
+    (``infra.processing.features.prep_grammar``; outputs identical - tested)."""
     name, args = parse_step(step)
     if name == "resample":
         if not args:
             raise ValueError("resample needs a frequency, e.g. resample:W-FRI")
         return resample(df, args[0], args[1] if len(args) > 1 else "last")
-    if name == "log":
-        return np.log(df.where(df > 0))
-    if name == "diff":
-        return df - df.shift(_n(args))
-    if name == "pct":
-        return df / df.shift(_n(args)) - 1.0
-    if name == "logdiff":
-        lg = np.log(df.where(df > 0))
-        return lg - lg.shift(_n(args))
-    if name == "lag":
-        return df.shift(_n(args))
-    if name == "mult":
-        return df * float(args[0])
-    if name == "add":
-        return df + float(args[0])
-    if name == "neg":
-        return -df
-    if name == "ffill":
-        return df.ffill(limit=_n(args, None) if args else None)
-    if name == "ewm_z":
-        hl = float(args[0])
-        m = df.ewm(halflife=hl, min_periods=max(2, int(hl))).mean()
-        s = df.ewm(halflife=hl, min_periods=max(2, int(hl))).std()
-        return (df - m) / s
-    raise ValueError(f"{step!r} is stateful; it runs in fit, not prepare")
+    if name in STATEFUL:
+        raise ValueError(f"{step!r} is stateful; it runs in fit, not prepare")
+    from infra.processing.features import apply, prep_grammar
+    grammar = prep_grammar([step])
+    return df.apply(lambda col: apply(col, grammar, "level")).astype("float64")
 
 
 def run_stateless(df: pd.DataFrame, steps, *, skip=()) -> pd.DataFrame:

@@ -104,7 +104,7 @@ class EventStudy(Model):
         from infra.models.event_study import conditions as ec
         c = self.spec.condition
         states = ec.state_timeline(timeline, period_diff=c.period_diff)
-        feat = ec.feature(states, c.steps)
+        feat = ec.feature(states, c.steps, grammar=c.feature, kind=ec.input_kind(c.series))
         buckets = ec.partition(feat, c.partition)
         return ec.at_windows(starts, feat, buckets, c.lag_steps * step)
 

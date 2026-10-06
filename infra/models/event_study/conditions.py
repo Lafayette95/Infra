@@ -27,13 +27,25 @@ import pandas as pd
 from infra.processing.features import state_timeline  # noqa: E402,F401  (moved 2026-10-06)
 
 
-def feature(timeline: pd.DataFrame, steps=()) -> pd.Series:
-    """The prep steps along the timeline (index = ``available_at``)."""
-    from infra.models.prep import run_stateless
-    s = pd.DataFrame({"x": timeline["value"].to_numpy(dtype="float64")},
-                     index=pd.DatetimeIndex(timeline["available_at"]))
+def feature(timeline: pd.DataFrame, steps=(), *, grammar: str | None = None, kind: str = "level") -> pd.Series:
+    """The condition's feature along the timeline (index = ``available_at``), from the central
+    feature maker: ``grammar`` (``infra.processing.features``, kind-aware), else the legacy prep
+    ``steps`` as literal aliases (identical to the old prep path - tested)."""
+    from infra.processing.features import apply, prep_grammar
+    s = pd.Series(timeline["value"].to_numpy(dtype="float64"), index=pd.DatetimeIndex(timeline["available_at"]))
+    if grammar:
+        return apply(s, grammar, kind)
     steps = tuple(x for x in steps if not x.startswith("resample"))
-    return run_stateless(s, steps)["x"] if steps else s["x"]
+    return apply(s, prep_grammar(steps), "level") if steps else s
+
+
+def input_kind(series_id: str) -> str:
+    """The condition series' input kind (``level`` / ``moves``); unknown sources -> level."""
+    try:
+        from infra.pipeline.series_panel import kind_of
+        return kind_of(series_id)
+    except Exception:
+        return "level"
 
 
 # The partitions live in the central feature maker (infra.processing.features, 2026-10-06); these

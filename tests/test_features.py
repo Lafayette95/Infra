@@ -139,3 +139,93 @@ def test_event_time_reaches_past_the_window(monkeypatch):
     monkeypatch.setattr(ew, "consolidate", lambda c: c.assign(day=pd.to_datetime(c["timestamp"]).dt.normalize()))
     to = pf._events("E", "2024-03-01", "2024-03-29", "to")
     assert to.notna().all() and to.iloc[-1] > 20                    # the occurrence lies after the window
+
+
+# --------------------------------------------------------------------------- migration parity
+def _legacy_prep(df, step):
+    """infra.models.prep.apply_stateless as it was before 2026-10-06 (the reference)."""
+    name, *args = step.split(":")
+    n = int(args[0]) if args and name in ("diff", "pct", "logdiff", "lag", "ffill") else 1
+    if name == "log":
+        return np.log(df.where(df > 0))
+    if name == "diff":
+        return df - df.shift(n)
+    if name == "pct":
+        return df / df.shift(n) - 1.0
+    if name == "logdiff":
+        lg = np.log(df.where(df > 0))
+        return lg - lg.shift(n)
+    if name == "lag":
+        return df.shift(n)
+    if name == "mult":
+        return df * float(args[0])
+    if name == "add":
+        return df + float(args[0])
+    if name == "neg":
+        return -df
+    if name == "ffill":
+        return df.ffill(limit=n if args else None)
+    if name == "ewm_z":
+        hl = float(args[0])
+        m = df.ewm(halflife=hl, min_periods=max(2, int(hl))).mean()
+        s = df.ewm(halflife=hl, min_periods=max(2, int(hl))).std()
+        return (df - m) / s
+    raise ValueError(step)
+
+
+@pytest.mark.parametrize("chain", [("diff",), ("diff:5",), ("log",), ("pct",), ("pct:3",), ("logdiff",), ("logdiff:2",),
+                                   ("lag",), ("lag:3",), ("mult:100",), ("add:-1.5",), ("neg",), ("ffill",), ("ffill:2",),
+                                   ("ewm_z:20",), ("diff", "mult:100"), ("log", "diff"), ("diff", "ewm_z:10"),
+                                   ("ffill:3", "diff", "lag:2", "neg")])
+def test_prep_steps_are_unchanged_through_the_feature_maker(chain):
+    from infra.models.prep import run_stateless
+    rng = np.random.default_rng(7)
+    df = pd.DataFrame(rng.normal(1.0, 1.0, (400, 2)), columns=["a", "b"], index=pd.bdate_range("2021-01-01", periods=400))
+    df.iloc[10:13, 0] = np.nan                               # gaps
+    df.iloc[50, 1] = -0.5                                    # non-positive: log -> NaN
+    ref = df
+    for step in chain:
+        ref = _legacy_prep(ref, step)
+    pd.testing.assert_frame_equal(run_stateless(df, chain), ref.astype("float64"), rtol=1e-12)
+
+
+def test_every_registered_stats_prep_chain_is_unchanged():
+    from infra.models.prep import run_stateless, split_steps
+    from infra.models.stats import config as sc
+    rng = np.random.default_rng(8)
+    df = pd.DataFrame(rng.normal(3.0, 0.5, (300, 3)), columns=list("xyz"), index=pd.bdate_range("2021-01-01", periods=300))
+    chains = {tuple(getattr(s, "prep", ())) for reg in (sc.REGRESSION_MODELS, sc.PCA_MODELS) for s in reg.values()}
+    assert chains
+    for chain in chains:
+        stateless, _ = split_steps(chain)
+        stateless = tuple(s for s in stateless if not s.startswith("resample"))
+        ref = df
+        for step in stateless:
+            ref = _legacy_prep(ref, step)
+        pd.testing.assert_frame_equal(run_stateless(df, stateless), ref.astype("float64"), rtol=1e-12)
+
+
+def test_condition_feature_grammar_matches_the_legacy_steps():
+    from infra.models.event_study.conditions import feature
+    from infra.models.event_study.config import EVENT_STUDIES
+    rng = np.random.default_rng(9)
+    tl = pd.DataFrame({"available_at": pd.bdate_range("2021-01-01", periods=300) + pd.Timedelta(hours=21),
+                       "value": np.cumsum(rng.normal(0, 1, 300)) + 110})
+    legacy = feature(tl, ("diff:20",))
+    new = feature(tl, grammar="chg:20", kind="level")
+    pd.testing.assert_series_equal(new, legacy, check_names=False)
+    assert EVENT_STUDIES["nfp_morning_by_trend"].condition.feature == "chg:20"
+
+
+def test_pdiff_input_is_the_event_studys_period_diff(monkeypatch):
+    import infra.pipeline.features as pf
+    import infra.pipeline.series_panel as sp
+    rows = pd.DataFrame({"label": [D("2024-01-01"), D("2024-02-01"), D("2024-01-01"), D("2024-03-01")],
+                         "available_at": [D("2024-02-02 13:30"), D("2024-03-08 13:30"), D("2024-03-08 13:30"),
+                                          D("2024-04-05 12:30")],
+                         "value": [100.0, 104.0, 101.0, 103.0]})
+    monkeypatch.setattr(sp, "read_available", lambda sid, start, end: rows)
+    s, kind, src = pf.input_series("pdiff:release:PAYEMS", "2024-01-01", "2024-12-31")
+    ref = fx.state_timeline(rows, period_diff=True)
+    np.testing.assert_allclose(s.to_numpy(), ref["value"].to_numpy(), equal_nan=True)
+    assert s.iloc[1] == pytest.approx(3.0) and s.iloc[2] == pytest.approx(-1.0)   # Feb 104 vs revised Jan 101; Mar 103 vs Feb

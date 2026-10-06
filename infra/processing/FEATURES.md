@@ -25,7 +25,9 @@ event study's `conditions.feature` + `PARTITIONERS`, B1's `_x_feature`.
     KNOWN that day - release-calendar `known_from`); `surprise:<release ticker>` (actual -
     MarketWatch consensus, `econ_calendar.consensus` - NOT Bloomberg's survey; available at the
     release instant = its registry event's time, else the day's end; user decision 2026-10-06);
-    `model:<run>:<column>` (a stored model run's prediction, available the day after its label).
+    `model:<run>:<column>` (a stored model run's prediction, available the day after its label);
+    `pdiff:<series id>` (a vintage series' latest period's change against the previous one, as
+    known at each availability instant).
 
 ## 3. The grammar
 A feature = an input, then a KIND, then MODIFIERS, separated by `|`:
@@ -49,6 +51,8 @@ A feature = an input, then a KIND, then MODIFIERS, separated by `|`:
 | `norm:z:W` / `norm:z0:W` | trailing z-score, demeaned / not demeaned (/ RMS) |
 | `norm:rank:W` / `norm:robust:W` | trailing percentile 0..1 / (x - median) / (1.4826 MAD) |
 | `abs`, `sign`, `clip:K`, `pow:P` | shape (`pow` keeps the sign) |
+| `diff:N`, `log`, `pct:N`, `logdiff:N`, `mult:K`, `add:K`, `neg`, `ffill:N` | LITERAL transforms of the current series, whatever the input kind (`infra.models.prep`'s stateless steps map one-to-one onto them) |
+| `norm:ewmz:HL` | EWM mean / std z-score (prep's `ewm_z`, same warm-up) |
 | `lag:N` | N more observations of lag |
 | `part:tercile:W`, `part:z:W:K`, `part:sign`, `part:fixed:A:B` | buckets -1 / 0 / +1 |
 
@@ -70,6 +74,11 @@ A feature = an input, then a KIND, then MODIFIERS, separated by `|`:
 *   **Migrated, outputs identical (tested):** B1's X features (`move:K`, `absmove:K`, `level`,
     `z:W` are aliases of `chg:K|norm:vol:SPAN`, `...|abs`, `lvl`, `lvl|norm:z:W`; any other
     `x_feature` string is the grammar itself) and its past move.
-*   **Not yet** (`TOFIX.md`): `resid(ID; FACTORS; W)`, `rev(ID)`, `pdiff(ID)` as inputs (the event
-    study's `period_diff` still does the latter); `prep.py`'s stateless steps as grammar aliases;
-    the event study's condition `steps` as a grammar string; intraday features.
+*   **Migrated 2026-10-06 (parity tested against copies of the old code):** `infra/models/prep.py`'s
+    stateless steps run through the literal transforms (`prep_grammar`: `("diff", "mult:100")` ->
+    `lvl | diff:1 | mult:100`, input kind forced to `level` - user decision: prep stays LITERAL, a
+    `diff` of a P&L series is a difference); `resample` and the stateful steps stay in `prep`. The event
+    study's `ConditionSpec.feature` takes a grammar string (kind-aware; the registered
+    `nfp_morning_by_trend` uses `chg:20`, identical to its old `diff:20`), `steps` stays as the legacy
+    literal alias. `pdiff:` input built.
+*   **Not yet** (`TOFIX.md`): `resid(ID; FACTORS; W)` and `rev(ID)` inputs; intraday features.
