@@ -307,3 +307,14 @@ def test_family_generates_codes_keeps_illegal_ones_and_controls_fdr():
     hit = r[r["code"].str.contains(r"&0_0_&_-1__&0_0_&_4")]
     assert hit["passed_fdr"].iloc[0] == 1.0
     assert r["q"].notna().any()
+
+
+def test_a_family_leg_can_be_a_union_of_rules():
+    from infra.models.event_study.config import EVENT_FAMILIES, leg_values
+    union = (LegRule(times=("&",), step_lags=(1, 2, 0)), LegRule(times=("%1",), step_lags=(0,)),
+             LegRule(times=("&",), step_lags=(0,)))                     # a duplicate is dropped
+    assert leg_values(union) == ["&0_0_&_1", "&0_0_&_2", "&0_0_&_0", "&0_0_%1_0"]
+    assert leg_values(LegRule(step_lags=(1, 4))) == ["&0_0_&_1", "&0_0_&_4"]
+    for name in ("nfp_intraday", "nfp_intraday_struct"):
+        codes = EVENT_FAMILIES[name].codes()
+        assert len(codes) == 24 and not any("%1_1" in c or "%1_8" in c for c in codes)

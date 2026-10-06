@@ -100,13 +100,22 @@ class LegRule:
         return [f"&{r}_{d}_{t}_{s}" for r, d, t, s in product(self.refs, self.day_lags, self.times, self.step_lags)]
 
 
+def leg_values(rule: LegRule | tuple[LegRule, ...]) -> list[str]:
+    """A family leg: one rule (its cartesian product) or several (the UNION of their products, in
+    order, duplicates dropped) - so e.g. lags can apply to the event's own time but not to the
+    grid's close, where any lag leaves the grid and the code could never be legal (2026-10-05:
+    16 of nfp_intraday's 40 codes were such dead codes)."""
+    rules = (rule,) if isinstance(rule, LegRule) else tuple(rule)
+    return list(dict.fromkeys(leg for r in rules for leg in r.legs()))
+
+
 @dataclass(frozen=True)
 class FamilySpec:
     name: str
     dt_refs: tuple[str, ...]
     time_refs: tuple[str, ...] = ()
-    start: LegRule = field(default_factory=LegRule)
-    end: LegRule = field(default_factory=LegRule)
+    start: LegRule | tuple[LegRule, ...] = field(default_factory=LegRule)   # one rule, or several (union)
+    end: LegRule | tuple[LegRule, ...] = field(default_factory=LegRule)
     cycle: str = "DEFAULT_CYCLE"
     study: EventStudySpec = field(default_factory=EventStudySpec)   # instruments, source, thresholds
     fdr_q: float = 0.10                         # Benjamini-Hochberg across the family's tests
@@ -114,19 +123,19 @@ class FamilySpec:
 
     def codes(self) -> list[str]:
         refs = "__".join(self.dt_refs) + ";" + "__".join(self.time_refs)
-        return [f"{refs};;{s}__{e};;{self.cycle}" for s, e in product(self.start.legs(), self.end.legs())]
+        return [f"{refs};;{s}__{e};;{self.cycle}" for s, e in product(leg_values(self.start), leg_values(self.end))]
 
 
 EVENT_FAMILIES: dict[str, FamilySpec] = {f.name: f for f in (
     FamilySpec("nfp_intraday", ("US_EMPLOYMENT_SITUATION",), ("GRID_START", "GRID_END"),
                start=LegRule(times=("&",), step_lags=(-8, -4, -1, 0)),
-               end=LegRule(times=("&", "%1"), step_lags=(1, 2, 4, 8, 0)),
+               end=(LegRule(times=("&",), step_lags=(1, 2, 4, 8, 0)), LegRule(times=("%1",), step_lags=(0,))),
                study=EventStudySpec(instruments=("ZT.v.0", "ZN.v.0")),
                description="NFP: entries 2h/1h/15m before and at the print, exits 15m..2h after it and at the "
                            "grid's close"),
     FamilySpec("nfp_intraday_struct", ("US_EMPLOYMENT_SITUATION",), ("GRID_START", "GRID_END"),
                start=LegRule(times=("&",), step_lags=(-8, -4, -1, 0)),
-               end=LegRule(times=("&", "%1"), step_lags=(1, 2, 4, 8, 0)),
+               end=(LegRule(times=("&",), step_lags=(1, 2, 4, 8, 0)), LegRule(times=("%1",), step_lags=(0,))),
                study=EventStudySpec(instruments=("DUR__TY", "CURVE__FV__WN", "FLY__FV__UXY__WN", "FRONT__TU__H",
                                                  "MICRO__TY__FV__H", "MICRO__US__WN__H"),
                                     source="STRUCT_BPS_BBO", ev_abs_min=None),

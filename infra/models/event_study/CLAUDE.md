@@ -104,6 +104,13 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
     produces false positives by construction.
 
 ## 4a. Family runs (`infra/jobs/family_runs.py`, built 2026-10-05)
+*   **A family leg is one `LegRule` (a cartesian product) or a TUPLE of them (the union of their
+    products, duplicates dropped; `config.leg_values`)**, so lags can apply to some times and not
+    others. Added 2026-10-05: `nfp_intraday`'s single exit rule gave the grid close the same lags
+    as the print, and close + 15 min..2 h is past the grid on every day - 16 of its 40 codes could
+    never be legal. Both NFP families now end with `(LegRule(times=("&",), step_lags=(1, 2, 4, 8, 0)),
+    LegRule(times=("%1",), step_lags=(0,)))`: 24 codes, 23 with windows (08:30 -> 08:30 is empty).
+    Changing a family's codes renumbers its run's code folders: re-create the run.
 *   **A family on the operating model:** one ordinary run per code (`<name>/c000` ..., spec
     `family:<family>#<i>`, resolved by `config.get_event_study_spec`) plus the family's
     point-in-time false-discovery table `<name>/fdr.parquet` (`family.fdr_table`: per fit DAY,
@@ -160,7 +167,8 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
 *   `nfp_morning` (08:15 -> 10:30 ET, 120 events): ZB mean -0.20 pt, t -2.44, Wilcoxon p 0.018,
     same sign in 90% of years, placebo excess t -2.33: passes; ZT / ZN don't. The path: the move
     is in the 08:30-08:45 step (sd 0.36 vs 0.08 the step before).
-*   `nfp_intraday` family (40 codes x ZT, ZN): 8 (code, instrument) pairs pass their own tests
+*   `nfp_intraday` family (40 codes x ZT, ZN - the version before 2026-10-05's pruning, 16 of them dead by
+    construction, which changed no result): 8 (code, instrument) pairs pass their own tests
     (ZN sells off in the 30 minutes after the print, |t| up to 2.8), none survives BH at q 0.10
     (lowest q 0.20) - the reason the family control exists.
 

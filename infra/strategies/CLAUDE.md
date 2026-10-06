@@ -55,7 +55,7 @@ headings "Strategies: ...". Built 2026-10-05.
     known regime is used, root CLAUDE.md 26).
 *   **Positions** from the t-signal (`position_signal = "t"`; `"ev"` = the bp move), scaled
     `full_strength`.
-*   **Real data 2026-10-05** (NFP 40-code family on ZT/ZN, monthly refits 2024-2026): the FDR
+*   **Real data 2026-10-05** (NFP family on ZT/ZN - its 40-code version, 23 of them live - monthly refits 2024-2026): the FDR
     gate passes nothing at recent fits (as the event-study doc reports), so `cevt_nfp` is flat;
     with `gate="passed"` one view switched on (Jul 2024, -102.6 ZN at full strength, `ZNU4`);
     the firm series rebuilds identical.

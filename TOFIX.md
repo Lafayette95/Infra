@@ -1069,7 +1069,14 @@ funding model's SOFR path starts 2018-10-01. So bp studies start 2018-10.
         a leg falling in a closure.
     *   **Deferral is per contract**: a roll whose new contract can't trade while the old one can
         leaves the position flat for the gap (flagged as `deferred`); a "roll as a pair" policy
-        would wait for both.
+        would wait for both. **Measured 2026-10-05 - it breaks STRUCTURES at the print:** on the
+        layered NFP run (6 structures, 2021-2026), every one of 52 deferrals was `wide_spread` at
+        08:30 ET on NFP Fridays: some legs traded, others waited one label, so for the 15 minutes
+        across the release the book held broken hedges (ZB at -335 vs a +337 target). That
+        legging moved realised gross by +-$400k on single days and -$740k in total ($0.81m
+        executed vs $1.55m intended). Options: defer ATOMICALLY per trade decision (all legs of a
+        label's trade wait if any can't go), a "no new risk inside a release minute" rule (enter
+        before 08:30, as the 08:15 codes do), or price the legs at the touch instead of waiting.
     *   **Daily costs from NY1500 snaps** exist only for contracts the snap store holds (each bond
         root's front, the ZQ strip); others use the root's trailing median (`cost_fallback`).
 *   **Instruments are independent** in the PER-INSTRUMENT position sizing (no covariance): ZT and
