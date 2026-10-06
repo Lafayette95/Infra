@@ -1,5 +1,5 @@
 """Long-running process that runs the daily cycle on its schedule via Prefect
-(Tue-Sat 10:00 UTC, for the prior trading day - infra.cycle.flows.SCHEDULE_CRON). Needs a Prefect API to register
+(Tue-Sat 10:45 New York, for the prior trading day - infra.cycle.flows.SCHEDULE_CRON). Needs a Prefect API to register
 with: start one with `prefect server start` (UI at http://127.0.0.1:4200), then:
 
     PY=/opt/homebrew/Caskroom/miniconda/base/envs/infra-env/bin/python

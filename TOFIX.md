@@ -571,16 +571,6 @@ day's vintage would have been lost.
 
 ---
 
-## Treasury: prices reach the daily cycle a day late
-
-**Found:** 2026-10-02, the first scheduled run with Treasury prices (CLAUDE.md 12, 18).
-**Where:** `infra.cycle.px_treasuries`; schedule `infra.cycle.flows.SCHEDULE_CRON` (06:00 New York).
-**Status:** open, acceptable for now.
-
-**The issue:** FedInvest posts day D's END OF DAY between 06:00 and ~10:00 New York on D+1 (absent at 06:00, posted by 09:57 on 2026-10-02), so the 06:00 run leaves D pending and stores it a run later - Treasury prices lag the futures settlements by a day. Nothing consumes them same-day yet. **Options:** (a) leave it; (b) a small extra Treasury-only fetch around 11:00 New York (a separate schedule calling `backfill_daily_treasury_px`); (c) pin the posting time down over a few days first.
-
----
-
 ## Treasury: OTR yields run ~1-1.5bp below CMT in 2008-2015
 
 **Found:** 2026-10-02, backfilling Treasury prices to 2008 (CLAUDE.md 18).

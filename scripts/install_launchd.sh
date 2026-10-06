@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Install (or reinstall) the daily cycle's launchd agents for the current user:
 #   com.infra.prefect-server  - Prefect API/UI + run history (http://127.0.0.1:4200)
-#   com.infra.daily-cycle     - serves the Tue-Sat 06:00 New York schedule
+#   com.infra.daily-cycle     - serves the Tue-Sat 10:45 New York schedule
 #   com.infra.daily-cycle-watchdog - hourly missed-run alert (macOS notification)
-#   com.infra.daily-cycle-keepawake - 10 min awake after the 05:55 wake, bridging to the run
+#   com.infra.daily-cycle-keepawake - 10 min awake after the 10:40 wake, bridging to the run
 # Templates live in deploy/launchd/. Logs: ~/Library/Logs/infra/.
 #   scripts/install_launchd.sh            # install / reload
 #   scripts/install_launchd.sh uninstall  # stop and remove

@@ -61,5 +61,6 @@ def test_a_step_that_raises_inside_a_task_becomes_an_error_outcome(tmp_path):
 
 
 def test_schedule_runs_tuesday_to_saturday_mornings_for_the_prior_trading_day():
-    # 06:00 New York, local like the Mac's scheduled wake - so they never drift apart at DST
-    assert (SCHEDULE_CRON, SCHEDULE_TZ) == ("0 6 * * 2-6", "America/New_York")
+    # 10:45 New York (after FedInvest posts T-1), local like the Mac's scheduled wake - so
+    # they never drift apart at DST
+    assert (SCHEDULE_CRON, SCHEDULE_TZ) == ("45 10 * * 2-6", "America/New_York")

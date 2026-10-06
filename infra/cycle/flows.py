@@ -19,16 +19,20 @@ from infra.cycle.core import StepContext, StepOutcome
 from infra.cycle.network import wait_for_network
 from infra.cycle.runner import execute_step, run_daily_cycle, run_scheduled_daily
 
-# Tue-Sat 06:00 New York time (10:00 UTC in EDT, 11:00 UTC in EST), processing through
-# the previous trading day. Databento's queryable end runs BEHIND now (verified
+# Tue-Sat 10:45 New York time (14:45 UTC in EDT, 15:45 UTC in EST), processing through
+# the previous trading day. 10:45, not 06:00 (moved 2026-10-06, user): FedInvest posts day
+# T-1's END OF DAY prices between 06:00 and ~10:00 New York (observed: absent at 06:00,
+# posted by 09:57), so the 06:00 run always missed them and everything on FedInvest (the
+# Treasury curve, on-the-run yields, swap spreads' ASW, bond-futures DV01) trailed a day;
+# a day not posted yet is still asked again next run. Databento's queryable end runs BEHIND now (verified
 # 2026-09-28: GLBX exactly 8h, Eurex about a day - see api.available_end), so a
 # same-evening run could never see that day's settlement; by 10:00 UTC, GLBX has fully
 # published T-1. Eurex's longer lag means it's judged a day older - the presence check
 # handles that per dataset, and the T-3 re-fetch window picks each day up once it's
 # published. LOCAL time on purpose (changed from 10:00 UTC 2026-09-30): the Mac's
-# scheduled wake (`pmset repeat`, 05:55) is local time, so a UTC schedule would drift an
+# scheduled wake (`pmset repeat`, 10:40) is local time, so a UTC schedule would drift an
 # hour against it at every DST change - from November the run would come BEFORE the wake.
-SCHEDULE_CRON = "0 6 * * 2-6"
+SCHEDULE_CRON = "45 10 * * 2-6"
 SCHEDULE_TZ = "America/New_York"
 
 

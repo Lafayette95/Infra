@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Keeps the Mac awake for 10 minutes after its scheduled 05:55 wake (pmset repeat
-     wakeorpoweron TWRFS 05:55:00), bridging to the 06:00 New York daily-cycle run; the
+<!-- Keeps the Mac awake for 10 minutes after its scheduled 10:40 wake (pmset repeat
+     wakeorpoweron TWRFS 10:40:00), bridging to the 10:45 New York daily-cycle run; the
      run then holds the Mac awake itself (caffeinate -i in infra.cycle.flows). Found
      2026-10-01: with system sleep at 1 minute the Mac fell back asleep 100s after the
      wake and the run started 16 minutes late, on macOS's next maintenance wake. A
-     calendar job due while asleep fires on the next wake - i.e. the 05:55 one.
+     calendar job due while asleep fires on the next wake - i.e. the 10:40 one. (05:55 / 06:00 until 2026-10-06.)
      Weekday 2..6 = Tue..Sat (the run's days). Template: scripts/install_launchd.sh. -->
 <plist version="1.0">
 <dict>
@@ -19,11 +19,11 @@
   </array>
   <key>StartCalendarInterval</key>
   <array>
-    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>55</integer></dict>
-    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>55</integer></dict>
-    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>55</integer></dict>
-    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>55</integer></dict>
-    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>55</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>40</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>40</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>40</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>40</integer></dict>
+    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>40</integer></dict>
   </array>
   <key>StandardOutPath</key><string>__LOG_DIR__/keepawake.log</string>
   <key>StandardErrorPath</key><string>__LOG_DIR__/keepawake.log</string>
