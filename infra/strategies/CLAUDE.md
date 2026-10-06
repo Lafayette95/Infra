@@ -179,6 +179,30 @@ headings "Strategies: ...". Built 2026-10-05.
     (~1,100 TY vs -1,500 UXY on one micro view). Its checks caught a ZB position on ZBU1's
     first-notice day (2021-08-31): `ZB.v.0` rolled late that cycle.
 
+## 5b. Planned: RV signals bias the macro trades' instrument selection (user intent 2026-10-06)
+*   **Relative-value signals are not traded on their own:** they choose WHICH instruments carry
+    the macro (layer) exposures - which tenor / contract / bond, eventually including cash
+    bonds. A tilt changes how a trade that happens anyway is expressed, so its marginal cost is
+    ~0 at entry and rebalance; moving an existing position only for the tilt costs a round trip
+    and must clear it. Judge a signal by the improvement it gives the macro book's P&L (the fly's
+    gross information), not by a standalone Sharpe net of its own trades.
+*   **Shape (not built):** macro structure positions -> each active fly view as a per-tenor
+    rich / cheap score (belly +1, wings -0.5) summed across signals -> choose the instruments
+    holding the macro exposures to maximise expected tilt gain minus switching cost, with
+    unintended curve / fly exposure capped by a tilt risk budget (with exposures held exactly,
+    six futures leave no freedom) -> accounting unchanged. Generalises the TY <-> UXY routing
+    item in `TOFIX.md`.
+*   **First candidates** (scratch study 2026-10-06; flies on our curve and on-the-run yields,
+    auction windows; walk-forward 2012-2026, gross, yield space): (A) the 7y richens against 5s
+    and 10s around the refunding auctions (3y / 10y / 30y) - Sharpe 0.60-0.77, 12-13 of 15 years
+    positive; (B) the 5y cheapens into the end-of-month 2y/5y/7y week and recovers after -
+    Sharpe 0.52-0.89; A and B uncorrelated, together ~1.0. In futures terms: FV ~ 5y, TY ~ 7y,
+    UXY ~ 10y. Open before relying on them: whether they survive in futures (CTD / basis), the
+    value of the tilt on an actual macro book, and an out-of-sample selection (the two effects
+    were picked from a full-sample scan). CMT is NOT usable for fly / auction studies: it showed
+    7x the significant results of the other sources, consistent with its points switching to new
+    issues at each auction.
+
 ## 6. Running it
 ```python
 from infra.jobs import family_runs, strategy_runs

@@ -1142,6 +1142,9 @@ study) should exclude 2020-03-16..18 for UB until then.
     defined in TY; execution could hold it in whichever is cheaper per bp at the moment (UXY in
     quiet hours, TY at events for depth), a small cost minimisation subject to the structure
     exposures.
+    **Extended 2026-10-06 (user intent):** routing is also where RV signals act - instrument
+    selection biased by rich / cheap signals (the auction-cycle flies first), across futures
+    and eventually cash bonds; see `infra/strategies/CLAUDE.md` 5b.
 *   **CME inter-commodity spread books** (NOB, FYT, TUT...; user: research for later): curve /
     fly costs are legged at outright half-spreads, probably overstated. Storing the spread
     instruments' bbo would let the accounting price a structure trade as one.
