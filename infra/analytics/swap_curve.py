@@ -202,3 +202,42 @@ def fill_missing_tenors(rates: pd.DataFrame, *, max_age_days: int = 14) -> tuple
                     out.loc[day, t] = line(row, t, *p) + seen[1]
                     filled.loc[day, t] = True
     return out, filled
+
+
+# ------------------------------------------------------------- swap spreads and asset swaps
+def bond_basis(rate_pct: float) -> float:
+    """An annual ACT/360 rate (%) re-expressed on the Treasury basis: semi-annual compounding,
+    ACT/365 - so it can be compared like for like with a Treasury yield. The MARKET quotes swap
+    spreads WITHOUT this conversion (plain swap rate minus Treasury yield)."""
+    r365 = rate_pct / 100.0 * 365.0 / 360.0
+    return float(2.0 * (np.sqrt(1.0 + r365) - 1.0) * 100.0)
+
+
+def floating_annuity(curve: OisCurve, trade_day, settle, maturity) -> float:
+    """sum alpha_j DF(t_j) / DF(settle) of an annual ACT/360 SOFR leg from ``settle`` to
+    ``maturity``: annual dates stepped back from maturity, a short first period (no
+    business-day adjustment)."""
+    settle, maturity = pd.Timestamp(settle), pd.Timestamp(maturity)
+    ends, d, k = [], maturity, 0
+    while d > settle:
+        ends.append(d)
+        k += 1
+        d = maturity - pd.DateOffset(years=k)
+    ends = ends[::-1]
+    starts = [settle] + ends[:-1]
+    acc = np.array([(e - s).days / 360.0 for s, e in zip(starts, ends)])
+    dfs = curve.discount(year_fraction(trade_day, ends))
+    return float(acc @ dfs / curve.discount(year_fraction(trade_day, [settle]))[0])
+
+
+def asw_par_par(curve: OisCurve, trade_day, settle, dirty: float, t: np.ndarray, a: np.ndarray, maturity) -> float:
+    """PAR-PAR asset-swap spread (bp) of a bond over the OIS curve: buy the bond for par (100
+    paid, the dirty price ``dirty`` per 100 delivered), pay its coupons on a swap, receive the
+    floating rate + s on 100. Fair s = (PV of the bond's cash flows on the curve - dirty) /
+    (100 x the floating leg's annuity), everything valued at settlement. ``t``: cash-flow
+    times in years from ``settle`` (``infra.analytics.treasury_curve.cash_flows``), ``a`` per
+    100. Positive = the bond yields MORE than the curve (cheap to swaps)."""
+    ts = year_fraction(trade_day, [settle])[0]
+    d_s = curve.discount([ts])[0]
+    pv = float(a @ curve.discount(ts + np.asarray(t, dtype="float64"))) / d_s
+    return (pv - dirty) / (100.0 * floating_annuity(curve, trade_day, settle, maturity)) * 1e4

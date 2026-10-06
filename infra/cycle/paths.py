@@ -38,6 +38,7 @@ class CyclePaths:
     dtcc_dir: Path
     swap_closes_dir: Path
     ois_curves_dir: Path
+    swap_spreads_dir: Path
     cme_tcf_dir: Path
     treasury_securities_dir: Path
     treasury_otr_dir: Path
@@ -82,6 +83,7 @@ class CyclePaths:
             dtcc_dir=config.DTCC_DIR,
             swap_closes_dir=config.SWAP_CLOSES_DIR,
             ois_curves_dir=config.OIS_CURVES_DIR,
+            swap_spreads_dir=config.SWAP_SPREADS_DIR,
             cme_tcf_dir=config.CME_TCF_DIR,
             treasury_securities_dir=config.TREASURY_SECURITIES_DIR,
             treasury_otr_dir=config.TREASURY_OTR_DIR,

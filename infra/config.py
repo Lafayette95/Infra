@@ -89,6 +89,7 @@ WIRP_1S_DIR = DERIVED_ROOT / "WIRP_1s"
 # (snap instant, close, currency, tenor, method).
 SWAP_CLOSES_DIR = DERIVED_ROOT / "SwapCloses"
 OIS_CURVES_DIR = DERIVED_ROOT / "OisCurves"
+SWAP_SPREADS_DIR = DERIVED_ROOT / "SwapSpreads"
 # On-the-run yield benchmark (CLAUDE.md 18): per day and tenor, the END OF DAY yield of the
 # on-the-run CUSIP (issue-date convention, so it always has a price), stored under the SAME
 # tickers as the CMT par curve (US_BOND_10y) - a consumer picks the series by ``source``
@@ -581,6 +582,18 @@ class OisCurveSpec:
 OIS_CURVES: dict[str, OisCurveSpec] = {
     "USD_SOFR": OisCurveSpec("USD", "NY1530"),
 }
+
+# Swap spreads (Derived/SwapSpreads, infra.pipeline.swap_spreads; bmk P&L
+# infra.cycle.bmk_swap_spreads), tickers US_SWSP_<t>y at the CMT tenors, two SOURCES side by
+# side like the yield bmk's: "cmt" = the OIS curve's par swap rate minus the CMT par yield
+# (plain difference, the market's quote convention; the bond-basis conversion is a column);
+# "otr" = minus the on-the-run bond's PAR-PAR asset-swap spread over the OIS curve.
+SWAP_SPREAD_CURVE = "USD_SOFR"
+SWAP_SPREAD_TENORS = (2, 3, 5, 7, 10, 20, 30)
+SWAP_SPREAD_SOURCES = ("cmt", "otr")
+SWAP_SPREAD_OTR_RANKS = (0, 1)  # the 1-old too: the held-bond P&L diffs the previous day's bond across a roll
+SWAP_SPREAD_MAX_GAP_DAYS = 7
+SWAP_SPREAD_AGREE_BP = 3.0  # the two sources' daily moves disagreeing by more than this are listed (warn)
 SWAP_TENOR_TOLERANCE_DAYS = 4
 # Off-market trades: a fixed coupon set by agreement (often round, e.g. 3.50%), with or
 # without a reported upfront fee, can sit 70-170bp from the market (found 2026-10-01 in the

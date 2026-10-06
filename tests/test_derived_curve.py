@@ -94,3 +94,55 @@ def test_ois_curve_metric_registered_after_swap_closes_with_warn_presence():
     assert checks["ois_curve_present"].severity.value == "warn"
     assert checks["swap_closes_present"].severity.value == "warn"
     assert checks["treasury_curve_present"].severity.value == "fail"
+
+
+# ------------------------------------------------------------------------ swap spreads
+def _flat_curve(rate_cc_pct: float):
+    import numpy as np
+    from infra.analytics import swap_curve as sc
+    t = np.array([1.0, 30.0])
+    return sc.OisCurve(t, np.exp(-rate_cc_pct / 100 * t))
+
+
+def test_asw_is_zero_for_a_bond_priced_off_the_curve_and_tracks_a_spread():
+    import numpy as np
+    from infra.analytics import swap_curve as sc
+    from infra.analytics import treasury_curve as tc
+    day, settle, mat = D("2026-10-05"), D("2026-10-06"), D("2036-08-15")
+    t, a = tc.cash_flows(4.625, mat, settle)
+    curve = _flat_curve(4.0)
+    ts = sc.year_fraction(day, [settle])[0]
+    on_curve = float(a @ curve.discount(ts + t)) / curve.discount([ts])[0]
+    assert abs(sc.asw_par_par(curve, day, settle, on_curve, t, a, mat)) < 1e-9
+    # priced 10bp (cc) cheaper than the curve: par-par ASW ~ +10bp (ACT/360 annual leg vs cc zero)
+    cheap = float(a @ (curve.discount(ts + t) * np.exp(-0.001 * t))) / curve.discount([ts])[0]
+    assert 9.0 < sc.asw_par_par(curve, day, settle, cheap, t, a, mat) < 11.0
+
+
+def test_bond_basis_conversion():
+    from infra.analytics import swap_curve as sc
+    # 4% annual ACT/360 -> ACT/365 4.0556% annual -> semi-annual 4.0151%
+    assert abs(sc.bond_basis(4.0) - 2 * ((1 + 0.04 * 365 / 360) ** 0.5 - 1) * 100) < 1e-12
+    assert 1.4 < (sc.bond_basis(4.0) - 4.0) * 100 < 1.6
+
+
+def test_swap_spread_pnl_sign_and_roll():
+    from infra.processing import swap_spreads as ssp
+    days = pd.bdate_range("2026-09-01", periods=3)
+    lv = pd.DataFrame({"timestamp": days, "ticker": "US_SWSP_10y", "spread_bp": [-46.0, -44.5, -45.0]})
+    p = ssp.level_pnl(lv, "swsp_cmt")
+    assert list(p["pnl_per_dv01"]) == [1.5, -0.5]  # long Treasury vs swaps gains when swap - Treasury widens
+    # on-the-run: day 2 rolls to a new bond; day 2's P&L is the OLD bond's move
+    b = pd.DataFrame({"timestamp": [days[0], days[1], days[1], days[2], days[2]], "ticker": "US_SWSP_10y",
+                      "cusip": ["OLD", "OLD", "NEW", "OLD", "NEW"], "rank": [0, 1, 0, 1, 0],
+                      "spread_bp": [-44.0, -43.0, -40.0, -43.5, -41.0]})
+    p = ssp.held_bond_pnl(b, "swsp_otr")
+    assert list(p["pnl_per_dv01"]) == [1.0, -1.0] and list(p["prev_cusip"]) == ["OLD", "NEW"]
+
+
+def test_swap_spreads_registered_last_and_bmk_checks():
+    names = list(derived.DERIVED_METRICS)
+    assert names.index("swap_spreads") > names.index("ois_curve") > names.index("swap_closes")
+    from infra.cycle.bmk import PNL_STEP
+    checks = {c.name for c in PNL_STEP.checks}
+    assert {"swap_spread_pnl_present", "swap_spread_pnl_sane", "swap_spread_sources_agree"} <= checks

@@ -287,9 +287,38 @@ OIS_CURVE = DerivedMetric(
     presence_severity=Severity.WARN,  # too few tenors on a thin day (2025-06-18, 2026-01-02, 2026-07-02)
 )
 
-# order matters: ois_curve reads what swap_closes just wrote
+# ------------------------------------------------------ swap spreads (CMT and on-the-run ASW)
+SWAP_SPREAD_KEYS = ("timestamp", "ticker", "source", "cusip")
+
+
+def compute_swap_spreads(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> tuple[pd.DataFrame, dict]:
+    """Both sources over the OIS curve's recomputed range (a revised curve moves its
+    spreads). Runs AFTER ``ois_curve``; the on-the-run source trails CMT by a day (FedInvest
+    posts END OF DAY ~10:00 New York on D+1) and fills in next run."""
+    from infra.config import SWAP_CORRECTION_DAYS
+    from infra.pipeline.swap_spreads import compute_swap_spreads as compute
+    lo = start - pd.Timedelta(days=SWAP_CORRECTION_DAYS)
+    df, diag = compute(lo, end, ois_root=paths.ois_curves_dir, bonds_root=paths.daily_bonds_dir,
+                       otr_root=paths.treasury_otr_dir, securities_root=paths.treasury_securities_dir,
+                       prices_root=paths.treasury_prices_dir)
+    return df, {**diag, "range": (lo, end)}
+
+
+def _replace_swap_spreads(store, df: pd.DataFrame, diag: dict, start, end) -> None:
+    from infra.pipeline.swap_spreads import store_swap_spreads
+    lo, hi = diag.get("range", (start, end))
+    store_swap_spreads(df, lo, hi, root=store)
+
+
+SWAP_SPREADS = DerivedMetric(
+    "swap_spreads", lambda p: p.swap_spreads_dir, SWAP_SPREAD_KEYS, compute_swap_spreads,
+    replace=_replace_swap_spreads, presence_severity=Severity.WARN,
+)
+
+# order matters: ois_curve reads what swap_closes just wrote, swap_spreads what ois_curve wrote
 DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE,
-                                             "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE}
+                                             "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE,
+                                             "swap_spreads": SWAP_SPREADS}
 
 
 # ------------------------------------------------------------------------------ step

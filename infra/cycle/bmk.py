@@ -265,7 +265,7 @@ def _check_pnl_consistent(ctx: StepContext):
     or a unit slip the moment it happens."""
     df = _read(ctx, _pnl_dir)
     if "bmk" in df:
-        df = df[df["bmk"].astype(str) == "futures_price"]      # yield rows (bmk_yields) have no point value
+        df = df[df["bmk"].astype(str) == "futures_price"]      # yield / swap-spread rows have no point value
     if df.empty:
         return True, "no pnl rows in window", None
     pv = df["root"].map(lambda r: FUTURES_ROOTS[r].point_value).astype("float64")
@@ -292,7 +292,14 @@ def _run_pnl(ctx: StepContext) -> dict:
                              risk=ctx.options.get("risk", "DV01"),
                              **{k: ctx.options[k] for k in ("specs",) if k in ctx.options})
     out["yields"] = backfill_daily_yield_pnl(ctx.start, ctx.end, paths=ctx.paths)
+    from infra.cycle.bmk_swap_spreads import backfill_daily_swap_spread_pnl
+    out["swap_spreads"] = backfill_daily_swap_spread_pnl(ctx.start, ctx.end, paths=ctx.paths)
     return out
+
+
+def _swsp_check(name: str, ctx: StepContext):
+    from infra.cycle import bmk_swap_spreads
+    return getattr(bmk_swap_spreads, name)(ctx)
 
 
 RISK_STEP = Step("bmk_risk", _run_risk, depends_on=("px",), checks=(
@@ -309,4 +316,7 @@ PNL_STEP = Step("bmk_pnl", _run_pnl, depends_on=("px", "bmk_risk"), checks=(
     Check("yield_pnl_present", lambda ctx: _yields_check("check_yield_present", ctx), severity=Severity.WARN),
     Check("yield_pnl_sane", lambda ctx: _yields_check("check_yield_sane", ctx), severity=Severity.WARN),
     Check("yield_sources_agree", lambda ctx: _yields_check("check_yield_sources_agree", ctx), severity=Severity.WARN),
+    Check("swap_spread_pnl_present", lambda ctx: _swsp_check("check_present", ctx), severity=Severity.WARN),
+    Check("swap_spread_pnl_sane", lambda ctx: _swsp_check("check_sane", ctx), severity=Severity.WARN),
+    Check("swap_spread_sources_agree", lambda ctx: _swsp_check("check_sources_agree", ctx), severity=Severity.WARN),
 ))
