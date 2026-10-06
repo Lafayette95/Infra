@@ -373,8 +373,11 @@ def compute_swaption_prints(start, end, paths: CyclePaths):
     from infra.pipeline import swaptions as sp
     spec = _swaption_spec()
     lo = start - pd.Timedelta(days=spec.correction_days)
+    from infra.cycle.intraday import _ipaths
+    hedge = {"daily_root": paths.daily_futures_dir, "bonds_root": paths.daily_bonds_dir,
+             "bbo_root": _ipaths(paths).bbo_dir, "contracts_file": paths.contracts_file}
     df, diag = sp.compute_prints(lo, end, spec=spec, records_root=paths.swaption_records_dir,
-                                 ois_root=paths.ois_curves_dir)
+                                 ois_root=paths.ois_curves_dir, hedge_paths=hedge)
     return df, {**diag, "range": (lo, end)}
 
 
@@ -389,7 +392,8 @@ def compute_swaption_vols(start, end, paths: CyclePaths):
     spec = _swaption_spec()
     lo = start - pd.Timedelta(days=spec.correction_days)
     pr = sp.read_prints(lo, end + pd.Timedelta(days=1), root=paths.swaption_prints_dir)
-    df = sp.atm_surface(pr, spec)
+    hist = sp.read_vols(lo - pd.Timedelta(days=400), lo, root=paths.swaption_vols_dir)  # a thin point's last 10 values can span months
+    df = sp.atm_surface(pr, spec, history=hist)
     days = sorted(set(pd.to_datetime(pr["timestamp"]).dt.normalize())) if len(pr) else []
     return df, {"days": days, "empty_days": {}, "range": (lo, end)}
 

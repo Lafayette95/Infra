@@ -73,3 +73,51 @@ def test_normal_vol_roundtrip_gamma_symmetry_and_forward():
     curve = sc.OisCurve(t, np.exp(-0.04 * t))
     f, a = sw.forward_annuity(curve, D("2026-01-05"), D("2027-01-07"), D("2037-01-07"))
     assert f == pytest.approx((np.exp(0.04) - 1) * 360 / 365.25, abs=2e-4) and 7 < a < 9
+
+
+def test_hedge_tenor_maps_a_tail_to_the_nearest_hedged_swap():
+    from infra.pipeline.swaptions import hedge_tenor
+    assert [hedge_tenor(x) for x in (1.0, 2.2, 4.0, 9.6, 12.0, 25.0, 30.0)] == [1, 2, 5, 10, 10, 30, 30]
+
+
+def test_forward_moved_to_the_print_time(monkeypatch):
+    """F(print) = F(snap) - the hedge-implied rate move from the print to the snap; the
+    moneyness, the OTM side and the vol follow the moved forward."""
+    from infra.config import SWAPTIONS
+    from infra.pipeline import swap_hedge, swaptions as sp
+    day = D("2026-09-15")
+    t = np.array([1.0, 40.0])
+    curve = sc.OisCurve(t, np.exp(-0.04 * t))
+    ex = pd.DataFrame([{"trade_id": "S1", "executed": D("2026-09-15 14:00"), "expiry": D("2026-12-15"),
+                        "maturity": D("2036-12-17"), "strike": 4.10, "notional": 100e6, "capped": False,
+                        "premium": 1.5e6, "label": "Call", "package": False, "platform": "BILT"}])
+    monkeypatch.setattr(swap_hedge, "futures_moves", lambda tr, inst, ccy, d, book: pd.Series(8.0, index=tr.index))
+    adj = sp.price_prints(ex, {day: curve}, SWAPTIONS["USD_SOFR"], book=object())
+    raw = sp.price_prints(ex, {day: curve}, SWAPTIONS["USD_SOFR"], book=None)
+    assert bool(adj["forward_adjusted"].iloc[0]) and not bool(raw["forward_adjusted"].iloc[0])
+    assert adj["forward"].iloc[0] == pytest.approx(raw["forward"].iloc[0] - 0.08)  # 8bp lower at the print
+    assert adj["moneyness_bp"].iloc[0] == pytest.approx(raw["moneyness_bp"].iloc[0] + 8.0)
+
+
+def _print(ts, vol, label="Call", strike=4.0, notional=100e6):
+    return {"timestamp": D(ts), "trade_id": f"S{ts}{label}{vol}", "expiry_date": D("2026-12-15"), "maturity": D("2036-12-17"),
+            "t_years": 0.08, "tenor_years": 10.0, "strike": strike, "forward": 4.0, "moneyness_bp": 0.0, "vol_bp": vol,
+            "notional": notional, "premium": 1e6, "label": label, "minutes_from_snap": 10.0, "forward_adjusted": True,
+            "straddle_pair": False}
+
+
+def test_surface_leaves_straddle_pairs_out_and_flags_a_suspect_point():
+    from infra.config import SWAPTIONS
+    from infra.pipeline import swaptions as sp
+    rows = []
+    for k, day in enumerate(pd.bdate_range("2026-09-01", periods=6)):
+        rows += [_print(f"{day.date()} 14:00", 80.0 + k * 0.1), _print(f"{day.date()} 15:00", 80.2 + k * 0.1)]
+    last = pd.bdate_range("2026-09-01", periods=7)[-1]
+    rows += [_print(f"{last.date()} 14:00", 160.0), _print(f"{last.date()} 15:00", 161.0)]  # a jump: suspect
+    pair = [_print("2026-09-03 14:30", 170.0, "Call", 4.1), _print("2026-09-03 14:30", 170.0, "Put", 4.1)]
+    for p in pair:
+        p["straddle_pair"] = True
+    v = sp.atm_surface(pd.DataFrame(rows + pair), SWAPTIONS["USD_SOFR"])
+    v = v[(v["expiry"] == "1m") & (v["tenor"] == 10)].set_index("timestamp")
+    assert v.loc[D("2026-09-03"), "vol_bp"] < 81  # the straddle pair's doubled vol is not in the median
+    assert bool(v.loc[last, "suspect"]) and not v["suspect"].iloc[:-1].any()

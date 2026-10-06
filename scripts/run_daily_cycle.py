@@ -92,6 +92,12 @@ def dry_run(start, end, force_refetch: bool) -> int:
     for kind, days in plan_daily_dtcc(start, end).items():
         if days:
             print(f"dtcc        {kind:22s} {len(days)} day(s) not archived, {days[0].date()} -> {days[-1].date()}  free")
+    from infra.cycle.intraday import backfill_hedge_bbo
+    hedge = backfill_hedge_bbo(start, end, dry_run=True, client=client)
+    for ticker, gaps in hedge["planned"].items():
+        print(f"hedge bbo   {ticker:22s} {len(gaps)} gap(s), {gaps[0][0][:10]} -> {gaps[-1][1][:10]}")
+    total += hedge["estimated_cost_usd"] or 0.0
+    print(f"hedge bbo   estimated ${hedge['estimated_cost_usd'] or 0.0:.4f}")
     print(f"{len(plan)} contracts to fetch; estimated total ${total:.4f}")
     return 0
 

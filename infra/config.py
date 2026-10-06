@@ -638,6 +638,19 @@ class SwaptionSpec:
                                ("2y", 1.75, 2.25))
     surface_tenors: tuple = (2, 5, 10, 30)
     surface_max_expiry_years: float = 2.25
+    # each print's forward moved from the curve's snap to its trade time by the hedge
+    # futures' quote move (infra.pipeline.swap_hedge, as the adjusted swap closes do);
+    # a print without a quote keeps the snap forward, flagged ``forward_adjusted = False``
+    adjust_forward: bool = True
+    # surface quality (found 2026-10-06): identical-term Call+Put pairs (straddles) are left
+    # out - in about half of them each leg reports the WHOLE straddle premium, which reads as
+    # ~2x the vol (pair vol / same-day singles: median 1.05, 75th pct 1.95); a point needs
+    # ``surface_min_prints`` prints and is flagged ``suspect`` when more than
+    # ``suspect_bp`` from the median of its previous ``suspect_window`` values (point in
+    # time). Clean 1m x 10y: 343 days, daily change median 3.9bp, p90 13bp (was 75bp).
+    surface_min_prints: int = 2
+    suspect_bp: float = 30.0
+    suspect_window: int = 10
 
 
 SWAPTIONS: dict[str, SwaptionSpec] = {

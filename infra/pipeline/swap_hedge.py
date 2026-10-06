@@ -55,25 +55,43 @@ class HedgeBook:
         return float(r.iloc[-1]) if len(r) else np.nan
 
 
+def hedge_roots(currencies=None) -> list[str]:
+    return sorted({r for ccy in (currencies or SWAP_HEDGES) for r in SWAP_HEDGES.get(ccy, {}).values()})
+
+
+def hedge_contracts(start, end, *, roots=None, daily_root: Path = DAILY_FUTURES_DIR,
+                    contracts_file: Path = FUTURES_CONTRACTS_FILE) -> dict[str, pd.Series]:
+    """Per hedge root, the contract hedged with each day of ``[start, end]`` - its
+    ``.v.0`` (CLAUDE.md 5), the one the book reads quotes for. Shared by the book and by
+    the cycle's quote fetch (``infra.cycle.intraday``), so the two never disagree."""
+    start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize() + _ONE_DAY
+    out = {}
+    for root in roots or hedge_roots():
+        contracts = contract_store.read_contracts(contracts_file, root)
+        if contracts.empty:
+            continue
+        m = volume_ranked_mapping([RelativeSpec(root, "v", 0)], FUTURES_ROOTS[root], contracts, start, end,
+                                  fetch_missing=False, daily_root=daily_root)
+        out[root] = m[0].dropna()
+    return out
+
+
 def build_hedge_book(start, end, *, currencies=None, daily_root: Path = DAILY_FUTURES_DIR,
                      bonds_root: Path = DAILY_BONDS_DIR, bbo_root: Path = BBO_FUTURES_DIR,
                      contracts_file: Path = FUTURES_CONTRACTS_FILE) -> HedgeBook:
     """Everything the adjustment needs over ``[start, end]`` for every hedge root of
     ``currencies`` (default: all in SWAP_HEDGES). No network."""
     start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize() + _ONE_DAY
-    roots = sorted({r for ccy in (currencies or SWAP_HEDGES) for r in SWAP_HEDGES.get(ccy, {}).values()})
+    roots = hedge_roots(currencies)
     book = HedgeBook(bbo_root=bbo_root)
     history = start - _RATIO_HISTORY
     yields = read_bonds_from_disk(sorted({SWAP_HEDGE_CMT[r] for r in roots}), history, end, root=bonds_root)
     yields = yields.pivot(index="timestamp", columns="ticker", values="par_yield") if len(yields) else pd.DataFrame()
+    mapped = hedge_contracts(history, end - _ONE_DAY, roots=roots, daily_root=daily_root, contracts_file=contracts_file)
     for root in roots:
-        cfg = FUTURES_ROOTS[root]
-        contracts = contract_store.read_contracts(contracts_file, root)
-        if contracts.empty:
+        if root not in mapped:
             continue
-        m = volume_ranked_mapping([RelativeSpec(root, "v", 0)], cfg, contracts, history, end, fetch_missing=False,
-                                  daily_root=daily_root)
-        contract = m[0].dropna()
+        contract = mapped[root]
         book.contract[root] = contract
         cmt = SWAP_HEDGE_CMT[root]
         st = read_daily_from_disk(sorted(set(contract)), history, end, root=daily_root)

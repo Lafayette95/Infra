@@ -95,10 +95,20 @@ def read_records(start=None, end=None, *, root: Path = SWAPTION_RECORDS_DIR) -> 
 
 
 # -------------------------------------------------------------------------- prints
-def price_prints(execs: pd.DataFrame, curves: dict, spec: SwaptionSpec) -> pd.DataFrame:
+def hedge_tenor(tenor_years: float, hedged=None) -> int:
+    """The hedged swap tenor (a ``SWAP_HEDGES`` key) nearest a swaption's tail."""
+    from infra.config import SWAP_HEDGES
+    keys = sorted(hedged or SWAP_HEDGES["USD"])
+    return min(keys, key=lambda k: (abs(k - tenor_years), -k))
+
+
+def price_prints(execs: pd.DataFrame, curves: dict, spec: SwaptionSpec, book=None) -> pd.DataFrame:
     """Executed trades -> prints with forward, annuity, moneyness and the OTM vol. A trade
     is priced on the OIS curve of its (UTC) execution day; trades without one, without a
-    premium, package legs, garbage notionals and very short options / tails are skipped."""
+    premium, package legs, garbage notionals and very short options / tails are skipped.
+    With a hedge ``book`` (``infra.pipeline.swap_hedge.build_hedge_book``) each forward is
+    moved from the curve's snap to the trade time: F(print) = F(snap) - the hedge-implied
+    rate move between the two (``futures_moves``, bp)."""
     snap = OIS_CURVES[spec.curve].close
     e = execs[(~execs["package"]) & (execs["premium"] > 0) & (execs["notional"] > 0)
               & (execs["notional"] <= spec.max_notional) & execs["strike"].between(0.01, 25.0)
@@ -115,17 +125,35 @@ def price_prints(execs: pd.DataFrame, curves: dict, spec: SwaptionSpec) -> pd.Da
             continue
         f, a = sw.forward_annuity(c, day, start, r.maturity)
         t = (pd.Timestamp(r.expiry) - pd.Timestamp(r.executed)).total_seconds() / (365.25 * 86400)
-        k = r.strike / 100.0
-        payer = k >= f  # the out-of-the-money reading (the label doesn't say)
-        vol = sw.implied_normal_vol(r.premium / r.notional / a, f, k, t, payer)
         snap_at = snap_instants([day], SWAP_CLOSES[snap].local_time, SWAP_CLOSES[snap].timezone)[0]
         rows.append({"timestamp": r.executed, "trade_id": r.trade_id, "expiry_date": r.expiry, "maturity": r.maturity,
-                     "t_years": t, "tenor_years": tenor, "strike": r.strike, "forward": f * 100.0,
-                     "moneyness_bp": (k - f) * 1e4, "annuity": a, "otm_side": "payer" if payer else "receiver",
-                     "vol_bp": vol, "notional": r.notional, "capped": bool(r.capped), "premium": r.premium,
-                     "label": r.label, "platform": r.platform,
+                     "t_years": t, "tenor_years": tenor, "strike": r.strike, "forward_snap": f * 100.0,
+                     "annuity": a, "notional": r.notional, "capped": bool(r.capped), "premium": r.premium,
+                     "label": r.label, "platform": r.platform, "_day": day, "_snap": snap_at,
                      "minutes_from_snap": abs((pd.Timestamp(r.executed) - snap_at).total_seconds()) / 60.0})
     out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out["forward_move_bp"] = np.nan
+    if book is not None and spec.adjust_forward:
+        from infra.pipeline.swap_hedge import futures_moves
+        for day, g in out.groupby("_day"):
+            tr = pd.DataFrame({"executed": pd.to_datetime(g["timestamp"]),
+                               "tenor": g["tenor_years"].map(hedge_tenor)}, index=g.index)
+            out.loc[g.index, "forward_move_bp"] = futures_moves(tr, g["_snap"].iloc[0], spec.curve.split("_")[0], day,
+                                                                book).to_numpy()
+    out["forward_adjusted"] = out["forward_move_bp"].notna()
+    out["forward"] = out["forward_snap"] - out["forward_move_bp"].fillna(0.0) / 100.0  # percent
+    f, k = out["forward"] / 100.0, out["strike"] / 100.0
+    out["moneyness_bp"] = (k - f) * 1e4
+    payer = k >= f  # the out-of-the-money reading (the label doesn't say)
+    out["otm_side"] = np.where(payer, "payer", "receiver")
+    out["vol_bp"] = [sw.implied_normal_vol(p / n / a, ff, kk, t, bool(pp)) for p, n, a, ff, kk, t, pp in
+                     zip(out["premium"], out["notional"], out["annuity"], f, k, out["t_years"], payer)]
+    out = out.drop(columns=["_day", "_snap"])
+    key = ["timestamp", "strike", "notional", "expiry_date", "maturity"]
+    g = out.groupby(key, dropna=False)
+    out["straddle_pair"] = (g["label"].transform("size") >= 2) & (g["label"].transform("nunique") == 2)
     if len(out):
         for col in ("timestamp", "expiry_date", "maturity"):
             out[col] = pd.to_datetime(out[col]).astype("datetime64[ms]")
@@ -142,9 +170,11 @@ def _curves(start, end, curve: str, ois_root: Path) -> dict:
 
 
 def compute_prints(start, end, *, spec: SwaptionSpec = SWAPTIONS["USD_SOFR"], records_root: Path = SWAPTION_RECORDS_DIR,
-                   ois_root: Path = OIS_CURVES_DIR) -> tuple[pd.DataFrame, dict]:
+                   ois_root: Path = OIS_CURVES_DIR, hedge_paths: dict | None = None) -> tuple[pd.DataFrame, dict]:
     """Prints executed on days ``[start, end]``, with corrections disseminated up to
-    ``correction_days`` later (as far as the archive goes)."""
+    ``correction_days`` later (as far as the archive goes). ``hedge_paths``: the hedge
+    book's roots (``build_hedge_book`` keywords; default config) - the forward adjustment
+    reads stored settlements, CMT yields and bbo-1m quotes only."""
     start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
     rec = read_records(start - pd.Timedelta(days=spec.fresh_days + 1),
                        end + pd.Timedelta(days=spec.correction_days + 1), root=records_root)
@@ -153,7 +183,11 @@ def compute_prints(start, end, *, spec: SwaptionSpec = SWAPTIONS["USD_SOFR"], re
     ex = ds.executions(rec, as_of=end + pd.Timedelta(days=spec.correction_days), fresh_days=spec.fresh_days)
     ex = ex[ex["executed"].dt.normalize().between(start, end)]
     curves = _curves(start, end, spec.curve, ois_root)
-    pr = price_prints(ex, curves, spec)
+    book = None
+    if spec.adjust_forward:
+        from infra.pipeline.swap_hedge import build_hedge_book
+        book = build_hedge_book(start, end, currencies=[spec.curve.split("_")[0]], **(hedge_paths or {}))
+    pr = price_prints(ex, curves, spec, book=book)
     traded = sorted(set(ex["executed"].dt.normalize()))
     with_curve = [d for d in traded if d in curves]
     got = set(pd.to_datetime(pr["timestamp"]).dt.normalize()) if len(pr) else set()
@@ -179,12 +213,19 @@ def read_prints(start=None, end=None, *, root: Path = SWAPTION_PRINTS_DIR) -> pd
 
 
 # ------------------------------------------------------------------------- surface
-def atm_surface(prints: pd.DataFrame, spec: SwaptionSpec = SWAPTIONS["USD_SOFR"]) -> pd.DataFrame:
+def atm_surface(prints: pd.DataFrame, spec: SwaptionSpec = SWAPTIONS["USD_SOFR"],
+                history: pd.DataFrame | None = None) -> pd.DataFrame:
     """Per day and standard point: the median OTM vol of prints within ``atm_band_bp`` of
-    the forward, with their count, interquartile range and median distance to the snap."""
+    the forward (straddle pairs left out), with their count, interquartile range and
+    median distance to the snap; points with fewer than ``surface_min_prints`` are
+    dropped, and ``suspect`` flags a value more than ``suspect_bp`` from the median of the
+    point's previous ``suspect_window`` values (``history``: stored rows before these
+    days, so a window recomputed in the cycle flags exactly as a full build)."""
     if prints.empty:
         return pd.DataFrame(columns=VOL_KEYS)
     p = prints.dropna(subset=["vol_bp"])
+    if "straddle_pair" in p:
+        p = p[~p["straddle_pair"].astype(bool)]
     p = p[p["moneyness_bp"].abs() <= spec.atm_band_bp].assign(day=pd.to_datetime(p["timestamp"]).dt.normalize())
     p = p.assign(tenor=p["tenor_years"].round().astype(int))
     rows = []
@@ -197,13 +238,29 @@ def atm_surface(prints: pd.DataFrame, spec: SwaptionSpec = SWAPTIONS["USD_SOFR"]
             rows.append({"timestamp": day, "expiry": name, "tenor": int(tenor), "vol_bp": float(v.median()),
                          "n_prints": int(len(v)), "iqr_bp": float(v.quantile(.75) - v.quantile(.25)),
                          "notional": float(g["notional"].sum()),
-                         "median_minutes_from_snap": float(g["minutes_from_snap"].median())})
+                         "median_minutes_from_snap": float(g["minutes_from_snap"].median()),
+                         "adjusted_share": float(g["forward_adjusted"].mean()) if "forward_adjusted" in g else 0.0})
     out = pd.DataFrame(rows)
-    if len(out):
-        out["timestamp"] = out["timestamp"].astype("datetime64[ms]")
-        out["tenor"] = out["tenor"].astype("int16")
-        out["n_prints"] = out["n_prints"].astype("int32")
-    return out
+    if out.empty:
+        return out
+    out = out[out["n_prints"] >= spec.surface_min_prints]
+    out["timestamp"] = out["timestamp"].astype("datetime64[ms]")
+    out["tenor"] = out["tenor"].astype("int16")
+    out["n_prints"] = out["n_prints"].astype("int32")
+    prior = history[["timestamp", "expiry", "tenor", "vol_bp"]] if history is not None and len(history) else None
+    flags = []
+    for (e, t), g in out.groupby(["expiry", "tenor"]):
+        h = g[["timestamp", "vol_bp"]]
+        if prior is not None:
+            h = pd.concat([prior[(prior["expiry"] == e) & (prior["tenor"] == t)][["timestamp", "vol_bp"]], h])
+        h = h.drop_duplicates("timestamp", keep="last").sort_values("timestamp").set_index("timestamp")["vol_bp"]
+        med = h.rolling(spec.suspect_window, min_periods=3).median().shift(1)
+        dev = (h - med).abs()
+        flags.append(pd.Series((dev > spec.suspect_bp).to_numpy(), index=pd.MultiIndex.from_arrays(
+            [h.index, [e] * len(h), [t] * len(h)])))
+    f = pd.concat(flags) if flags else pd.Series(dtype=bool)
+    out["suspect"] = [bool(f.get((ts, e, t), False)) for ts, e, t in zip(out["timestamp"], out["expiry"], out["tenor"])]
+    return out.reset_index(drop=True)
 
 
 def store_days(df: pd.DataFrame, start, end, *, root: Path, keys) -> int:
@@ -214,12 +271,15 @@ def store_days(df: pd.DataFrame, start, end, *, root: Path, keys) -> int:
     return len(df)
 
 
-def read_vols(start=None, end=None, *, root: Path = SWAPTION_VOLS_DIR) -> pd.DataFrame:
+def read_vols(start=None, end=None, *, clean: bool = False, root: Path = SWAPTION_VOLS_DIR) -> pd.DataFrame:
+    """Stored ATM points in ``[start, end)``; ``clean`` drops the ``suspect`` ones."""
     df = parquet_store.read_partitioned(root, start=None if start is None else pd.Timestamp(start),
                                         end=None if end is None else pd.Timestamp(end))
     if df is None or df.empty:
         return pd.DataFrame(columns=VOL_KEYS)
     df["expiry"] = df["expiry"].astype(str)
+    if clean and "suspect" in df:
+        df = df[~df["suspect"].fillna(False).astype(bool)]
     return df.sort_values(VOL_KEYS).reset_index(drop=True)
 
 

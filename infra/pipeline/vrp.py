@@ -80,7 +80,7 @@ def swaption_vrp(start, end, *, spec: VrpSpec = VRP, vols_root: Path = SWAPTION_
     days = sorted(curves)
     if not days:
         return pd.DataFrame()
-    vols = read_vols(start, end + _ONE_DAY, root=vols_root)
+    vols = read_vols(start, end + _ONE_DAY, clean=True, root=vols_root)
     frames = []
     for name, months, tenor in spec.swaption_points:
         iv = vols[(vols["expiry"] == name) & (vols["tenor"] == tenor)].set_index("timestamp")["vol_bp"]

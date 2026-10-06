@@ -529,6 +529,8 @@ day's vintage would have been lost.
 
 ## Derived: OTR yields, swap closes and futures snaps are not in the daily cycle yet
 
+**Update 2026-10-06 (later) - the hedge quotes ARE scheduled:** the daily `intraday` step fetches `bbo-1m` for every `SWAP_HEDGES` root's `.v.0` (root CLAUDE.md 14). That unblocks the futures-ADJUSTED swap closes in `derived` (`swap_closes` metric: `methods=("pure", "adjusted")`, pass the cycle-paths hedge book, replace both methods' rows) and then switching `OIS_CURVES["USD_SOFR"].method` to `adjusted` - not done yet (user's call: it changes the stored OIS curve and spreads). The ZQ intraday px / intraday WIRP and the futures snaps (which also need SR3 / non-front contracts' quotes) remain by hand.
+
 **Update 2026-10-06 - the PURE swap closes are in `derived`** (metric `swap_closes`, user decision: step 1 of the swap-spread plan below), recomputing the last `SWAP_CORRECTION_DAYS` and replacing only pure rows. Still open here: the futures-ADJUSTED closes (hand build, `Derived/SwapCloses` adjusted rows stop at 2026-09-30 - the half this entry warned about, now an explicit known gap, not silent: `swap_closes_present` judges the pure method only), the OTR yields, the futures snaps.
 
 **Found:** 2026-10-02, wiring the Treasury reference data and prices into the cycle (CLAUDE.md 12, 16, 18).
@@ -1237,9 +1239,9 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **Capped notionals** count at their floor (~25% of open notional): open interest is understated in the largest trades.
 *   **15% of open notional has no underlying maturity** (tenor bucket `unknown`).
 *   **Vols beyond ~2y expiry are implausible** (220-260bp normal at 5y-10y): a premium convention (deferred / forward premium? callables reported as swaptions?) not understood; the surface stops at 2.25y.
-*   **Intraday forward mismatch:** every print is priced on the 15:30 OIS curve; short expiries suffer (1m x 5y within-day IQR 21bp vs 1-6bp elsewhere). Fix: move the forward by the futures move between the print and the snap, as the adjusted swap closes do (needs the intraday fetch).
+*   ~~**Intraday forward mismatch**~~ fixed 2026-10-06: each print's forward is moved to its trade time by the hedge futures (root CLAUDE.md 16).
 *   **Linking dipped to 67% in 2026Q2** (81-93% other quarters): not investigated.
-*   **Skew fit tried, not viable yet (2026-10-06):** a pooled fit (5 days, vol on moneyness and moneyness^2 with a level per day) gave a 1m x 10y risk reversal swinging +-60-180bp day to day; keeping only prints >= 15bp from the forward and <= 3h from 15:30 (10-day pool) made it stable (sd 21bp, median ~0) but left 48 days at 1m x 10y and 14 at 3m x 10y. Cause: each print's forward comes from the 15:30 curve, so a print hours away is off by the intraday move - a near-the-money option lands on the wrong side and its in-the-money premium implies a huge vol. **Fix first:** move each print's forward to its trade time by the hedge futures' quote move, as the adjusted swap closes do (`infra.pipeline.swap_hedge`; `bbo-1m` is on disk through 2026-09-30, but daily it needs the intraday fetch scheduled); then refit.
+*   **No skew series - the DTCC flow is too thin (2026-10-06):** a pooled regression (vol on moneyness, moneyness^2, a level per day) blew up even with forwards moved to the trade time (risk reversal swinging hundreds of bp: poorly identified with prints bunched at few strikes); a robust bucket estimator (median vol of receivers 25-75bp OTM minus payers 25-75bp OTM) is stable where it has data, but coverage is thin: 10-day pool, best point 3m x 10y on 192 of 482 days (moving 30bp a day there); 20-day pool, 3m x 10y on 346 days, moving 12bp week to week against a skew of ~1bp. The forward adjustment was necessary, not sufficient. **Realistic source:** listed option chains with real strikes across the smile - ZN / OZN beyond near-the-money (`infra.pipeline.futures_options_iv` selects near-the-money only) or SR3 options daily (two snapshots stored) - a priced Databento fetch.
 
 ---
 
@@ -1258,12 +1260,12 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 (spec `infra/processing/FEATURES.md` 5). **Status:** open.
 
 *   **Inputs not built:** `resid(ID; FACTORS; W)` (residual vs factors, trailing fit - the
-    `infra.analytics.structures.rolling_betas` machinery would serve), `rev(ID)` (macro revisions),
-    `pdiff(ID)` (period change as known then - the event study's `ConditionSpec.period_diff` still
-    does it on its own).
-*   **Migrations not done:** `infra/models/prep.py`'s stateless string steps (diff, ewm_z ...) as
-    aliases of the grammar, and the event study's `ConditionSpec.steps` as a grammar string. Both
-    need parity tests (outputs identical) like B1's.
+    `infra.analytics.structures.rolling_betas` machinery would serve) and `rev(ID)` (macro
+    revisions). (`pdiff:` built 2026-10-06.)
+*   ~~Migrations not done~~ done 2026-10-06: `prep.py`'s stateless steps run through the grammar's
+    literal transforms, the event study's conditions take a grammar `feature` (legacy `steps`
+    kept) - parity tested against copies of the old code. The event study's `period_diff` flag
+    still exists beside the new `pdiff:` input (both give the same series).
 *   **Intraday features** (the 15-minute grid): daily first by the user's decision; the grammar's
     units are observations, so it would work on a grid, but availability and `align` limits need
     an intraday pass.

@@ -655,7 +655,7 @@ def test_carry_is_recognised_but_not_implemented_and_unknown_risk_rejected(stir_
 
 def test_bmk_steps_registered_in_dependency_order():
     names = [s.name for s in DEFAULT_STEPS]
-    assert names == ["ref", "px", "raw", "derived", "bmk_risk", "bmk_pnl", "backup"]
+    assert names == ["ref", "px", "intraday", "raw", "derived", "bmk_risk", "bmk_pnl", "backup"]
 
 
 def test_px_plan_is_free_and_matches_what_backfill_then_fetches(env, monkeypatch):
@@ -806,3 +806,12 @@ def test_only_the_newest_vintages_are_kept_and_each_is_an_independent_copy(tmp_p
     vintage.snapshot(D("2025-01-02"), paths)
     assert vintage.prune(paths, protect="2025-01-02") == []
     assert vintage.list_vintages(paths) == [D("2025-01-02"), D("2025-01-09"), D("2025-01-10")]
+
+
+def test_intraday_step_fetches_nothing_without_hedge_contracts(tmp_path):
+    """The hedge quote fetch plans from the contracts table: an empty database plans
+    nothing (and so never reaches the network)."""
+    from infra.cycle.intraday import backfill_hedge_bbo
+    paths = CyclePaths.under(tmp_path)
+    out = backfill_hedge_bbo("2026-10-01", "2026-10-05", paths=paths)
+    assert out["planned"] == {} and out["rows"] == 0 and out["fetch_errors"] == {}

@@ -1,6 +1,9 @@
-"""The INTRADAY cycle's building blocks (not yet scheduled): intraday px for the ZQ strip
-and the intraday WIRP derived from it. Plain Python, like the daily cycle (CLAUDE.md
-12) - a scheduler will only wrap these.
+"""The INTRADAY building blocks. SCHEDULED (since 2026-10-06): the daily cycle's
+``intraday`` step - ``bbo-1m`` quotes of the bond-futures HEDGE contracts (each
+``SWAP_HEDGES`` root's ``.v.0``), which move swap prints and swaption forwards to a common
+instant (``backfill_hedge_bbo``). Not yet scheduled: intraday px for the ZQ strip and the
+intraday WIRP derived from it. Plain Python, like the daily cycle (CLAUDE.md 12) - a
+scheduler only wraps these.
 
 * ``backfill_intraday_px``: ``bbo-1m`` quotes (what intraday WIRP prices from) and
   ``ohlcv-1m`` trade bars for every contract of the ``INTRADAY_UNIVERSE`` roots
@@ -154,3 +157,109 @@ def check_wirp_intraday(ipaths: IntradayPaths, start, end) -> list[str]:
     if not np.isclose(sums, 1.0, atol=1e-9).all():
         problems.append(f"{(~np.isclose(sums, 1.0, atol=1e-9)).sum()} distribution(s) not summing to 1")
     return problems
+
+
+# ------------------------------------------------- hedge quotes (scheduled, daily cycle)
+HEDGE_GAP_DAYS = 30  # never-fetched hedge days this far back are picked up too (a missed run)
+
+
+def hedge_members(start, end, *, paths: CyclePaths) -> dict[str, tuple[pd.Timestamp, pd.Timestamp, str]]:
+    """``{ticker: (first day, last day, dataset)}`` - every hedge contract over ``[start,
+    end]`` per ``infra.pipeline.swap_hedge.hedge_contracts`` (the book's own choice)."""
+    from infra.config import FUTURES_ROOTS
+    from infra.pipeline.swap_hedge import hedge_contracts
+    out = {}
+    for root, s in hedge_contracts(start, end, daily_root=paths.daily_futures_dir,
+                                   contracts_file=paths.contracts_file).items():
+        s = s[(s.index >= pd.Timestamp(start)) & (s.index <= pd.Timestamp(end))]
+        for ticker, days in s.groupby(s.astype(str)).groups.items():
+            out[ticker] = (min(days), max(days), FUTURES_ROOTS[root].dataset)
+    return out
+
+
+def plan_hedge_bbo(start, end, *, paths: CyclePaths, ipaths: IntradayPaths) -> dict[str, list]:
+    """``{ticker: gaps}`` never queried (Rule 2.1), over each hedge contract's days."""
+    plan = {}
+    for ticker, (first, last, _) in hedge_members(start, end, paths=paths).items():
+        gaps = bbo.plan_bbo_update(ticker, first, last + _ONE_DAY, coverage_file=ipaths.bbo_coverage)
+        if gaps:
+            plan[ticker] = gaps
+    return plan
+
+
+def backfill_hedge_bbo(start, end, *, paths: CyclePaths | None = None, ipaths: IntradayPaths | None = None,
+                       max_cost_usd: float = MAX_COST_USD, client=None, dry_run: bool = False) -> dict:
+    """Fetch (or, ``dry_run``, only price) every never-queried day of every hedge contract
+    over ``[start - HEDGE_GAP_DAYS, end]``. Requests are clamped to Databento's available
+    end by the bbo fetcher; a partial day is never claimed covered."""
+    from infra.api import databento_client as api
+    paths, ipaths = paths or CyclePaths.default(), ipaths or IntradayPaths.default()
+    start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
+    lo = start - pd.Timedelta(days=HEDGE_GAP_DAYS)
+    members = hedge_members(lo, end, paths=paths)
+    plan = plan_hedge_bbo(lo, end, paths=paths, ipaths=ipaths)
+    rows, errors, cost = 0, {}, 0.0
+    for ticker, gaps in sorted(plan.items()):
+        dataset = members[ticker][2]
+        try:
+            if dry_run:
+                client = client or api.get_client()
+                avail = api.available_end(dataset, SCHEMA_BBO_1M, client)
+                for g0, g1 in gaps:
+                    if min(g1, avail) > g0:
+                        cost += api.estimate_cost(dataset, SCHEMA_BBO_1M, [ticker], g0, min(g1, avail), "raw_symbol", client)
+                continue
+            rows += bbo.fetch_and_store_bbo(ticker, gaps, dataset=dataset, root=ipaths.bbo_dir,
+                                            coverage_file=ipaths.bbo_coverage, max_cost_usd=max_cost_usd, client=client)
+        except Exception as exc:
+            errors[ticker] = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"
+            log.warning("hedge bbo fetch failed for %s: %s", ticker, errors[ticker])
+    return {"members": {t: (str(a.date()), str(b.date())) for t, (a, b, _) in members.items()},
+            "planned": {t: [(str(a), str(b)) for a, b in g] for t, g in plan.items()},
+            "rows": rows, "fetch_errors": errors, "estimated_cost_usd": round(cost, 4) if dry_run else None}
+
+
+# --------------------------------------------------------------------- the cycle step
+def _ipaths(paths: CyclePaths) -> IntradayPaths:
+    return IntradayPaths.default() if paths.database_root == config.DATABASE_ROOT else \
+        IntradayPaths.under(paths.database_root)
+
+
+def _run(ctx) -> dict:
+    return backfill_hedge_bbo(ctx.start, ctx.end, paths=ctx.paths, ipaths=_ipaths(ctx.paths),
+                              client=ctx.options.get("client"))
+
+
+def _check_fetch_ok(ctx):
+    errs = ctx.output.get("fetch_errors", {})
+    if not errs:
+        return True, f"{ctx.output.get('rows', 0)} hedge quote rows fetched, no errors", None
+    return False, f"{len(errs)} hedge contract fetch error(s)", pd.DataFrame(
+        {"ticker": list(errs), "error": list(errs.values())})
+
+
+def _check_present(ctx):
+    """Every hedge contract has quotes on each window day it SETTLED (a day without a
+    settlement - a holiday, or not published yet - isn't judged)."""
+    from infra.pipeline.daily import read_daily_from_disk
+    members = hedge_members(ctx.start, ctx.end, paths=ctx.paths)
+    if not members:
+        return True, "no hedge contracts in the window", None
+    ip = _ipaths(ctx.paths)
+    st = read_daily_from_disk(list(members), ctx.start, ctx.end + _ONE_DAY, root=ctx.paths.daily_futures_dir)
+    st = st.dropna(subset=["settlement_price"])
+    q = bbo.read_bbo_from_disk(list(members), ctx.start, ctx.end + _ONE_DAY, root=ip.bbo_dir)
+    have = set(zip(q["ticker"].astype(str), pd.to_datetime(q["timestamp"]).dt.normalize())) if len(q) else set()
+    missing = [(t, d) for t, d in zip(st["ticker"].astype(str), pd.to_datetime(st["timestamp"]))
+               if (t, d) not in have and members[t][0] <= d <= members[t][1]]
+    if not missing:
+        return True, f"quotes on every settled day of {len(members)} hedge contract(s)", None
+    return False, f"{len(missing)} settled hedge contract-day(s) without quotes", pd.DataFrame(missing, columns=["ticker", "day"])
+
+
+from infra.cycle.core import Check, Severity, Step  # noqa: E402
+
+INTRADAY_STEP = Step("intraday", _run, depends_on=("px",), checks=(
+    Check("hedge_bbo_fetch_ok", _check_fetch_ok, Severity.WARN),
+    Check("hedge_bbo_present", _check_present, Severity.WARN),
+))
