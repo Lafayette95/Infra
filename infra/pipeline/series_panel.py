@@ -243,6 +243,13 @@ class SeriesSource:
     examples: tuple[str, ...] = ()
     point_in_time_index: bool = True  # False: indexed by observation period, not by when it was known
     availability: Availability | Callable[[str], Availability] = Availability()
+    kind: str = "level"   # level (yields, settlements, indices) | moves (daily P&L / returns): the feature
+                          # maker differences a level and sums moves (infra.processing.features)
+
+
+def kind_of(series_id: str) -> str:
+    """``level`` or ``moves`` (the source's declared input kind)."""
+    return SERIES_SOURCES[parse_id(series_id)[0]].kind
 
 
 def _bmk(keys, start, end, as_of):
@@ -301,7 +308,8 @@ SERIES_SOURCES: dict[str, SeriesSource] = {
                         availability=Availability("day", 1, "10:00", "America/New_York", calendar="market",
                                                   verified=False,
                                                   note="yield P&L: FedInvest-based (otr, curve) posts D+1 ~10:00 New "
-                                                       "York; CMT is out the same evening - one rule, the late one")),
+                                                       "York; CMT is out the same evening - one rule, the late one"),
+                        kind="moves"),
     "swap": SeriesSource(_swap, "swap close (currency:tenor[:close[:method]]), %",
                          tuple(f"swap:USD:{t}y" for t in (1, 2, 3, 5, 7, 10, 15, 20, 30)), availability=_swap_avail),
     "repo": SeriesSource(_repo, "repo rate, %", ("repo:SOFR", "repo:TGCR", "repo:BGCR"), availability=_repo_avail),

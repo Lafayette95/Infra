@@ -45,6 +45,10 @@ class AutocorrSpec:
     # CELL trades if its own |t| >= cell_t with >= cell_min_obs windows (and, in a family, its q)
     controls: tuple[str, ...] = ("vol", "abs_past")   # what `beats_controls` regresses X's effect beyond
     fallback: str = "flat"                      # gates fail -> flat | benchmark (the unconditional chase/fade rule)
+    fixed_map: tuple[tuple[float, float], ...] | None = None
+                                                # a NO-FIT rule: (X bucket, +1 chase / -1 fade / 0 flat) - the
+                                                # signal map is this, always; fit only reports statistics and no
+                                                # gate applies (a pre-stated hypothesis, like the fixed 5s30s rule)
     # out-of-sample evaluation suite (EVALUATIONS registry) for research runs
     evaluations: tuple[str, ...] = ("benchmark", "clark_west", "spanning", "sharpe_diff", "subperiods",
                                     "permutation", "synthetic_ar1", "time_shift")
@@ -64,6 +68,13 @@ AUTOCORR_MODELS: dict[str, AutocorrSpec] = {s.name: s for s in (
                  thresholds=(("min_obs", 100.0),)),
     AutocorrSpec("cells", "the 3x3 cell model (X bucket x past-move bucket), cells at |t| >= 2", mode="cells",
                  gates=("min_obs",)),
+    AutocorrSpec("fade_high_chase_low", "no fit: fade the target's move when X is in its + tercile, chase it in "
+                 "the - tercile, flat in the middle", fixed_map=((1.0, -1.0), (0.0, 0.0), (-1.0, 1.0)),
+                 gates=(), evaluations=("benchmark", "spanning", "subperiods", "permutation", "synthetic_ar1",
+                                        "time_shift")),
+    AutocorrSpec("chase_high_fade_low", "no fit: the mirror - chase when X is high, fade when low",
+                 fixed_map=((1.0, 1.0), (0.0, 0.0), (-1.0, -1.0)), gates=(),
+                 evaluations=("benchmark", "spanning", "subperiods", "permutation", "synthetic_ar1", "time_shift")),
     AutocorrSpec("cells_loose", "the cell model, cells at |t| >= 1.5", mode="cells", gates=("min_obs",),
                  thresholds=(("min_obs", 150.0), ("cell_min_obs", 30.0), ("cell_t", 1.5))),
 )}

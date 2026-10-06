@@ -143,7 +143,8 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
     `runs.predict_upcoming` / `family_runs.upcoming` give the events already scheduled in the
     next N days with the latest fit (a plan, not stored by the run).
 
-## 5. Conditional studies (`conditions.py`, `ConditionSpec`; built 2026-10-05)
+## 5. Conditional studies
+*   **Partitions and timelines live in the central feature maker** (`infra.processing.features`, root CLAUDE.md 31, since 2026-10-06); `conditions.partition`, `PARTITIONERS` and `state_timeline` re-export them unchanged. (`conditions.py`, `ConditionSpec`; built 2026-10-05)
 *   **The condition is another series** (`ConditionSpec.series`, any `series_panel` id: a price
     we track, a yield, a repo rate, a macro print), one per study for now (user decision).
 *   **Point in time through the GLOBAL availability rules** (`infra.pipeline.series_panel`,

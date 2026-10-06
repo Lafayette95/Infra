@@ -120,6 +120,16 @@ MODEL_RUNS_DIR = DERIVED_ROOT / "ModelRuns"
 # Strategies (infra/strategies, root CLAUDE.md 27): per strategy, its firm signals and positions
 # (relative and absolute tickers) and its plan vintages, written by infra.jobs.strategy_runs.
 STRATEGIES_DIR = DATABASE_ROOT / "Strategies"
+# The feature maker (infra.pipeline.features, root CLAUDE.md 31): how long a series' last value may
+# be carried forward when a feature is aligned onto another timeline (a model's daily index),
+# per series SOURCE (the id's prefix) - beyond it the value is stale and becomes NaN (user decision
+# 2026-10-06: a limit per source type). Daily market data: a long weekend plus a holiday; monthly
+# macro: a release cycle plus slack; quarterly: a quarter plus slack.
+FEATURE_FFILL_LIMITS = {
+    "fut": "5D", "settle": "5D", "stir": "5D", "bond": "5D", "otr": "5D", "bmk": "5D", "swap": "5D",
+    "repo": "5D", "bar": "1h", "release": "100D", "surprise": "100D", "evt": "1D", "model": "5D",
+    "derived": "5D",
+}
 BOND_YIELD_SOURCES = ("cmt", "otr", "curve")   # curve = our fitted spline's par yield (TREASURY_CURVES_DIR)
 # Benchmark yield P&L persisted by the daily cycle's bmk_pnl step (infra/cycle/bmk_yields.py,
 # root CLAUDE.md 12): per ticker and source, the day's PRICE-ACTION P&L in bp of a long

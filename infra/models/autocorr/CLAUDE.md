@@ -20,6 +20,7 @@ prepare -> fit -> predict, the operating model of 0b, named specs). Known gaps: 
     middle bucket absorbs the sign-at-zero noise.
 
 ## 2. The model (`model.py`, `config.py`)
+*   **Features come from the central feature maker** (`infra.processing.features`, root CLAUDE.md 31): `x_feature` takes its grammar (`chg:20|norm:vol:60|abs`) or the legacy names `move:K` / `absmove:K` / `level` / `z:W` (aliases, outputs identical - tested); the past move is `chg:k|norm:vol:<vol_span>`.
 *   **Inputs:** any two series ids (`infra.pipeline.series_panel`), the target as DAILY moves
     (bp, + = a long position made money - e.g. `bmk:curve:US_BOND_10y`, the persisted benchmark
     P&L, or a yield structure `bmk:curve:FLY__US_BOND_5y__US_BOND_7y__US_BOND_10y`), X as daily
@@ -132,6 +133,22 @@ prepare -> fit -> predict, the operating model of 0b, named specs). Known gaps: 
     the ones we did NOT test: other flies or curves, intraday horizons (the lead-lag of a stale belly
     is real at minutes-to-hours), a different X (positioning, vol, risk aversion), or a sample
     ending around 2015 (several curve effects were 3-5x stronger in 2009-2013).
+
+## 4c. No-fit rules (`fixed_map`; the user's prior, 2026-10-06)
+*   **`AutocorrSpec.fixed_map`:** a pre-stated signal per X bucket, no fitting and no gates (the fit
+    only reports statistics) - like the fixed 5s30s auction rule. Specs `fade_high_chase_low` (fade
+    the target's move when X is in its + tercile, chase in the - tercile, flat in the middle) and its
+    mirror `chase_high_fade_low` (exactly the negative P&L).
+*   **Run** (the user's recollection of a known empirical effect, so no false-discovery step): 5-day
+    past / forward, X = its own 5-day move, 8 pairs (4 flies, both roles), on-the-run and curve P&L,
+    2012-2026, 50 placebos each on-the-run.
+*   **Result:** fly given duration leans to the MIRROR (chase the fly after duration RALLIES, fade it
+    after sell-offs): positive on every fly on-the-run, strongest on **5s7s10: Sharpe +0.48 (t 1.8),
+    positive in all four sub-periods, 11 of 15 years, the real duration beating ~98% of placebo X** -
+    but only +0.07 on our curve (source-dependent: on-the-run 5y/7y/10y specifics, or chance in one
+    of 16 tries), and much of it is X's DIRECTION (duration's move alone predicts 5s7s10's direction:
+    Sharpe 0.58; beyond it and the fly's own momentum the rule adds a joint t ~ +0.75). Duration
+    given the fly leans to `fade_high_chase_low` on all 8 (+0.04 .. +0.24), not significant.
 
 ## 6. Running it
 ```python

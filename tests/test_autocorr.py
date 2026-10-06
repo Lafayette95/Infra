@@ -172,3 +172,15 @@ def test_cells_null_is_the_unconditional_mean_not_zero():
     m = ConditionalAutocorr(spec).fit(ConditionalAutocorr(spec).prepare(panel), as_of="2020-12-31")
     assert sum(v != 0 for v in m.fitted_.signal_map.values()) <= 1                    # ~5% false positives at most
     assert all(m.fitted_.stats[f"cell_mean_{k}"] > 0 for k in ("1|1", "-1|-1"))       # raw means carry the drift
+
+
+def test_fixed_map_is_a_no_fit_rule():
+    panel = _panel(rho=0.0)                               # no effect: a fixed rule still trades, by construction
+    spec = _spec("fade_high_chase_low")
+    m = ConditionalAutocorr(spec).fit(ConditionalAutocorr(spec).prepare(panel), as_of="2015-12-31")
+    assert m.fitted_.passed and m.fitted_.signal_map == {1.0: -1.0, 0.0: 0.0, -1.0: 1.0}
+    out = m.predict(m.prepare(panel), start="2015-12-31")
+    hi = out[(out.bucket == 1) & (out.past > 0)]
+    assert (hi.signal == -1.0).all() and (out.loc[out.bucket == 0, "signal"] == 0).all()
+    mirror = ConditionalAutocorr(_spec("chase_high_fade_low")).fit(m.prepare(panel), as_of="2015-12-31")
+    pd.testing.assert_series_equal(mirror.predict(m.prepare(panel), start="2015-12-31")["signal"], -out["signal"])

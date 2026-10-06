@@ -24,23 +24,7 @@ import numpy as np
 import pandas as pd
 
 
-def state_timeline(rows: pd.DataFrame, *, period_diff: bool = False) -> pd.DataFrame:
-    """``available_at, label, value`` (one row per availability instant, the state then)."""
-    if rows is None or rows.empty:
-        return pd.DataFrame(columns=["available_at", "label", "value"])
-    r = rows.sort_values(["available_at", "label"], kind="stable")
-    known: dict = {}
-    out = []
-    for t, g in r.groupby("available_at", sort=True):
-        for lab, v in zip(g["label"], g["value"]):
-            known[pd.Timestamp(lab)] = v
-        labels = sorted(known)
-        last = labels[-1]
-        val = known[last]
-        if period_diff:
-            val = known[last] - known[labels[-2]] if len(labels) > 1 else np.nan
-        out.append((t, last, val))
-    return pd.DataFrame(out, columns=["available_at", "label", "value"])
+from infra.processing.features import state_timeline  # noqa: E402,F401  (moved 2026-10-06)
 
 
 def feature(timeline: pd.DataFrame, steps=()) -> pd.Series:
@@ -52,42 +36,12 @@ def feature(timeline: pd.DataFrame, steps=()) -> pd.Series:
     return run_stateless(s, steps)["x"] if steps else s["x"]
 
 
-def _rolling_tercile(x: pd.Series, w: str) -> np.ndarray:
-    w = int(w)
-    q1 = x.rolling(w, min_periods=max(w // 2, 3)).quantile(1 / 3)
-    q2 = x.rolling(w, min_periods=max(w // 2, 3)).quantile(2 / 3)
-    out = np.where(x < q1, -1.0, np.where(x > q2, 1.0, 0.0))
-    return np.where(q1.isna() | x.isna(), np.nan, out)
+# The partitions live in the central feature maker (infra.processing.features, 2026-10-06); these
+# names stay for existing callers.
+from infra.processing.features import PARTITIONS as _PARTITIONS  # noqa: E402
+from infra.processing.features import partition  # noqa: E402,F401
 
-
-def _zscore(x: pd.Series, w: str, k: str = "1") -> np.ndarray:
-    w, k = int(w), float(k)
-    m = x.rolling(w, min_periods=max(w // 2, 3)).mean()
-    sd = x.rolling(w, min_periods=max(w // 2, 3)).std()
-    z = (x - m) / sd
-    out = np.where(z < -k, -1.0, np.where(z > k, 1.0, 0.0))
-    return np.where(z.isna(), np.nan, out)
-
-
-def _sign(x: pd.Series) -> np.ndarray:
-    return np.where(x.isna(), np.nan, np.sign(x.to_numpy(dtype="float64")))
-
-
-def _fixed(x: pd.Series, a: str, b: str) -> np.ndarray:
-    a, b = float(a), float(b)
-    out = np.where(x < a, -1.0, np.where(x > b, 1.0, 0.0))
-    return np.where(x.isna(), np.nan, out)
-
-
-PARTITIONERS: dict[str, Callable] = {"rolling_tercile": _rolling_tercile, "zscore": _zscore, "sign": _sign,
-                                     "fixed": _fixed}
-
-
-def partition(x: pd.Series, rule: str) -> np.ndarray:
-    name, *args = rule.split(":")
-    if name not in PARTITIONERS:
-        raise KeyError(f"unknown partition {rule!r}; known: {sorted(PARTITIONERS)}")
-    return PARTITIONERS[name](x, *args)
+PARTITIONERS: dict[str, Callable] = {k: _PARTITIONS[k] for k in ("rolling_tercile", "zscore", "sign", "fixed")}
 
 
 def at_windows(starts, feat: pd.Series, buckets: np.ndarray, lag: pd.Timedelta) -> pd.DataFrame:

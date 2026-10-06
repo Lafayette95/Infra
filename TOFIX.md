@@ -1251,3 +1251,25 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **Realised side from pure-close curves:** the forward swap rate's daily changes carry the pure closes' noise (~0.35bp a close, ~1% of the daily variance at 10y; more in the 15-30y segment) - switch to the adjusted-close curve when it exists.
 *   **Implied is the surface's ATM median**, at a surface point whose prints span an expiry bucket (1m = 0.05-0.14y), against a realised horizon of exactly 1 / 3 months.
 *   **ZN is price vol** (points/yr): comparable to the swaptions only through the ratio; a yield-vol version needs the futures DV01 (bmk risk store).
+
+## Features: open items from the first build (the central feature maker)
+
+**Found:** 2026-10-06. **Where:** `infra/processing/features.py`, `infra/pipeline/features.py`
+(spec `infra/processing/FEATURES.md` 5). **Status:** open.
+
+*   **Inputs not built:** `resid(ID; FACTORS; W)` (residual vs factors, trailing fit - the
+    `infra.analytics.structures.rolling_betas` machinery would serve), `rev(ID)` (macro revisions),
+    `pdiff(ID)` (period change as known then - the event study's `ConditionSpec.period_diff` still
+    does it on its own).
+*   **Migrations not done:** `infra/models/prep.py`'s stateless string steps (diff, ewm_z ...) as
+    aliases of the grammar, and the event study's `ConditionSpec.steps` as a grammar string. Both
+    need parity tests (outputs identical) like B1's.
+*   **Intraday features** (the 15-minute grid): daily first by the user's decision; the grammar's
+    units are observations, so it would work on a grid, but availability and `align` limits need
+    an intraday pass.
+*   **`norm:vol` assumes independent daily changes** (sqrt N; the user's choice): with momentum
+    or mean reversion the true N-period dispersion differs; `norm:z` on the change itself is the
+    alternative that absorbs it.
+*   **`surprise` availability** uses the registry event's usual time; a release that moved time
+    (or one with no registry time - the day's end is used) is not modelled per occurrence.
+

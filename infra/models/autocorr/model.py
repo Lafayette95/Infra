@@ -77,22 +77,30 @@ class ConditionalAutocorr(Model):
         from infra.pipeline.series_panel import read_panel
         return read_panel([self.spec.target, self.spec.x], start, end)
 
-    def _x_feature(self, xs: pd.Series) -> pd.Series:
-        kind, *args = self.spec.x_feature.split(":")
+    LEGACY_FEATURES = ("move", "absmove", "level", "z")
+
+    def x_grammar(self) -> tuple[str, str]:
+        """(grammar, input kind) of X's feature in the central feature maker
+        (``infra.processing.features``). Legacy names stay: ``move:K`` = ``chg:K|norm:vol:<vol_span>``,
+        ``absmove:K`` = that ``|abs``, ``level`` = the raw values, ``z:W`` = ``lvl|norm:z:W``; any
+        other string is the grammar itself."""
+        sp = self.spec
+        kind, *args = sp.x_feature.split(":")
+        moves = "moves" if sp.x_is_moves else "level"
         if kind == "move":
-            k = int(args[0])
-            vol = xs.ewm(span=self.spec.vol_span, min_periods=max(self.spec.vol_span // 2, 10)).std()
-            return xs.rolling(k, min_periods=k).sum() / (vol * np.sqrt(k))
+            return f"chg:{args[0]}|norm:vol:{sp.vol_span}", moves
         if kind == "absmove":
-            k = int(args[0])
-            vol = xs.ewm(span=self.spec.vol_span, min_periods=max(self.spec.vol_span // 2, 10)).std()
-            return (xs.rolling(k, min_periods=k).sum() / (vol * np.sqrt(k))).abs()
+            return f"chg:{args[0]}|norm:vol:{sp.vol_span}|abs", moves
         if kind == "level":
-            return xs
+            return "lvl", "level"
         if kind == "z":
-            w = int(args[0])
-            return (xs - xs.rolling(w, min_periods=w // 2).mean()) / xs.rolling(w, min_periods=w // 2).std()
-        raise ValueError(f"x_feature {self.spec.x_feature!r} (move:K | absmove:K | level | z:W)")
+            return f"lvl|norm:z:{args[0]}", "level"
+        return sp.x_feature, moves
+
+    def _x_feature(self, xs: pd.Series) -> pd.Series:
+        from infra.processing.features import apply
+        grammar, kind = self.x_grammar()
+        return apply(xs, grammar, kind)
 
     # ------------------------------------------------------------------ 1. prepare
     def prepare(self, raw: pd.DataFrame, **kwargs) -> pd.DataFrame:
@@ -105,14 +113,15 @@ class ConditionalAutocorr(Model):
         xs = xs[~xs.index.duplicated(keep="last")].sort_index()
         xs = xs.reindex(y.index) if sp.x_is_moves else xs.reindex(xs.index.union(y.index)).ffill().reindex(y.index)
         k, h, g = sp.past_days, sp.horizon_days, sp.gap_days
+        from infra.processing.features import apply
         vol = y.ewm(span=sp.vol_span, min_periods=max(sp.vol_span // 2, 10)).std()
-        past = y.rolling(k, min_periods=k).sum() / (vol * np.sqrt(k))
+        past = apply(y, f"chg:{k}|norm:vol:{sp.vol_span}", "moves")     # the central maker
         fwd_sum = y.rolling(h, min_periods=h).sum().shift(-(g + h))
         fwd = fwd_sum / (vol * np.sqrt(h))
         days = pd.Series(y.index, index=y.index)
         fwd_end = days.shift(-(g + h))
         xf = self._x_feature(xs)
-        from infra.models.event_study.conditions import partition
+        from infra.processing.features import partition
         bucket = pd.Series(partition(xf, sp.x_partition), index=y.index)
         vol_z = (vol - vol.rolling(252, min_periods=60).mean()) / vol.rolling(252, min_periods=60).std()
         pbucket = pd.Series(partition(past, sp.past_partition), index=y.index)
@@ -168,6 +177,14 @@ class ConditionalAutocorr(Model):
             sp1 = s1.loc[s1.bucket == 1, "chase"].mean() - s1.loc[s1.bucket == -1, "chase"].mean()
             sp2 = s2.loc[s2.bucket == 1, "chase"].mean() - s2.loc[s2.bucket == -1, "chase"].mean()
             stats["halves"] = float(np.sign(sp1) == np.sign(sp2)) if np.isfinite(sp1) and np.isfinite(sp2) else 0.0
+        if sp.fixed_map is not None:                    # a no-fit rule: report the statistics, impose the map
+            if n >= 20:
+                for xb in (-1, 0, 1):
+                    m = d["bucket"] == float(xb)
+                    stats[f"row_mean_{xb}"] = float(d.loc[m, "fwd"].mean()) if m.any() else np.nan
+            self.fitted_ = AutocorrFit(as_of, stats, {}, True, {float(k): float(v) for k, v in sp.fixed_map},
+                                       float(np.sign(stats.get("bench_mean", 0.0))))
+            return self
         if n >= 20:
             for xb in (-1, 0, 1):                       # X's own direction: mean forward move per X bucket
                 m = d["bucket"] == float(xb)
