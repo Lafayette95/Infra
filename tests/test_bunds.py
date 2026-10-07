@@ -106,3 +106,28 @@ def test_otr_map_ranks_by_issue_day_and_the_held_bond_pnl(tmp_path, monkeypatch)
     pnl = _de_otr_pnl(D("2026-04-08"), D("2026-04-11"), paths)
     row = pnl.set_index("timestamp").loc[D("2026-04-10")]
     assert row["ticker"] == "DE_BOND_2y" and abs(row["pnl_per_dv01"] + 5.0) < 1e-9 and row["currency"] == "EUR"
+
+
+# ------------------------------------------------------------------ the fitted curve
+def test_long_first_coupon_flows_and_the_implied_interest_start():
+    # a new 10y issued 2026-07-10, maturing 2036-08-15: the 2026-08-15 anniversary is skipped,
+    # the first coupon (2027-08-15) pays a full coupon plus the 36-day stub
+    t, a = pb.first_period_flows(3.0, D("2036-08-15"), D("2026-10-09"), D("2026-07-10"))
+    assert abs(a[0] - 3.0 * (1 + 36 / 365)) < 1e-12 and len(a) == 10 and abs(a[-1] - 103.0) < 1e-12
+    assert abs(t[0] - (D("2027-08-15") - D("2026-10-09")).days / 365.25) < 1e-12
+    short = pb.first_period_flows(3.0, D("2036-08-15"), D("2026-07-20"), D("2026-07-10"), short_first=True)
+    assert abs(short[1][0] - 3.0 * 36 / 365) < 1e-12               # a short first coupon pays the stub only
+    assert pb.first_period_flows(3.0, D("2036-08-15"), D("2027-09-01"), D("2026-07-10")) is None  # past it: regular
+    assert pb.first_period_flows(3.0, D("2036-08-15"), D("2026-08-20"), D("2026-08-14")) is None  # starts on an anniversary
+    # accrued 3.0 x (89 + 0) / 365 at settlement 2026-10-09 implies interest from 2026-07-12 on a regular period
+    acc = 3.0 * (D("2026-10-09") - D("2026-07-12")).days / 365
+    assert pb.implied_commencement(acc, 3.0, D("2026-10-09"), D("2036-08-15")) == D("2026-07-12")
+
+
+def test_a_bond_whose_published_accrued_disagrees_with_our_settlement_is_left_out():
+    from infra.pipeline.bund_curves import settlement_mismatch
+    sec = pd.DataFrame({"isin": ["A", "B"], "coupon": [2.5, 2.5], "maturity_date": [D("2028-12-12"), D("2030-08-15")]}).set_index("isin")
+    settle = D("2026-12-12")      # A's coupon date: our accrued 0, the published one almost a whole coupon
+    g = pd.DataFrame({"isin": ["A", "B"], "accrued": [2.493, 2.5 * (settle - D("2026-08-15")).days / 365]})
+    fp = pd.DataFrame(columns=["commencement", "short_first"])
+    assert settlement_mismatch(g, sec, settle, fp) == {"A"}

@@ -195,6 +195,35 @@ TIPS_CURVE = DerivedMetric(
 )
 
 
+# ------------------------------------------------------------- our German Federal curve
+def compute_bund_curve(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> tuple[pd.DataFrame, dict]:
+    """Our Bund curve (spline + Svensson) and every conventional bond's metrics, each day with
+    Bundesbank dirty prices in ``[start, end]`` (``infra.pipeline.bund_curves``); Svensson
+    seeds from the stored previous day, so a window equals a full build."""
+    from infra.pipeline.bund_curves import compute_curves as compute_bund
+    cdf, rdf, diag = compute_bund(start, end, prices_root=paths.bund_prices_dir, auctions_root=paths.de_auctions_dir,
+                                  curves_root=paths.bund_curves_dir)
+    return cdf, {**diag, "extra": {"bund_rv": rdf}}
+
+
+def _check_bund_curve(ctx: StepContext):
+    df = parquet_store.read_partitioned(ctx.paths.bund_curves_dir, start=ctx.start, end=ctx.end + pd.Timedelta(days=1))
+    if df is None or df.empty:
+        return True, "no Bund curve rows in window", None
+    par = df[[c for c in df.columns if c.startswith("par_")]]
+    bad = df[(df["rmse_bp"] > 20) | ~par.apply(lambda s: s.between(-2, 15)).all(axis=1)]  # worst day 2022-26: 14bp
+    if bad.empty:
+        return True, f"{len(df)} Bund curve fits, fit error max {df['rmse_bp'].max():.2f}bp", None
+    return False, f"{len(bad)} implausible Bund curve fit(s)", bad[["timestamp", "method", "n_fit", "rmse_bp"]]
+
+
+BUND_CURVE = DerivedMetric(
+    "bund_curve", lambda p: p.bund_curves_dir, CURVE_KEYS, compute_bund_curve,
+    checks=(Check("bund_curve_fit_sane", _check_bund_curve, Severity.WARN),),
+    extra_stores=(ExtraStore("bund_rv", lambda p: p.bund_rv_dir, RV_KEYS),), presence_severity=Severity.WARN,
+)
+
+
 # ----------------------------------------------------------- swap closes (PURE method)
 SWAP_CLOSE_KEYS = ("timestamp", "close", "currency", "tenor", "method")
 SWAP_RATE_BOUNDS_PCT = (-1.0, 15.0)
@@ -657,6 +686,7 @@ VRP_METRIC = DerivedMetric(
 # order matters: ois_curve reads what swap_closes just wrote, swap_spreads what ois_curve wrote;
 # swaption prints need the records and the OIS curve, vols the prints, OI the records; vrp the vols
 DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE, "tips_curve": TIPS_CURVE,
+                                             "bund_curve": BUND_CURVE,
                                              "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE,
                                              "swap_spreads": SWAP_SPREADS, "inflation_swap_closes": INFLATION_CLOSES,
                                              "inflation_curve": INFLATION_CURVE, "xccy_basis_closes": XCCY_BASIS_CLOSES,

@@ -44,24 +44,33 @@ RV_KEYS = ["timestamp", "cusip", "method"]
 
 
 def fit_day(day, prices: pd.DataFrame, sec: pd.DataFrame, excluded: set[str], *, svensson_start=None,
-            horizon_days: int = CURVE_HORIZON_DAYS) -> tuple[list[dict], list[dict], np.ndarray | None]:
-    """One day: (curve rows, bond rows, Svensson params for the next warm start)."""
-    settle = settlement_day(day)
-    p = prices.dropna(subset=["price_eod", "accrued"]).merge(sec, on="cusip")
+            horizon_days: int = CURVE_HORIZON_DAYS, settle=None, id_column: str = "cusip",
+            flows=None, knots=None) -> tuple[list[dict], list[dict], np.ndarray | None]:
+    """One day: (curve rows, bond rows, Svensson params for the next warm start). Generic
+    over markets: ``prices`` carry ``price_eod`` (clean), ``accrued`` and ``yield_eod`` (a
+    starting guess only), ``sec`` ``coupon``, ``maturity_date``, ``coupons_per_year`` - each
+    bond's own yield, duration and metrics use ITS coupon frequency; ``settle`` defaults to
+    the Treasury's T+1; ``id_column`` names the security id (rows keep it as ``cusip``);
+    ``flows(row, settle)`` may return a bond's own ``(t, a)`` (an irregular first coupon) or
+    None for the regular schedule."""
+    settle = settlement_day(day) if settle is None else pd.Timestamp(settle)
+    p = prices.dropna(subset=["price_eod", "accrued"]).merge(sec, on=id_column).rename(columns={id_column: "cusip"})
     p = p[(p["price_eod"] > 0) & (pd.to_datetime(p["maturity_date"]) > settle + pd.Timedelta(days=30))]
     bonds, dirty, info = [], [], []
     for r in p.itertuples(index=False):
-        t, a = tc.cash_flows(float(r.coupon), r.maturity_date, settle, int(r.coupons_per_year or 2))
+        freq = int(r.coupons_per_year or 2)
+        own = flows(r, settle) if flows is not None else None
+        t, a = own if own is not None else tc.cash_flows(float(r.coupon), r.maturity_date, settle, freq)
         if t.size == 0:
             continue
         d = float(r.price_eod) + float(r.accrued)
         try:
-            y = tc.ytm(d, t, a, guess=float(r.yield_eod) / 100 if pd.notna(getattr(r, "yield_eod", np.nan)) else 0.04)
+            y = tc.ytm(d, t, a, freq, guess=float(r.yield_eod) / 100 if pd.notna(getattr(r, "yield_eod", np.nan)) else 0.04)
         except ValueError:
             continue
-        dur = tc.modified_duration(d, t, a, y)
+        dur = tc.modified_duration(d, t, a, y, freq)
         bonds.append((t, a)); dirty.append(d)
-        info.append((r.cusip, float(t[-1]), dur, y, float(r.accrued)))
+        info.append((r.cusip, float(t[-1]), dur, y, float(r.accrued), freq))
     if len(bonds) < 20:
         return [], [], svensson_start
     dirty = np.array(dirty)
@@ -70,7 +79,7 @@ def fit_day(day, prices: pd.DataFrame, sec: pd.DataFrame, excluded: set[str], *,
     w = 1.0 / (dirty * dur) ** 2
     fb = [b for b, f in zip(bonds, fit) if f]
     curves, rows = [], []
-    sp, sp_res, h = tc.fit_spline(fb, dirty[fit], w[fit])
+    sp, sp_res, h = tc.fit_spline(fb, dirty[fit], w[fit]) if knots is None else tc.fit_spline(fb, dirty[fit], w[fit], knots)
     sv, sv_res = tc.fit_svensson(fb, dirty[fit], w[fit], start=svensson_start)
     for name, curve, res, params in (("spline", sp, sp_res, sp.beta), ("svensson", sv, sv_res, sv.params)):
         rmse_bp = float(np.sqrt(np.mean((res / (dirty[fit] * dur[fit]) * 1e4) ** 2)))
@@ -83,9 +92,9 @@ def fit_day(day, prices: pd.DataFrame, sec: pd.DataFrame, excluded: set[str], *,
         loo = np.full(len(bonds), np.nan)
         if name == "spline":
             loo[np.where(fit)[0]] = 1.0 / np.maximum(1.0 - h, 1e-6)  # closed-form leave-one-out scaling
-        for k, ((t, a), d, (c, m, du, y, acc)) in enumerate(zip(bonds, dirty, info)):
+        for k, ((t, a), d, (c, m, du, y, acc, fq)) in enumerate(zip(bonds, dirty, info)):
             try:
-                mtr = tc.bond_metrics(curve, d, acc, t, a, horizon_days=horizon_days)
+                mtr = tc.bond_metrics(curve, d, acc, t, a, horizon_days=horizon_days, per_year=fq)
             except ValueError:
                 continue
             rows.append({"timestamp": pd.Timestamp(day), "cusip": c, "method": name, "in_fit": bool(fit[k]),

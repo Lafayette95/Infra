@@ -117,3 +117,42 @@ def decode_prices(df: pd.DataFrame) -> pd.DataFrame:
     for c in ("isin", "security_class"):
         out[c] = out[c].astype(str)
     return out
+
+
+# ------------------------------------------------------------------ irregular first coupons
+# German new issues accrue from their issue date and pay a LONG first coupon: the first
+# maturity anniversary after the issue is skipped (verified 2026-10-07 on the Bundesbank's
+# published accrued: 40 of 41 issues since 2022-06 with data across that anniversary; the
+# exception, a 2023 Schatz, paid a short one - detected from the data, ``short_first``).
+REGULAR_STUB_DAYS = 7     # an interest start within this of an anniversary is a regular period
+
+
+def implied_commencement(accrued: float, coupon: float, settle, maturity) -> pd.Timestamp:
+    """Interest start implied by a published accrued, ACT/ACT on the annual period."""
+    from infra.processing.treasury_prices import coupon_dates
+    prev, nxt = coupon_dates(pd.Timestamp(maturity), pd.Timestamp(settle), 1)[:2]
+    return (pd.Timestamp(settle) - pd.Timedelta(days=round(accrued / coupon * (nxt - prev).days))).normalize()
+
+
+def first_period_flows(coupon: float, maturity, settle, commencement, short_first: bool = False):
+    """``(t, a)`` of a bond in its FIRST coupon period (interest from ``commencement``), or
+    None if it isn't in one (or starts on an anniversary): coupon amounts ICMA ACT/ACT -
+    a long first coupon = one full coupon + the stub's share of the quasi-period before it."""
+    from infra.analytics.treasury_curve import YEAR
+    from infra.processing.treasury_prices import coupon_dates
+    maturity, settle, c0 = pd.Timestamp(maturity), pd.Timestamp(settle), pd.Timestamp(commencement)
+    q = coupon_dates(maturity, c0, 1)          # quasi-coupon dates from the one at or before c0
+    a0, a1 = q[0], q[1]
+    if (a1 - c0).days <= REGULAR_STUB_DAYS or (c0 - a0).days <= REGULAR_STUB_DAYS:
+        return None
+    stub = (a1 - c0).days / (a1 - a0).days
+    first = a1 if short_first or len(q) < 3 else q[2]
+    if settle >= first:
+        return None
+    first_amt = coupon * (stub if first == a1 else 1.0 + stub)
+    dates = [d for d in q if d >= first]
+    t = np.array([(d - settle).days / YEAR for d in dates])
+    a = np.full(len(dates), float(coupon))
+    a[0] = first_amt
+    a[-1] += 100.0
+    return t, a

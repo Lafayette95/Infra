@@ -135,6 +135,21 @@ OTR_YIELDS_DIR = DERIVED_ROOT / "OTRYields"
 # (+ leave-one-out), curve carry and rolldown. infra/pipeline/treasury_curves.py.
 TREASURY_CURVES_DIR = DERIVED_ROOT / "TreasuryCurves"
 TREASURY_RV_DIR = DERIVED_ROOT / "TreasuryRV"
+# Our German Federal curve (infra.pipeline.bund_curves): the same fit and metrics as the US
+# one on the Bundesbank's per-ISIN DIRTY prices (an 11:15 Frankfurt snapshot), settlement T+2,
+# from BUND_CURVES_START - the first day with dirty prices AND the complete universe.
+BUND_CURVES_DIR = DERIVED_ROOT / "BundCurves"
+BUND_RV_DIR = DERIVED_ROOT / "BundRV"
+BUND_CURVES_START = "2022-06-01"
+BUND_SETTLEMENT_DAYS = 2
+# Chosen 2026-10-07 against the Bundesbank's own (Svensson) par curve on 6 days 2022-2026:
+# the US knots (to 25y) made the spline's 30y 10-47bp off - only ~4 Bunds lie beyond 20y and
+# none beyond 25y in the fit; knots to 15y bring it to ~5bp, the rest 1.3-2bp. Excluding only
+# the on-the-run (rank 0, not the US's 0 and 1: few bonds per German tenor) keeps Svensson's
+# 30y at 3.5bp (5.8 excluding both); Svensson is within 0.8-1.4bp to 20y.
+BUND_CURVE_KNOTS = (1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0)
+BUND_FIT_EXCLUDE_RANKS = 1
+BUND_IRREGULAR_DAYS = 3    # Bundesbank accrued off a regular annual schedule by more than this: an irregular first coupon
 TIPS_CURVES_DIR = DERIVED_ROOT / "TipsCurves"
 TIPS_RV_DIR = DERIVED_ROOT / "TipsRV"
 TIPS_FIT_MIN_YEARS = 1.5  # TIPS closer to maturity stay out of the real-curve fit (still get metrics): their
