@@ -222,7 +222,7 @@ BMK_YIELD_AGREE_BP = 5.0            # sources disagreeing on a day's move by mor
 # Non-US benchmark yield P&L (2026-10-07): the official par curve per country (Daily/Bonds,
 # BOND_CURVES), bmk ``yield_<source>`` - its own name, not ``yield_cmt``, since it is the
 # central bank's fitted curve, not the US Treasury's CMT: country -> source key.
-BMK_YIELD_OFFICIAL = {"UK": "boe", "DE": "bundesbank"}
+BMK_YIELD_OFFICIAL = {"UK": "boe", "DE": "bundesbank", "JP": "mof", "CA": "boc"}
 BMK_YIELD_OFFICIAL_TENORS = (2, 3, 5, 7, 10, 20, 30)
 
 # Repo rates and the NY Fed's Treasury securities lending (CLAUDE.md 19), both fetched by
@@ -1176,7 +1176,7 @@ BAD_PRINT_RULES = BadPrintRules()
 @dataclass(frozen=True)
 class BondCurve:
     country: str  # ticker prefix, e.g. "US"
-    source: str  # fetcher in infra.pipeline.bonds.SOURCES: "treasury" | "boe" | "bundesbank"
+    source: str  # fetcher in infra.pipeline.bonds.SOURCES: "treasury" | "boe" | "bundesbank" | "mof" | "boc"
     name: str  # human label
     currency: str
     convention: str  # the yields' compounding/coupon convention, as the source publishes them
@@ -1188,7 +1188,8 @@ class BondCurve:
     par_method: str | None = None
     enabled: bool = True
     # A confirmed bad print (the px step's peer-outlier rule, peers = neighbouring tenors)
-    # is "NA" (dropped) or "roll" (last good value carried forward), CLAUDE.md 12.
+    # is "NA" (dropped) or "roll" (last good value carried forward), CLAUDE.md 12; "off" logs
+    # candidates without treating them.
     bad_print_policy: str = "NA"
 
 
@@ -1212,7 +1213,10 @@ BOND_CURVES: dict[str, BondCurve] = {
         # https://www.bankofengland.co.uk/statistics/yield-curves
         BondCurve("UK", "boe", "UK gilt par curve (derived from BoE spot)", "GBP",
                   convention="par, semi-annual coupons, derived from BoE nominal spot curve",
-                  history_start="2016-01-01", par_method="semiannual_from_spot"),
+                  history_start="1979-01-02", par_method="semiannual_from_spot",  # the BoE archive's first year (was 2016)
+                  # one peer-rule candidate 1979-2026, the 2y on 1992-09-16 - Black Wednesday (sterling's
+                  # ERM exit), a real move; the BoE series is a fitted official curve. Logged, never treated.
+                  bad_print_policy="off"),
         # Bundesbank's daily SVENSSON PARAMETERS for German Federal securities (BBSIS
         # ZST B0..T2, 5 decimals, same day), evaluated here into the model's zero curve
         # (annually compounded, the Bundesbank's convention) and par derived from it with
@@ -1224,6 +1228,33 @@ BOND_CURVES: dict[str, BondCurve] = {
         BondCurve("DE", "bundesbank", "German Federal securities par curve (Bundesbank Svensson)", "EUR",
                   convention="par, semi-annual coupons, from the Bundesbank's Svensson parameters",
                   history_start="1997-08-01", par_method="semiannual_from_annual_spot"),
+        # Japan Ministry of Finance constant-maturity JGB yields (added 2026-10-07): semi-
+        # annual compound, from the JSDA reference prices at the 15:00 Tokyo close, released
+        # 09:30 Tokyo the next business day - the JGB counterpart of CMT (MoF doesn't say
+        # "par" in so many words). Published, so no par derivation. 40y from 2007.
+        BondCurve("JP", "mof", "JGB constant-maturity curve (Ministry of Finance)", "JPY",
+                  convention="semi-annual compound, constant maturity (MoF), JSDA 15:00 Tokyo prices",
+                  tenors=(2, 3, 5, 7, 10, 20, 30, 40), history_start="1990-01-04",
+                  # the peer rule misfires on JGBs (checked 2026-10-07: all 8 candidates 1990-2026 were
+                  # real moves - the 2003 VaR shock, March 2016 after negative rates, the Dec 2022 10y
+                  # kink after the BoJ band change, April 2025): at near-zero rates a tenor's typical
+                  # move is a fraction of a bp and z-scores explode; and MoF's series is itself a fitted
+                  # official curve. Logged, never treated.
+                  bad_print_policy="off"),
+        # Bank of Canada BENCHMARK bond yields (added 2026-10-07): mid-market closing yields of
+        # the benchmark GoC bond near each term, 2 decimals, from 2001 - not a fitted curve: a
+        # benchmark switch (after the new bond's last auction) is a jump in the series; "long"
+        # (currently the 2057 bond) is stored as the 30y. The Bank's fitted zero curve is
+        # published weekly with a two-week lag - history only (TOFIX).
+        BondCurve("CA", "boc", "Government of Canada benchmark bond yields (Bank of Canada)", "CAD",
+                  convention="yield of the benchmark bond per term (a real bond, not a fitted par point), semi-annual "
+                             "compounding (GoC bonds pay semi-annual coupons; market convention, not stated by the BoC), "
+                             "mid-market close, 2 decimals",
+                  tenors=(2, 3, 5, 7, 10, 30), history_start="2001-01-02",
+                  # the peer rule's only candidates 2001-2026 were the 2y / 3y on 2021-10-27/28, the
+                  # BoC's end of QE with earlier hikes (2y +21bp, held): a policy-day front-end move,
+                  # and no BoC calendar is wired into the exemptions. Logged, never treated.
+                  bad_print_policy="off"),
     )
 }
 

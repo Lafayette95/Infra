@@ -25,7 +25,8 @@ def _no_bond_network(monkeypatch):
     def nothing(start, end):
         return pd.DataFrame(columns=["timestamp", "maturity", "value"]), []
 
-    monkeypatch.setattr("infra.pipeline.bonds.SOURCES", {"treasury": nothing, "boe": nothing, "bundesbank": nothing})
+    monkeypatch.setattr("infra.pipeline.bonds.SOURCES", {"treasury": nothing, "boe": nothing, "bundesbank": nothing,
+                                                          "mof": nothing, "boc": nothing})
     monkeypatch.setattr("infra.pipeline.boe_ois.FETCH", nothing)
     monkeypatch.setattr("infra.pipeline.bunds.FETCH_PRICES", lambda start, end, isin="": "")
     monkeypatch.setattr("infra.pipeline.bunds.FETCH_ISSUANCE", lambda: None)

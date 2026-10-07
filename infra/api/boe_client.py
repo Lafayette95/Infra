@@ -26,6 +26,7 @@ BASE = "https://www.bankofengland.co.uk/-/media/boe/files/statistics/yield-curve
 ARCHIVE_ZIP = "glcnominalddata.zip"
 LATEST_ZIP = "latest-yield-curve-data.zip"
 SPOT_SHEET = "4. spot curve"
+_OLD_SPOT_SHEET = "4. nominal spot curve"
 TIMEOUT_S = 300
 _ARCHIVE_FILE = re.compile(r"GLC Nominal daily data_(\d{4}) to (\d{4}|present)\.xlsx$")
 _LATEST_FILE = "GLC Nominal daily data current month.xlsx"
@@ -43,7 +44,10 @@ def parse_spot_sheet(xlsx: bytes, sheet: str = SPOT_SHEET) -> tuple[pd.DataFrame
     with no values at all (a holiday row the BoE still lists) count for the span. The
     maturity row (4th) is in YEARS on every BoE spot sheet (the short-end sheets also carry
     a months row above it)."""
-    raw = pd.read_excel(io.BytesIO(xlsx), sheet_name=sheet, header=None)
+    book = pd.ExcelFile(io.BytesIO(xlsx))
+    if sheet not in book.sheet_names and sheet == SPOT_SHEET and _OLD_SPOT_SHEET in book.sheet_names:
+        sheet = _OLD_SPOT_SHEET     # the 1979-2004 workbooks: same layout, "nominal" in the name
+    raw = pd.read_excel(book, sheet_name=sheet, header=None)
     maturities = pd.to_numeric(raw.iloc[3, 1:], errors="coerce")
     body = raw.iloc[5:]
     dates = pd.to_datetime(body.iloc[:, 0], errors="coerce")

@@ -126,9 +126,14 @@ def treat_bond_bad_prints(
     def policy(r):
         return curves[meta.at[r.ticker, "root"]].bad_print_policy, ""
 
+    # a curve with policy "off" has its candidates LOGGED (returned with ``logged_only``), never treated
+    off = flagged["ticker"].map(lambda t: curves[meta.at[t, "root"]].bad_print_policy == "off") if len(flagged) else []
+    logged = flagged[off] if len(flagged) else flagged
+    flagged = flagged[~off] if len(flagged) else flagged
     rows = treatment_rows(flagged, hist, policy=policy, store=pb.STORE, column="par_yield", run_day=run_day)
     treated = pd.DataFrame(rows, columns=adjustment_store.COLUMNS)
     adjustment_store.record(paths.adjustments_dir, treated)
+    treated.attrs["logged_only"] = logged
     return treated, pending
 
 

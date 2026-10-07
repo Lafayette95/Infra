@@ -155,6 +155,10 @@ def backfill_daily_yield_pnl(start, end, *, paths: CyclePaths | None = None, **k
     df = compute_yield_pnl(start, end, paths=paths, **kw)
     if len(df):
         out = df.copy()
+        # plain strings, as every file in Bmk/Pnl has: a categorical ticker (the JGB yields arrive so)
+        # wrote dictionary-typed files that pyarrow refuses to read next to the others (2026-10-07)
+        for col in ("ticker", "bmk", "currency", "cusip", "prev_cusip"):
+            out[col] = out[col].astype("string")
         for col in ("timestamp", "prev_timestamp"):
             out[col] = pd.to_datetime(out[col]).astype("datetime64[ms]")
         parquet_store.write_partitioned(out, _pnl_dir(paths), PNL_KEYS)

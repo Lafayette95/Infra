@@ -166,3 +166,52 @@ def test_official_curve_yield_pnl_in_its_currency(tmp_path):
     uk = df[df.ticker == "UK_BOND_10y"].set_index("timestamp")
     assert set(df.bmk) == {"yield_boe", "yield_bundesbank"} and set(uk.currency) == {"GBP"}
     assert list(uk.pnl_per_dv01.round(6)) == [-10.0, 5.0]  # + = long the bond: yields fell
+
+
+# ------------------------------------------------------------------ JGB curve (MoF)
+def test_mof_csv_parses_tenors_and_skips_dashes_and_covers_only_published_days():
+    from infra.api import mof_client
+    hist = "Interest Rate,,,,(Unit : %)\nDate,1Y,2Y,10Y,40Y\n2026/9/29,1.6,1.9,3.1,-\n2026/9/30,1.61,1.91,3.09,4.1\n"
+    cur = "Interest Rate (October 2026),,,,(Unit : %)\nDate,1Y,2Y,10Y,40Y\n2026/10/1,1.668,1.939,3.092,4.125\n"
+    files = {mof_client.HISTORY: hist, mof_client.CURRENT: cur}
+    df, covered = mof_client.fetch_curve(D("2026-09-29"), D("2026-10-08"), fetch=files.get, now=D("2026-10-07"))
+    assert len(df[df["timestamp"] == D("2026-09-29")]) == 3            # no 40y that day
+    assert covered == [(D("2026-09-29"), D("2026-10-02"))]              # never past the last published day
+    assert df.loc[(df["timestamp"] == D("2026-10-01")) & (df["maturity"] == 10.0), "value"].iloc[0] == 3.092
+
+
+def test_yield_pnl_is_written_with_plain_string_columns(tmp_path):
+    from infra.cycle.bmk_yields import backfill_daily_yield_pnl
+    from infra.cycle.paths import CyclePaths
+    from infra.storage import parquet_store
+    import pyarrow.parquet as pq
+    paths = CyclePaths.under(tmp_path)
+    days = pd.bdate_range("2026-09-28", periods=3)
+    rows = pd.DataFrame({"timestamp": days.astype("datetime64[ms]"), "ticker": pd.Categorical(["JP_BOND_10y"] * 3),
+                         "par_yield": pd.array([31000, 31100, 31050], dtype="Int32")})
+    parquet_store.write_partitioned(rows, paths.daily_bonds_dir, ["timestamp", "ticker"])
+    backfill_daily_yield_pnl(days[0], days[-1], paths=paths, sources=(), official={"JP": "mof"})
+    f = next((paths.bmk_root / "Pnl").rglob("*.parquet"))
+    assert not str(pq.read_schema(f).field("ticker").type).startswith("dictionary")
+
+
+# ------------------------------------------------------------------ Canada (BoC benchmarks), old BoE sheets
+def test_boc_benchmark_csv_parses_the_observations_block_and_maps_long_to_30y():
+    from infra.api import boc_client
+    text = ('"TERMS AND CONDITIONS"\n"https://www.bankofcanada.ca/terms/"\n\n"OBSERVATIONS"\n'
+            '"date","BD.CDN.2YR.DQ.YLD","BD.CDN.10YR.DQ.YLD","BD.CDN.LONG.DQ.YLD","BD.CDN.RRB.DQ.YLD"\n'
+            '"2026-10-05","3.26","3.96","4.31","2.00"\n"2026-10-06","3.23","","4.28","1.97"\n')
+    df, covered = boc_client.fetch_benchmark_yields(D("2026-10-05"), D("2026-10-09"), fetch=lambda s, e: text)
+    assert sorted(df["maturity"].unique()) == [2.0, 10.0, 30.0]          # real-return bonds left out
+    assert len(df[df["timestamp"] == D("2026-10-06")]) == 2              # a blank value is no row
+    assert covered == [(D("2026-10-05"), D("2026-10-07"))]
+
+
+def test_boe_reads_the_pre_2005_nominal_sheet_name():
+    from infra.api import boe_client
+    buf = io.BytesIO()
+    rows = [[None, "UK nominal spot curve"], [None], ["Maturity"], ["years:", 0.5, 1.0], [None], [D("1992-09-16"), 9.5, 9.6]]
+    with pd.ExcelWriter(buf) as xl:
+        pd.DataFrame(rows).to_excel(xl, sheet_name="4. nominal spot curve", header=False, index=False)
+    df, first, last = boe_client.parse_spot_sheet(buf.getvalue())
+    assert len(df) == 2 and first == D("1992-09-16")

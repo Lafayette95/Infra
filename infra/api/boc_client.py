@@ -1,0 +1,53 @@
+"""Bank of Canada benchmark Government of Canada bond yields - NETWORK ONLY, no files.
+
+Valet API, free and keyless (https://www.bankofcanada.ca/valet/, terms
+https://www.bankofcanada.ca/terms/; verified 2026-10-07): group ``bond_yields_benchmark``,
+daily from 2001-01-02, 2 decimals - "mid-market closing yields of selected Government of
+Canada bond issues that mature approximately in the indicated terms" (2, 3, 5, 7, 10 years
+and "long", currently the 2057 bond). A benchmark is "generally changed when a building
+benchmark bond is adopted by financial markets as a benchmark, typically after the last
+auction for that bond" - so a switch day's change mixes two bonds (no bond id is published).
+"""
+from __future__ import annotations
+
+import io
+import urllib.request
+
+import pandas as pd
+
+URL = "https://www.bankofcanada.ca/valet/observations/group/bond_yields_benchmark/csv?start_date={start}&end_date={end}"
+TIMEOUT_S = 120
+SERIES = {"BD.CDN.2YR.DQ.YLD": 2.0, "BD.CDN.3YR.DQ.YLD": 3.0, "BD.CDN.5YR.DQ.YLD": 5.0, "BD.CDN.7YR.DQ.YLD": 7.0,
+          "BD.CDN.10YR.DQ.YLD": 10.0, "BD.CDN.LONG.DQ.YLD": 30.0}   # "long" stored as the 30y
+_COLS = ["timestamp", "maturity", "value"]
+
+
+def fetch_csv(start: pd.Timestamp, end_inclusive: pd.Timestamp) -> str:
+    url = URL.format(start=pd.Timestamp(start).date(), end=pd.Timestamp(end_inclusive).date())
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+        return resp.read().decode("utf-8-sig", "replace")
+
+
+def parse_csv(text: str) -> pd.DataFrame:
+    """The OBSERVATIONS block (after its ``"date",...`` header line) as long rows."""
+    lines = text.splitlines()
+    head = next((i for i, l in enumerate(lines) if l.startswith('"date"')), None)
+    if head is None:
+        return pd.DataFrame(columns=_COLS)
+    raw = pd.read_csv(io.StringIO("\n".join(lines[head:])), dtype=str)
+    raw["timestamp"] = pd.to_datetime(raw["date"], errors="coerce")
+    raw = raw.dropna(subset=["timestamp"])
+    long = raw.melt(id_vars=["timestamp"], value_vars=[c for c in SERIES if c in raw], var_name="series", value_name="value")
+    long["maturity"] = long["series"].map(SERIES)
+    long["value"] = pd.to_numeric(long["value"], errors="coerce")
+    return long.dropna(subset=["value"])[_COLS].sort_values(["timestamp", "maturity"]).reset_index(drop=True)
+
+
+def fetch_benchmark_yields(start: pd.Timestamp, end: pd.Timestamp, *, fetch=fetch_csv):
+    """Yields for days in ``[start, end)`` and the interval COVERED: up to the last
+    published day, never beyond."""
+    df = parse_csv(fetch(start, end - pd.Timedelta(days=1)))
+    df = df[(df["timestamp"] >= start) & (df["timestamp"] < end)].reset_index(drop=True)
+    covered = [] if df.empty else [(start, min(end, df["timestamp"].max() + pd.Timedelta(days=1)))]
+    return df, covered

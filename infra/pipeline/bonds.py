@@ -18,7 +18,7 @@ from typing import Callable
 
 import pandas as pd
 
-from infra.api import boe_client, bundesbank_client, treasury_client
+from infra.api import boc_client, boe_client, bundesbank_client, mof_client, treasury_client
 from infra.config import ADJUSTMENTS_DIR, BOND_CURVES, DAILY_BONDS_COVERAGE_FILE, DAILY_BONDS_DIR, BondCurve, bond_ticker
 from infra.coverage.intervals import Interval, find_missing_ranges, to_utc_day
 from infra.processing import bond_curves as bc
@@ -40,6 +40,8 @@ SOURCES: dict[str, Callable[[pd.Timestamp, pd.Timestamp], tuple[pd.DataFrame, li
     "treasury": treasury_client.fetch_par_curve,
     "boe": boe_client.fetch_spot_curve,
     "bundesbank": bundesbank_svensson_curve,
+    "mof": mof_client.fetch_curve,
+    "boc": boc_client.fetch_benchmark_yields,
 }
 
 
