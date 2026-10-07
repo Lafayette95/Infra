@@ -145,9 +145,10 @@ def test_raw_step_archives_the_window_and_lookback_then_nothing(tmp_path, monkey
     first = execute_step(RAW_STEP, _ctx(tmp_path, "2026-09-28", "2026-09-30"))
     checks = _checks(first)
     assert all(checks[n].passed for n in ("dtcc_fetch_ok", "dtcc_complete", "dtcc_sane"))
-    assert calls == list(pd.date_range("2026-09-25", "2026-09-30"))  # window + 5-day lookback
+    days = list(pd.date_range("2026-09-25", "2026-09-30"))  # window + 5-day lookback
+    assert sorted(calls) == sorted(days * len(raw_dtcc.DTCC_REPORTS))  # once per report kind
     execute_step(RAW_STEP, _ctx(tmp_path, "2026-09-28", "2026-09-30"))
-    assert len(calls) == 6  # the next run: no request at all
+    assert len(calls) == 6 * len(raw_dtcc.DTCC_REPORTS)  # the next run: no request at all
 
 
 def test_a_day_dtcc_should_have_but_does_not_is_reported(tmp_path, monkeypatch):

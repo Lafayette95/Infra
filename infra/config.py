@@ -351,7 +351,10 @@ CPI_WEIGHTS_FIRST_YEAR = 1987
 # years (first file still published when the archive started: 2024-09-30, verified
 # 2026-10-01), so a day not archived within that window is lost for good.
 DTCC_DIR = RAW_DATA_ROOT / "DTCC"
-DTCC_REPORTS = ("RATES",)  # CFTC cumulative report kinds archived (also: CREDITS, FOREX, ...)
+# CFTC cumulative report kinds archived (also: CREDITS, ...). FOREX added 2026-10-07 (user):
+# FX forwards / swaps / NDFs / options, ~2.5MB a day - the short end of the cross-currency
+# hedge (the RATES basis swaps are thin at 3m/6m); same column layout as RATES.
+DTCC_REPORTS = ("RATES", "FOREX")
 DTCC_FIRST_DAY = "2024-09-30"  # never request earlier days: DTCC no longer has them
 DTCC_RETENTION_DAYS = 700  # look back this far for unarchived days (inside DTCC's ~730)
 # CFTC Commitments of Traders, TRADERS IN FINANCIAL FUTURES (TFF): weekly positions by
