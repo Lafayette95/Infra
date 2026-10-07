@@ -75,6 +75,17 @@ DAILY_BOE_OIS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "boe_ois.parquet"
 # all); which bonds a consumer uses is a VIEW (on-the-run map, futures baskets).
 DAILY_TREASURY_PRICES_DIR = DAILY_ROOT / "TreasuryPrices"
 DAILY_TREASURY_PRICES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "treasury_prices.parquet"
+# German Federal securities (2026-10-07): per-ISIN clean / dirty price and yield from the
+# Bundesbank's BBSSY (infra.pipeline.bunds); a day is claimed covered once BUND_PRICES_SETTLE_DAYS old
+DAILY_BUND_PRICES_DIR = DAILY_ROOT / "BundPrices"
+DAILY_BUND_PRICES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "bund_prices.parquet"
+BUND_PRICES_SETTLE_DAYS = 1
+# When the Bundesbank's BBSSY prices are TAKEN (measured 2026-10-07, not published by the
+# source): the on-the-run 10y Bund's daily yield change against the front Bund future's mid
+# change at every 5 minutes, 2025-03..2026-10, fits best at 11:15 Frankfurt in summer
+# (09:15 UTC, residual 0.33bp) and 11:20 in winter (10:20 UTC, 0.24bp), against 1-3bp an hour
+# either side and 3.4bp at 16:15 London - a late-morning snapshot, not a close.
+BUND_PRICES_LOCAL_TIME = ("11:15", "Europe/Berlin")
 DAILY_TIPS_PRICES_DIR = DAILY_ROOT / "TipsPrices"
 DAILY_TIPS_PRICES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "tips_prices.parquet"
 # An empty page this many days old is a holiday (covered); a newer one, or a page whose
@@ -324,6 +335,7 @@ CME_TCF_ROOTS: dict[str, str] = {"26": "ZT", "3YR": "Z3N", "25": "ZF", "21": "ZN
 # every published VINTAGE of each source series (a release date per value), not just the
 # latest revised history - see MACRO_RELEASES below and infra/pipeline/releases.py.
 RAW_DATA_ROOT = DATABASE_ROOT / "RawData"
+DE_AUCTIONS_DIR = RAW_DATA_ROOT / "DE_Auctions"  # the Finanzagentur issuance history, one row per (day, ISIN)
 RELEASES_DIR = RAW_DATA_ROOT / "Releases"
 RELEASES_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "releases.parquet"
 # Economic-calendar rows (actual / consensus / previous per release, as the calendar page

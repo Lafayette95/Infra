@@ -20,7 +20,10 @@ worked around.
 """
 from __future__ import annotations
 
+import http.client
 import io
+import time
+import urllib.error
 import urllib.request
 
 import pandas as pd
@@ -70,3 +73,40 @@ def fetch_svensson_params(start: pd.Timestamp, end: pd.Timestamp, *, fetch=fetch
     df = df[(df["timestamp"] >= start) & (df["timestamp"] < end)].reset_index(drop=True)
     covered = [] if df.empty else [(start, min(end, df["timestamp"].max() + pd.Timedelta(days=1)))]
     return df, covered
+
+
+# ------------------------------------------------------------------ per-ISIN prices (BBSSY)
+# Dataflow BBSSY "Yields by ISIN" (verified 2026-10-07): per listed Federal security
+# (Schatz, Bobls, Bunds, Green, inflation-linked) daily items KCP (clean price, % of par),
+# KDP (price incl. accrued - from 2022-06 only) and REN (yield, ISMA method, %); key
+# ``D.<item>.EUR.<security class>.<ISIN>.A``, classes A610 Schatz, A620 Bobl, A607 / A630 /
+# A612 / A615 / A640 7 / 10 / 20 / 15 / 30-year Bunds. A wildcard query returns only the
+# CURRENTLY listed series; a matured bond is still served by its ISIN, but only if it
+# matured within roughly the last four years (every coupon bond maturing from 2022-06 on,
+# none before - probed over all 285 coupon ISINs since 1999). Values to 4 decimals since
+# 2024-01-02 (3 before).
+RETRIES = 3
+BBSSY_URL = "https://api.statistiken.bundesbank.de/rest/data/BBSSY/D.KCP+KDP+REN.EUR..{isin}.A?startPeriod={start}&endPeriod={end}"
+
+
+def fetch_bbssy_csv(start: pd.Timestamp, end_inclusive: pd.Timestamp, isin: str = "") -> str:
+    """BBSSY prices and yields over ``[start, end_inclusive]``: every CURRENTLY listed
+    security (``isin`` empty), or one ISIN (matured ones too). "" when nothing matches
+    (the API's 404)."""
+    url = BBSSY_URL.format(isin=isin, start=pd.Timestamp(start).date(), end=pd.Timestamp(end_inclusive).date())
+    req = urllib.request.Request(url, headers={"Accept": ACCEPT, "User-Agent": "Mozilla/5.0"})
+    for attempt in range(RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+                if "enodia" in resp.geturl() or "csv" not in resp.headers.get("Content-Type", ""):
+                    raise BundesbankChallenge(f"bot challenge instead of data ({resp.geturl()}) - VPN connected?")
+                return resp.read().decode("utf-8-sig")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return ""
+            if e.code < 500 or attempt == RETRIES:
+                raise
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError):
+            if attempt == RETRIES:  # a dropped chunked download (seen 2026-10-07) is retried
+                raise
+        time.sleep(2.0 * (attempt + 1))

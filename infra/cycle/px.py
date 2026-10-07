@@ -32,6 +32,7 @@ from infra.cycle.checks import revision_check
 from infra.cycle.core import Check, Severity, Step, StepContext
 from infra.cycle.paths import CyclePaths
 from infra.cycle.px_boe_ois import BOE_OIS_CHECKS, backfill_daily_boe_ois
+from infra.cycle.px_bunds import BUND_CHECKS, backfill_daily_bund_px
 from infra.cycle.px_bonds import BOND_CHECKS, backfill_daily_bond_px
 from infra.cycle.px_repo import REPO_CHECKS, backfill_daily_repo_px
 from infra.cycle.px_treasuries import TREASURY_CHECKS, backfill_daily_treasury_px
@@ -162,6 +163,9 @@ def backfill_daily_px_data(
                                               sources=bond_sources, run_day=run_day)
         # the BoE SONIA OIS curve rides with the cash-bond curves (same BoE site, same lag)
         out["boe_ois"] = backfill_daily_boe_ois(start, end, paths=paths, fetch_missing=fetch_missing)
+        # German Federal securities per ISIN (Bundesbank BBSSY + the Finanzagentur's reference)
+        out["bunds"] = backfill_daily_bund_px(start, end, paths=paths, force_refetch=force_refetch,
+                                              fetch_missing=fetch_missing)
     if treasuries:
         out["treasuries"] = backfill_daily_treasury_px(start, end, paths=paths, force_refetch=force_refetch,
                                                        fetch_missing=fetch_missing, fetch=treasury_fetch)
@@ -389,6 +393,7 @@ PX_CHECKS = (
     Check("px_outliers_pending", _check_outliers_pending, severity=Severity.WARN),
     *BOND_CHECKS,
     *BOE_OIS_CHECKS,
+    *BUND_CHECKS,
     *TREASURY_CHECKS,
     *REPO_CHECKS,
 )

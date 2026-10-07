@@ -27,6 +27,8 @@ def _no_bond_network(monkeypatch):
 
     monkeypatch.setattr("infra.pipeline.bonds.SOURCES", {"treasury": nothing, "boe": nothing, "bundesbank": nothing})
     monkeypatch.setattr("infra.pipeline.boe_ois.FETCH", nothing)
+    monkeypatch.setattr("infra.pipeline.bunds.FETCH_PRICES", lambda start, end, isin="": "")
+    monkeypatch.setattr("infra.pipeline.bunds.FETCH_ISSUANCE", lambda: None)
 
 
 @pytest.fixture(autouse=True)
