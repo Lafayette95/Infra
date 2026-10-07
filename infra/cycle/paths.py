@@ -53,12 +53,16 @@ class CyclePaths:
     treasury_baskets_dir: Path
     treasury_prices_dir: Path
     treasury_prices_coverage: Path
+    tips_prices_dir: Path
+    tips_prices_coverage: Path
     repo_dir: Path
     repo_coverage: Path
     sec_lending_dir: Path
     sec_lending_coverage: Path
     treasury_curves_dir: Path
     treasury_rv_dir: Path
+    tips_curves_dir: Path
+    tips_rv_dir: Path
     otr_yields_dir: Path
 
     @classmethod
@@ -106,12 +110,16 @@ class CyclePaths:
             treasury_baskets_dir=config.TREASURY_BASKETS_DIR,
             treasury_prices_dir=config.DAILY_TREASURY_PRICES_DIR,
             treasury_prices_coverage=config.DAILY_TREASURY_PRICES_COVERAGE_FILE,
+            tips_prices_dir=config.DAILY_TIPS_PRICES_DIR,
+            tips_prices_coverage=config.DAILY_TIPS_PRICES_COVERAGE_FILE,
             repo_dir=config.REPO_DIR,
             repo_coverage=config.REPO_COVERAGE_FILE,
             sec_lending_dir=config.SEC_LENDING_DIR,
             sec_lending_coverage=config.SEC_LENDING_COVERAGE_FILE,
             treasury_curves_dir=config.TREASURY_CURVES_DIR,
             treasury_rv_dir=config.TREASURY_RV_DIR,
+            tips_curves_dir=config.TIPS_CURVES_DIR,
+            tips_rv_dir=config.TIPS_RV_DIR,
             otr_yields_dir=config.OTR_YIELDS_DIR,
         )
 

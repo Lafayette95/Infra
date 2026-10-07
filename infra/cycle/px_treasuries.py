@@ -43,6 +43,11 @@ def plan_daily_treasury_px(start, end, *, paths: CyclePaths | None = None, force
                                       force_refetch=force_refetch))
     days |= set(ptp.plan_prices_update(start - pd.Timedelta(days=GAP_LOOKBACK_DAYS), start - _ONE_DAY, now=now,
                                        coverage_file=paths.treasury_prices_coverage))
+    # TIPS come from the same page: their own uncovered days are fetched too (the nominal
+    # rows of such a day are stored again - an idempotent upsert)
+    from infra.pipeline import tips
+    days |= set(tips.plan_tips_update(start - pd.Timedelta(days=GAP_LOOKBACK_DAYS), end, now=now,
+                                      coverage_file=paths.tips_prices_coverage))
     return sorted(days)
 
 
@@ -50,10 +55,28 @@ def backfill_daily_treasury_px(start, end, *, paths: CyclePaths | None = None, f
                                fetch_missing: bool = True, fetch=None, now=None) -> dict:
     paths = paths or CyclePaths.default()
     days = plan_daily_treasury_px(start, end, paths=paths, force_refetch=force_refetch, now=now) if fetch_missing else []
+    if not days:
+        return {"planned": [], "stored": [], "holiday": [], "pending": [], "errors": {}, "tips": {}}
+    from infra.pipeline import tips
+    base = fetch if fetch is not None else ptp.FETCH
+    ref, cpi, tips_status = None, None, {"stored": 0, "holiday": 0, "pending": 0, "errors": {}}
+
+    def fetch_and_keep_tips(day):
+        """The nominal fetch, with the page's TIPS rows stored on the way (one request)."""
+        nonlocal ref, cpi
+        page = base(day)
+        try:
+            if ref is None:
+                ref, cpi = tips.tips_reference(auctions_root=paths.tsy_auctions_dir), tips.cpi_nsa()
+            tips_status[tips.store_tips_day(day, page, ref, cpi, now=now, root=paths.tips_prices_dir,
+                                            coverage_file=paths.tips_prices_coverage)] += 1
+        except Exception as exc:  # never costs the nominal prices
+            tips_status["errors"][str(pd.Timestamp(day).date())] = f"{type(exc).__name__}: {exc}"
+        return page
+
     out = ptp.fetch_and_store_prices(days, root=paths.treasury_prices_dir, coverage_file=paths.treasury_prices_coverage,
-                                     securities_root=paths.treasury_securities_dir, fetch=fetch, now=now) \
-        if days else {"stored": [], "holiday": [], "pending": [], "errors": {}}
-    return {"planned": days, **out}
+                                     securities_root=paths.treasury_securities_dir, fetch=fetch_and_keep_tips, now=now)
+    return {"planned": days, **out, "tips": tips_status}
 
 
 # ------------------------------------------------------------------------ checks
@@ -105,6 +128,41 @@ def _check_sane(ctx: StepContext):
     return False, f"{len(bad)} price(s) out of bounds, {len(unpriced)} on-the-run issue(s) unpriced", details
 
 
+TIPS_YIELD_BOUNDS_PCT = (-5.0, 10.0)
+TIPS_RATIO_BOUNDS = (0.9, 3.0)
+
+
+def _check_tips_fetch_ok(ctx: StepContext):
+    t = _out(ctx).get("tips", {})
+    if not t.get("errors"):
+        return True, f"TIPS: stored {t.get('stored', 0)}, END OF DAY not posted yet {t.get('pending', 0)}", None
+    return False, f"{len(t['errors'])} TIPS day(s) failed", pd.DataFrame({"day": list(t["errors"]), "error": list(t["errors"].values())})
+
+
+def _check_tips_fresh(ctx: StepContext):
+    from infra.pipeline import tips
+    df = tips.read_tips(ctx.start - pd.Timedelta(days=14), ctx.end + _ONE_DAY, root=ctx.paths.tips_prices_dir)
+    latest = df["timestamp"].max() if len(df) else None
+    due = last_weekday(ctx.end) - pd.offsets.BDay(STALE_BUSINESS_DAYS)
+    if latest is not None and latest >= due:
+        return True, f"latest TIPS prices {pd.Timestamp(latest).date()}", None
+    return False, f"latest TIPS prices {None if latest is None else pd.Timestamp(latest).date()}, due {due.date()}", None
+
+
+def _check_tips_sane(ctx: StepContext):
+    """Real yields and index ratios within bounds; every priced TIPS in the reference."""
+    from infra.pipeline import tips
+    df = tips.read_tips(ctx.start, ctx.end + _ONE_DAY, root=ctx.paths.tips_prices_dir)
+    if df.empty:
+        return True, "no TIPS prices in the window", None
+    bad = df[(df["real_yield"].notna() & ~df["real_yield"].between(*TIPS_YIELD_BOUNDS_PCT))
+             | (df["index_ratio"].notna() & ~df["index_ratio"].between(*TIPS_RATIO_BOUNDS))
+             | (df["price_eod"].notna() & df["index_ratio"].isna())]
+    if bad.empty:
+        return True, f"{len(df)} TIPS prices sane (real yield, index ratio, reference)", None
+    return False, f"{len(bad)} TIPS row(s) out of bounds or without reference", bad[["timestamp", "cusip", "price_eod", "real_yield", "index_ratio"]]
+
+
 TREASURY_CHECKS: tuple[Check, ...] = (
     Check("treasuries_fetch_ok", _check_fetch_ok, severity=Severity.WARN),
     Check("treasuries_fresh", _check_fresh, severity=Severity.WARN),
@@ -112,4 +170,8 @@ TREASURY_CHECKS: tuple[Check, ...] = (
     # benchmark joins `derived` later): a bad FedInvest day must not block bmk
     Check("treasuries_sane", _check_sane, severity=Severity.WARN),
     revision_check(lambda p: p.treasury_prices_dir, ["timestamp", "cusip"], name="treasuries_no_revisions"),
+    Check("tips_fetch_ok", _check_tips_fetch_ok, severity=Severity.WARN),
+    Check("tips_fresh", _check_tips_fresh, severity=Severity.WARN),
+    Check("tips_sane", _check_tips_sane, severity=Severity.WARN),
+    revision_check(lambda p: p.tips_prices_dir, ["timestamp", "cusip"], name="tips_no_revisions"),
 )

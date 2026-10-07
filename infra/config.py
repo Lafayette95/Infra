@@ -69,6 +69,8 @@ DAILY_BONDS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "bonds.parquet"
 # all); which bonds a consumer uses is a VIEW (on-the-run map, futures baskets).
 DAILY_TREASURY_PRICES_DIR = DAILY_ROOT / "TreasuryPrices"
 DAILY_TREASURY_PRICES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "treasury_prices.parquet"
+DAILY_TIPS_PRICES_DIR = DAILY_ROOT / "TipsPrices"
+DAILY_TIPS_PRICES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "tips_prices.parquet"
 # An empty page this many days old is a holiday (covered); a newer one, or a page whose
 # END OF DAY column isn't posted yet, is asked again on the next run.
 TREASURY_PRICES_SETTLE_DAYS = 3
@@ -107,6 +109,11 @@ OTR_YIELDS_DIR = DERIVED_ROOT / "OTRYields"
 # (+ leave-one-out), curve carry and rolldown. infra/pipeline/treasury_curves.py.
 TREASURY_CURVES_DIR = DERIVED_ROOT / "TreasuryCurves"
 TREASURY_RV_DIR = DERIVED_ROOT / "TreasuryRV"
+TIPS_CURVES_DIR = DERIVED_ROOT / "TipsCurves"
+TIPS_RV_DIR = DERIVED_ROOT / "TipsRV"
+TIPS_FIT_MIN_YEARS = 1.5  # TIPS closer to maturity stay out of the real-curve fit (still get metrics): their
+                          # yield is dominated by the next CPI prints' seasonality and carry - the Fed's GSW
+                          # TIPS curve leaves out the last 18 months the same way
 # Basis model runs per model spec (M2, M2T, ...): per day x contract and per day x contract x
 # bond - written by scripts/run_basis.py --persist, read by the basis dashboard page.
 BASIS_RUNS_DIR = DERIVED_ROOT / "BasisRuns"

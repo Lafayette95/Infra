@@ -165,6 +165,36 @@ TREASURY_CURVE = DerivedMetric(
     extra_stores=(ExtraStore("treasury_rv", lambda p: p.treasury_rv_dir, RV_KEYS),),
 )
 
+# ------------------------------------------------------------ TIPS real curve + breakevens
+def compute_tips_curve(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> tuple[pd.DataFrame, dict]:
+    """The real curve on every day with TIPS prices (``infra.pipeline.tips_curves``), with
+    breakevens against the nominal curve just fitted for the same day (runs AFTER
+    ``treasury_curve``). Svensson seeds from the stored previous day."""
+    from infra.pipeline.tips_curves import compute_tips_curves
+    cdf, rdf, diag = compute_tips_curves(start, end, prices_root=paths.tips_prices_dir, curves_root=paths.tips_curves_dir,
+                                         nominal_root=paths.treasury_curves_dir, auctions_root=paths.tsy_auctions_dir)
+    return cdf, {**diag, "extra": {"tips_rv": rdf}}
+
+
+def _check_tips_curve(ctx: StepContext):
+    from infra.pipeline.tips_curves import read_tips_curves
+    c = read_tips_curves(ctx.start, ctx.end, root=ctx.paths.tips_curves_dir)
+    if c.empty:
+        return True, "no TIPS curve in the window", None
+    be = [col for col in c.columns if col.startswith("be_par_")]
+    bad = c[(c["rmse_bp"] > 25) | (c[be].notna() & ~c[be].apply(lambda s: s.between(-3, 8))).any(axis=1)]
+    if bad.empty:
+        return True, f"{len(c)} real-curve fits, fit error max {c['rmse_bp'].max():.1f}bp, breakevens in [-3, 8]%", None
+    return False, f"{len(bad)} real-curve fit(s) with error > 25bp or a breakeven outside [-3, 8]%", bad
+
+
+TIPS_CURVE = DerivedMetric(
+    "tips_curve", lambda p: p.tips_curves_dir, CURVE_KEYS, compute_tips_curve,
+    checks=(Check("tips_curve_sane", _check_tips_curve, Severity.WARN),),
+    extra_stores=(ExtraStore("tips_rv", lambda p: p.tips_rv_dir, RV_KEYS),), presence_severity=Severity.WARN,
+)
+
+
 # ----------------------------------------------------------- swap closes (PURE method)
 SWAP_CLOSE_KEYS = ("timestamp", "close", "currency", "tenor", "method")
 SWAP_RATE_BOUNDS_PCT = (-1.0, 15.0)
@@ -576,7 +606,7 @@ VRP_METRIC = DerivedMetric(
 
 # order matters: ois_curve reads what swap_closes just wrote, swap_spreads what ois_curve wrote;
 # swaption prints need the records and the OIS curve, vols the prints, OI the records; vrp the vols
-DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE,
+DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE, "tips_curve": TIPS_CURVE,
                                              "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE,
                                              "swap_spreads": SWAP_SPREADS, "inflation_swap_closes": INFLATION_CLOSES,
                                              "inflation_curve": INFLATION_CURVE, "swaption_records": SWAPTION_RECORDS,
