@@ -19,10 +19,12 @@
 .theme-light .logo-dark, .theme-dark .logo-light { display: none; }
 html, body { margin: 0; }
 #root { accent-color: var(--accent); min-height: 100vh; background: var(--page); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; padding: 0 16px 32px; }
-.bar { display: flex; align-items: center; gap: 28px; padding: 10px 16px; margin: 0 -16px 20px; background: var(--bar);
-  border-bottom: 1px solid var(--hairline); box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset; }
-.brand { display: flex; align-items: center; flex: none; }
-.logo { height: 72px; width: auto; border-radius: 6px; display: block; }
+/* Header: the logo centred on its own row, the menu and theme toggle on the row below. */
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 28px; padding: 18px 16px 12px; margin: 0 -16px 20px;
+  background: var(--bar); border-bottom: 1px solid var(--hairline); box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset; }
+.brand { flex: 1 0 100%; display: flex; justify-content: center; }
+.logo { height: clamp(120px, 22vw, 200px); width: auto; border-radius: 10px; display: block;
+  box-shadow: 0 2px 14px rgba(0,0,0,0.18); }
 .nav { display: flex; gap: 20px; flex-wrap: wrap; flex: 1; }
 .theme-toggle { flex: none; }
 .nav-link, .nav-link:visited { color: var(--ink2); text-decoration: none; font-size: 14px; font-weight: 600; }
