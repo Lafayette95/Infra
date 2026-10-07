@@ -96,9 +96,13 @@ def _official_pnl(lo, hi, paths: CyclePaths, official) -> list[pd.DataFrame]:
     for country, src in official.items():
         df = read_bonds_from_disk(official_tickers(country), lo, hi, root=paths.daily_bonds_dir)
         if len(df):
-            parts.append(yp.level_change_pnl(df.rename(columns={"par_yield": "yield"})[["timestamp", "ticker", "yield"]],
-                                             f"yield_{src}", max_gap_days=BMK_YIELD_MAX_GAP_DAYS,
-                                             currency=BOND_CURVES[country].currency))
+            pnl = yp.level_change_pnl(df.rename(columns={"par_yield": "yield"})[["timestamp", "ticker", "yield"]],
+                                      f"yield_{src}", max_gap_days=BMK_YIELD_MAX_GAP_DAYS,
+                                      currency=BOND_CURVES[country].currency)
+            if country == "CA":   # benchmark switches: the held bond's move, not the jump to the new one
+                from infra.pipeline.boc_benchmarks import correct_switch_days
+                pnl = correct_switch_days(pnl, root=paths.ca_benchmarks_dir, zero_root=paths.boc_zero_dir)
+            parts.append(pnl)
     return parts
 
 

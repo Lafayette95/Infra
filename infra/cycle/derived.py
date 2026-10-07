@@ -264,11 +264,13 @@ SWAP_RATE_BOUNDS_PCT = (-1.0, 15.0)
 
 
 def compute_swap_closes(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> tuple[pd.DataFrame, dict]:
-    """The PURE benchmark swap closes (root CLAUDE.md 16) for every day with an archived DTCC
-    file in ``[start - SWAP_CORRECTION_DAYS, end]``: a day's close reads the corrections in
-    the files after it, so each run recomputes the last ``SWAP_CORRECTION_DAYS`` and a late
-    correction lands (95% of cancellations arrive within a day, 99% within 33). Pure only:
-    the futures-adjusted method needs intraday quotes and stays a hand build (TOFIX)."""
+    """The benchmark swap closes (root CLAUDE.md 16), PURE and FUTURES-ADJUSTED, for every day
+    with an archived DTCC file in ``[start - SWAP_CORRECTION_DAYS, end]``: a day's close reads
+    the corrections in the files after it, so each run recomputes the last
+    ``SWAP_CORRECTION_DAYS`` and a late correction lands (95% of cancellations arrive within a
+    day, 99% within 33). The adjusted method (since 2026-10-07) reads the hedge futures'
+    ``bbo-1m`` quotes, fetched by the ``intraday`` step before this one; a currency or day
+    without hedge quotes just has no adjusted rows."""
     from infra.config import SWAP_CORRECTION_DAYS
     from infra.pipeline import dtcc
     from infra.pipeline.swap_closes import REPORT, compute_closes
@@ -277,11 +279,15 @@ def compute_swap_closes(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePath
     days = [d for d in pd.date_range(lo, end) if d in have]
     from infra.analytics.sofr_curve import business_days
     bdays = set(business_days(lo, end))  # federal holidays out: a holiday file has few or no prints
+    from infra.cycle.intraday import IntradayPaths
+    from infra.pipeline.swap_hedge import build_hedge_book
+    book = build_hedge_book(lo, end, daily_root=paths.daily_futures_dir, bonds_root=paths.daily_bonds_dir,
+                            bbo_root=IntradayPaths.default().bbo_dir, contracts_file=paths.contracts_file) if days else None
     frames, empty, cache = [], {}, {}
     for d in days:
         for k in [k for k in cache if k < d]:
             del cache[k]
-        c = compute_closes(d, dtcc_root=paths.dtcc_dir, cache=cache, methods=("pure",))
+        c = compute_closes(d, dtcc_root=paths.dtcc_dir, cache=cache, methods=("pure", "adjusted"), book=book)
         if c.empty and d in bdays:
             empty[d] = "no plain par-swap print in any close window that day"
         frames.append(c)
@@ -292,13 +298,14 @@ def compute_swap_closes(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePath
     return df, {"days": [d for d in days if d in bdays], "empty_days": empty, "range": (lo, end)}
 
 
-def _replace_pure_closes(store, df: pd.DataFrame, diag: dict, start, end) -> None:
-    """Delete the recomputed range's PURE rows only (the hand-built adjusted rows stay),
-    by the snap INSTANT (closes are keyed by it, not by midnight), then write."""
+def _replace_closes(store, df: pd.DataFrame, diag: dict, start, end) -> None:
+    """Delete the recomputed range's rows of both methods, by the snap INSTANT (closes are
+    keyed by it, not by midnight), then write."""
     lo, hi = diag.get("range", (start, end))
     hi = pd.Timestamp(hi) + pd.Timedelta(days=1)
     parquet_store.delete_where(store, lambda part: pd.to_datetime(part["timestamp"]).ge(pd.Timestamp(lo))
-                               & pd.to_datetime(part["timestamp"]).lt(hi) & part["method"].astype(str).eq("pure"))
+                               & pd.to_datetime(part["timestamp"]).lt(hi)
+                               & part["method"].astype(str).isin(["pure", "adjusted"]))
     if not df.empty:
         parquet_store.write_partitioned(df, store, list(SWAP_CLOSE_KEYS))
 
@@ -318,7 +325,7 @@ def _check_swap_closes(ctx: StepContext):
 
 SWAP_CLOSES_PURE = DerivedMetric(
     "swap_closes", lambda p: p.swap_closes_dir, SWAP_CLOSE_KEYS, compute_swap_closes,
-    checks=(Check("swap_closes_sane", _check_swap_closes),), replace=_replace_pure_closes,
+    checks=(Check("swap_closes_sane", _check_swap_closes),), replace=_replace_closes,
     presence_severity=Severity.WARN,  # like every DTCC check: a thin day must not cost the vintage
 )
 

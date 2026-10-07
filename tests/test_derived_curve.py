@@ -39,9 +39,10 @@ def test_curve_metric_registered_with_both_revision_checks():
             "treasury_curve_fit_sane"} <= set(names)
 
 
-def test_swap_closes_replace_only_pure_rows_by_instant(tmp_path):
-    """The cycle owns the PURE closes only: a run replaces them (keyed by the snap instant,
-    not midnight) and leaves the hand-built adjusted rows alone."""
+def test_swap_closes_replace_both_methods_by_instant(tmp_path):
+    """Since 2026-10-07 the cycle owns BOTH methods: a run replaces the window's pure and
+    adjusted rows (keyed by the snap instant, not midnight) - an adjusted close that no longer
+    computes (its prints cancelled) disappears rather than lingering."""
     from infra.storage import parquet_store as ps
     store = tmp_path / "SwapCloses"
     def rows(method, rate):
@@ -50,9 +51,9 @@ def test_swap_closes_replace_only_pure_rows_by_instant(tmp_path):
                              "n_trades": pd.Series([5], dtype="int32"), "half_window_min": pd.Series([30], dtype="int32"),
                              "dispersion_bp": 0.3, "se_bp": 0.2})
     ps.write_partitioned(pd.concat([rows("pure", 3.50), rows("adjusted", 3.51)]), store, list(derived.SWAP_CLOSE_KEYS))
-    derived._replace_pure_closes(store, rows("pure", 3.55), {"range": (D("2026-09-30"), D("2026-09-30"))}, None, None)
+    derived._replace_closes(store, rows("pure", 3.55), {"range": (D("2026-09-30"), D("2026-09-30"))}, None, None)
     back = ps.read_partitioned(store).set_index("method")["rate"].to_dict()
-    assert back == {"pure": 3.55, "adjusted": 3.51}
+    assert back == {"pure": 3.55}
 
 
 def test_swap_closes_metric_registered():

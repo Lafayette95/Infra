@@ -529,6 +529,8 @@ day's vintage would have been lost.
 
 ## Derived: OTR yields, swap closes and futures snaps are not in the daily cycle yet
 
+**Update 2026-10-07 - the futures-ADJUSTED swap closes are in `derived` too** (`swap_closes` metric: both methods, one hedge book per run, both methods' rows replaced over the recomputed window; USD, and EUR / GBP on Eurex / Long Gilt hedges - CLAUDE.md 16). Still open here: switching the OIS curves' `method` to the adjusted closes (user's call - it changes the stored curves and spreads, and adjusted closes cover fewer days: 70% vs 92% of held-out days for EUR / GBP), the OTR yields, the futures snaps.
+
 **Update 2026-10-06 (later) - the hedge quotes ARE scheduled:** the daily `intraday` step fetches `bbo-1m` for every `SWAP_HEDGES` root's `.v.0` (root CLAUDE.md 14). That unblocks the futures-ADJUSTED swap closes in `derived` (`swap_closes` metric: `methods=("pure", "adjusted")`, pass the cycle-paths hedge book, replace both methods' rows) and then switching `OIS_CURVES["USD_SOFR"].method` to `adjusted` - not done yet (user's call: it changes the stored OIS curve and spreads). The ZQ intraday px / intraday WIRP and the futures snaps (which also need SR3 / non-front contracts' quotes) remain by hand.
 
 **Update 2026-10-06 - the PURE swap closes are in `derived`** (metric `swap_closes`, user decision: step 1 of the swap-spread plan below), recomputing the last `SWAP_CORRECTION_DAYS` and replacing only pure rows. Still open here: the futures-ADJUSTED closes (hand build, `Derived/SwapCloses` adjusted rows stop at 2026-09-30 - the half this entry warned about, now an explicit known gap, not silent: `swap_closes_present` judges the pure method only), the OTR yields, the futures snaps.
@@ -557,7 +559,7 @@ day's vintage would have been lost.
 
 **Found:** 2026-10-01, building the futures-adjusted swap closes (CLAUDE.md 16).
 **Where:** `infra.config.SWAP_HEDGES`, `infra.pipeline.swap_hedge`.
-**Status:** open, not fixed.
+**Status:** (2) done 2026-10-07 - EUR / GBP adjusted closes (CLAUDE.md 16); (1) open.
 
 **The issue:** (1) 1-3y USD swaps are hedged with ZT, a 2y Treasury future - a reasonable proxy over a <=90-minute move, but the SR3 strip is the right hedge for the short end (it IS the SOFR curve). (2) EUR and GBP have no adjusted closes at all: Bund futures (Eurex, data from 2025-03) and gilt futures (ICE, disabled in the cycle) have no stored intraday quotes. **Why not now:** both need new `bbo-1m` backfills (SR3; Eurex/ICE), not yet priced, and the intraday fetch isn't scheduled. **To do:** price the SR3 `bbo-1m` backfill for the strip covering 1-3y; hedge 1-3y with the strip's forward-weighted move (no hedge ratio needed: price = 100 - rate); for EUR/GBP, decide whether Eurex/ICE quotes are worth adding.
 
@@ -1400,7 +1402,7 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **ESR settlement time vs the 16:15 London close is not verified**, so the EUR short end takes the PREVIOUS day's ESR settlements to stay point in time (`infra.pipeline.ois_curves.esr_periods`). The strip's 1y sits -0.1bp from the 1y close (sd 3.8bp, mostly the day's move). If ESR settles before 16:15 London, use the same day. Also: the live quarter's elapsed €STR fixings are taken at the futures' rate, since we store no €STR fixings (the ECB publishes them free).
 *   **JPY and CAD have no short end** (no TONA / CORRA futures on Databento; MX and OSE aren't on it): a flat forward to the first pillar. Free options: the BoJ / BoC overnight fixings plus a policy-meeting step path, as for SOFR.
 *   **CAD is the thinnest curve:** a curve on 62% of days, zeros moving 5.4-7.5bp a day against USD's ~5. More days would need a wider window, which costs noise; a futures-adjusted close would need Canadian bond futures (CGB on MX, not on Databento).
-*   **Futures-adjusted closes for EUR / GBP:** the intraday step now fetches Bund / Bobl / Schatz / Buxl and Long Gilt `bbo-1m`, so the adjusted method (section 16) could hedge EUR and GBP prints too, the way USD's cut the error by a third. Not built.
+*   **Futures-adjusted closes for EUR / GBP: built 2026-10-07** (CLAUDE.md 16), in the daily cycle; the EUR / GBP OIS curves still use the PURE closes (switching is the user's call, see "Derived: OTR yields, swap closes ..."). GBP 2-3y have no hedge (one gilt future).
 *   **The GBP short end is the BoE curve of the day before** (the BoE posts day D by the next morning). A day with a big front-end move (an MPC day) bends the curve between that 1-day-old short end and today's 2y pillar. SONIA futures (`SO3`, ICE) would fix it, but ICE is disabled in the daily cycle on cost (section 12).
 
 ## UK / DE / JP / CA: the multi-benchmark structure beyond the official curves (2026-10-07)
@@ -1415,7 +1417,7 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 
 ## Canada: beyond the benchmark yields (2026-10-07)
 *   **Done:** BoC benchmark yields `CA_BOND_<t>y` from 2001 and their `yield_boc` bmk (CLAUDE.md 13).
-*   **Benchmark switches are jumps in the P&L:** the BoC publishes no bond id with the series. Fix: the BoC's auction results (Valet groups `AUC_BOND_RESULTS` etc.) identify each new bond and its last auction, so a switch day could be dated and its change dropped or replaced - not built.
+*   **Benchmark switches are corrected from 2011** (CLAUDE.md 13: the BoC page's effective dates + a zero-curve spread). Open: switches before 2011 stay raw - no page captures, and inferring them from the zero curve (Viterbi over candidate bonds) found only half to two-thirds of the page's switches 2011-2026; the long bond's switches are labelled but not corrected; the switch dating has no rule of thumb - the 2y switched a median 92 days after the new bond's last auction, the 10y 7 days.
 *   **The BoC fitted zero curve** (0.25-30y, from 1986) is published weekly with a two-week lag: usable as a history / validation source, not daily.
 *   **No per-bond prices found yet; no futures:** Montreal Exchange (CGB) isn't on Databento.
 

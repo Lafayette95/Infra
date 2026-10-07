@@ -386,6 +386,11 @@ CME_TCF_ROOTS: dict[str, str] = {"26": "ZT", "3YR": "Z3N", "25": "ZF", "21": "ZN
 # latest revised history - see MACRO_RELEASES below and infra/pipeline/releases.py.
 RAW_DATA_ROOT = DATABASE_ROOT / "RawData"
 EUREX_CF_DIR = RAW_DATA_ROOT / "EUREX_CF"   # Eurex's deliverable-bonds CSV, archived raw per day (a file = coverage)
+# Canada (infra.pipeline.boc_benchmarks): the BoC benchmark page's snapshots (each names the
+# benchmark bond per term and its effective date; the page archived daily, Wayback captures
+# from 2011) and the BoC fitted zero curve - together they date and size benchmark switches
+CA_BENCHMARKS_DIR = REFERENCE_ROOT / "Canada" / "Benchmarks"
+BOC_ZERO_DIR = RAW_DATA_ROOT / "BoC" / "ZeroCurve"
 DE_AUCTIONS_DIR = RAW_DATA_ROOT / "DE_Auctions"  # the Finanzagentur issuance history, one row per (day, ISIN)
 RELEASES_DIR = RAW_DATA_ROOT / "Releases"
 RELEASES_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "releases.parquet"
@@ -1039,9 +1044,25 @@ SWAP_CLOSE_WEIGHTING = SwapCloseWeighting(trade_noise_bp=0.35, pure_drift_bp_per
 # not stored) and gilt (ICE, disabled) futures aren't available as hedges yet.
 SWAP_HEDGES: dict[str, dict[int, str]] = {
     "USD": {1: "ZT", 2: "ZT", 3: "ZT", 5: "ZF", 7: "ZN", 10: "TN", 15: "ZB", 20: "ZB", 30: "UB"},
+    # added 2026-10-07: Eurex German bond futures for EUR (Schatz / Bobl / Bund / Buxl); the
+    # Long Gilt for GBP from 5y out (one root - a poor hedge for the 2-3y, which stay pure)
+    "EUR": {1: "FGBS", 2: "FGBS", 3: "FGBS", 5: "FGBM", 7: "FGBM", 10: "FGBL", 15: "FGBL", 20: "FGBX", 30: "FGBX"},
+    "GBP": {5: "R", 7: "R", 10: "R", 15: "R", 20: "R", 30: "R"},
 }
 SWAP_HEDGE_CMT: dict[str, str] = {"ZT": "US_BOND_2y", "ZF": "US_BOND_5y", "ZN": "US_BOND_7y",
-                                  "TN": "US_BOND_10y", "ZB": "US_BOND_20y", "UB": "US_BOND_30y"}
+                                  "TN": "US_BOND_10y", "ZB": "US_BOND_20y", "UB": "US_BOND_30y",
+                                  "FGBS": "DE_BOND_2y", "FGBM": "DE_BOND_5y", "FGBL": "DE_BOND_10y",
+                                  "FGBX": "DE_BOND_30y", "R": "UK_BOND_10y"}
+# Roots hedged on QUOTES rather than settlements (no cleared volume / settlements stored for
+# the Long Gilt; Eurex settlements only from 2025-07): the hedge contract is each day's
+# most-quoted contract in bbo-1m, and the ratio regresses the change of the mid at the YIELD
+# SOURCE'S OWN price time on the yield change - the Bundesbank's prices are an 11:15 Frankfurt
+# snapshot, the BoE curve's the 16:15 London gilt close; mismatched instants would bias the
+# ratio toward zero (errors in variables).
+SWAP_HEDGE_QUOTE_RATIO: dict[str, tuple[str, str]] = {
+    "FGBS": ("11:15", "Europe/Berlin"), "FGBM": ("11:15", "Europe/Berlin"), "FGBL": ("11:15", "Europe/Berlin"),
+    "FGBX": ("11:15", "Europe/Berlin"), "R": ("16:15", "Europe/London"),
+}
 SWAP_HEDGE_RATIO_DAYS = 60
 
 SWAP_CLOSES: dict[str, SwapCloseSpec] = {

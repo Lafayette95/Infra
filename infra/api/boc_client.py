@@ -51,3 +51,39 @@ def fetch_benchmark_yields(start: pd.Timestamp, end: pd.Timestamp, *, fetch=fetc
     df = df[(df["timestamp"] >= start) & (df["timestamp"] < end)].reset_index(drop=True)
     covered = [] if df.empty else [(start, min(end, df["timestamp"].max() + pd.Timedelta(days=1)))]
     return df, covered
+
+
+# ------------------------------------------------------------------ benchmark page, zero curve
+PAGE = "https://www.bankofcanada.ca/rates/interest-rates/canadian-bonds/"
+ZERO_URL = "https://www.bankofcanada.ca/stats/results/csv"
+
+
+def fetch_benchmark_page() -> bytes:
+    """The "Selected bond yields" page: it names each current benchmark bond and the date it
+    became the benchmark (parsed by ``infra.processing.boc_benchmarks``)."""
+    req = urllib.request.Request(PAGE, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+        return resp.read()
+
+
+def fetch_zero_curve(start: pd.Timestamp, end_inclusive: pd.Timestamp) -> pd.DataFrame:
+    """The BoC fitted zero-coupon curve (Bolder-Johnson-Metzler; 0.25-30y every quarter year,
+    decimals, continuously compounded), published weekly on Thursdays with a two-week lag;
+    from 1986. Long ``timestamp, maturity, zero`` (decimal); "na" rows dropped."""
+    import urllib.parse
+    body = urllib.parse.urlencode({"lookupPage": "lookup_yield_curve.php", "startRange": "1986-01-01",
+                                   "searchRange": "", "dFrom": str(pd.Timestamp(start).date()),
+                                   "dTo": str(pd.Timestamp(end_inclusive).date())}).encode()
+    req = urllib.request.Request(ZERO_URL, data=body, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        text = resp.read().decode("utf-8-sig", "replace")
+    raw = pd.read_csv(io.StringIO(text), skipinitialspace=True, na_values=["na"], dtype=str)
+    raw = raw.rename(columns=lambda c: c.strip())
+    if "Date" not in raw:
+        return pd.DataFrame(columns=["timestamp", "maturity", "zero"])
+    raw["timestamp"] = pd.to_datetime(raw["Date"], errors="coerce")
+    cols = [c for c in raw.columns if c.startswith("ZC")]
+    long = raw.dropna(subset=["timestamp"]).melt(id_vars=["timestamp"], value_vars=cols, var_name="col", value_name="zero")
+    long["maturity"] = long["col"].str[2:-2].astype(int) / 100.0
+    long["zero"] = pd.to_numeric(long["zero"], errors="coerce")
+    return long.dropna(subset=["zero"])[["timestamp", "maturity", "zero"]].reset_index(drop=True)

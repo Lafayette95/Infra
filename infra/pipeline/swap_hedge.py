@@ -18,6 +18,7 @@ from infra.config import (
     FUTURES_CONTRACTS_FILE,
     FUTURES_ROOTS,
     SWAP_HEDGE_CMT,
+    SWAP_HEDGE_QUOTE_RATIO,
     SWAP_HEDGE_RATIO_DAYS,
     SWAP_HEDGES,
 )
@@ -70,10 +71,40 @@ def hedge_contracts(start, end, *, roots=None, daily_root: Path = DAILY_FUTURES_
         contracts = contract_store.read_contracts(contracts_file, root)
         if contracts.empty:
             continue
+        if root in SWAP_HEDGE_QUOTE_RATIO:
+            front = quoted_front(list(contracts["ticker"].astype(str)), start, end)
+            if len(front):
+                out[root] = front
+            continue
         m = volume_ranked_mapping([RelativeSpec(root, "v", 0)], FUTURES_ROOTS[root], contracts, start, end,
                                   fetch_missing=False, daily_root=daily_root)
         out[root] = m[0].dropna()
     return out
+
+
+def quoted_front(tickers, start, end, *, bbo_root: Path = BBO_FUTURES_DIR) -> pd.Series:
+    """UTC day -> the contract with the most two-sided ``bbo-1m`` samples that day (the
+    liquid front, for roots with no stored cleared volume). Reads stored quotes only."""
+    q = read_bbo_from_disk(list(tickers), pd.Timestamp(start), pd.Timestamp(end), root=bbo_root).dropna(subset=["bid", "ask"])
+    if q.empty:
+        return pd.Series(dtype=object)
+    q = q.assign(day=q["timestamp"].dt.normalize(), ticker=q["ticker"].astype(str))
+    n = q.groupby(["day", "ticker"]).size().rename("n").reset_index()
+    return n.sort_values(["day", "n"]).groupby("day").tail(1).set_index("day")["ticker"]
+
+
+def snap_mids(tickers, start, end, local_time: str, timezone: str, *, bbo_root: Path = BBO_FUTURES_DIR) -> pd.DataFrame:
+    """Day x ticker: each contract's mid at ``local_time`` that day (the latest sample at or
+    before the instant, within 5 minutes)."""
+    from infra.trading_calendar import snap_instants
+    q = read_bbo_from_disk(list(tickers), pd.Timestamp(start), pd.Timestamp(end), root=bbo_root).dropna(subset=["mid"])
+    if q.empty:
+        return pd.DataFrame()
+    q = q.assign(day=q["timestamp"].dt.normalize(), ticker=q["ticker"].astype(str))
+    days = pd.DatetimeIndex(sorted(q["day"].unique()))
+    inst = pd.Series(snap_instants(days, local_time, timezone), index=days)
+    q = q[(q["timestamp"] <= q["day"].map(inst)) & (q["timestamp"] > q["day"].map(inst) - pd.Timedelta(minutes=5))]
+    return q.sort_values("timestamp").groupby(["day", "ticker"])["mid"].last().unstack("ticker")
 
 
 def build_hedge_book(start, end, *, currencies=None, daily_root: Path = DAILY_FUTURES_DIR,
@@ -94,10 +125,15 @@ def build_hedge_book(start, end, *, currencies=None, daily_root: Path = DAILY_FU
         contract = mapped[root]
         book.contract[root] = contract
         cmt = SWAP_HEDGE_CMT[root]
-        st = read_daily_from_disk(sorted(set(contract)), history, end, root=daily_root)
-        if st.empty or cmt not in yields:
-            continue
-        st = st.pivot(index="timestamp", columns="ticker", values="settlement_price")
+        if root in SWAP_HEDGE_QUOTE_RATIO:
+            st = snap_mids(sorted(set(contract)), history, end, *SWAP_HEDGE_QUOTE_RATIO[root], bbo_root=bbo_root)
+            if st.empty or cmt not in yields:
+                continue
+        else:
+            st = read_daily_from_disk(sorted(set(contract)), history, end, root=daily_root)
+            if st.empty or cmt not in yields:
+                continue
+            st = st.pivot(index="timestamp", columns="ticker", values="settlement_price")
         common = st.index.intersection(yields.index[yields[cmt].notna()])
         st = st.loc[common]
         dy_bp = yields.loc[common, cmt].diff() * 100.0

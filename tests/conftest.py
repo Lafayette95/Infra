@@ -28,6 +28,8 @@ def _no_bond_network(monkeypatch):
     monkeypatch.setattr("infra.pipeline.bonds.SOURCES", {"treasury": nothing, "boe": nothing, "bundesbank": nothing,
                                                           "mof": nothing, "boc": nothing})
     monkeypatch.setattr("infra.pipeline.boe_ois.FETCH", nothing)
+    monkeypatch.setattr("infra.pipeline.boc_benchmarks.FETCH_PAGE", lambda: None)
+    monkeypatch.setattr("infra.pipeline.boc_benchmarks.FETCH_ZERO", lambda start, end: None)
     monkeypatch.setattr("infra.pipeline.bunds.FETCH_PRICES", lambda start, end, isin="": "")
     monkeypatch.setattr("infra.pipeline.bunds.FETCH_ISSUANCE", lambda: None)
 

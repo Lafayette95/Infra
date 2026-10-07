@@ -215,3 +215,36 @@ def test_boe_reads_the_pre_2005_nominal_sheet_name():
         pd.DataFrame(rows).to_excel(xl, sheet_name="4. nominal spot curve", header=False, index=False)
     df, first, last = boe_client.parse_spot_sheet(buf.getvalue())
     assert len(df) == 2 and first == D("1992-09-16")
+
+
+# ------------------------------------------------------------------ Canada benchmark switches
+PAGE = ("<p>The current benchmark bond issues and their effective dates, shown in brackets, are as follows. "
+        "2&#8209;year - 2028.08.01, 2.75% (2026.08.06); 10 year - 2036.06.01, 3.25% (2026.06.23); "
+        "Long - 2057.12.01, 3.50% (2026.03.06); RRB - 2050.12.01, 0.50% (2020.06.01)</p>")
+
+
+def test_benchmark_page_parses_terms_bonds_and_effective_dates():
+    from infra.processing.boc_benchmarks import parse_benchmark_page
+    p = parse_benchmark_page(PAGE.replace("2&#8209;year", "2 year")).set_index("tenor")
+    assert sorted(p.index) == [2, 10, 30]                              # RRB left out
+    assert p.loc[10, "maturity_date"] == D("2036-06-01") and p.loc[10, "coupon"] == 3.25
+    assert p.loc[2, "effective"] == D("2026-08-06")
+
+
+def test_switch_day_pnl_takes_out_the_new_minus_old_spread(tmp_path, monkeypatch):
+    from infra.pipeline import boc_benchmarks as bb
+    from infra.processing import yield_pnl as yp
+    snaps = pd.DataFrame([
+        (D("2026-05-01"), 10, D("2035-12-01"), 3.25, D("2025-12-19"), "wayback"),
+        (D("2026-07-01"), 10, D("2036-06-01"), 3.25, D("2026-06-23"), "wayback")],
+        columns=["timestamp", "tenor", "maturity_date", "coupon", "effective", "source"])
+    bb.store_snapshots(snaps, root=tmp_path / "snaps")
+    days = pd.bdate_range("2026-06-19", "2026-06-24")
+    y = pd.DataFrame({"timestamp": days, "ticker": "CA_BOND_10y", "yield": [3.90, 3.90, 3.94, 3.94]})
+    pnl = yp.level_change_pnl(y, "yield_boc", currency="CAD")
+    monkeypatch.setattr(bb, "zero_curve_before", lambda day, **kw: (D("2026-06-01"), np.array([0.5, 30.0]), np.array([0.03, 0.03])))
+    monkeypatch.setattr(bb.pb, "bond_yield_from_zero", lambda c, m, d, mats, z: 3.0 + (0.04 if m == D("2036-06-01") else 0.0))
+    out = bb.correct_switch_days(pnl, root=tmp_path / "snaps").set_index("timestamp")
+    assert out.loc[D("2026-06-23"), "pnl_per_dv01"] == pytest.approx(0.0)    # raw -4bp = the 4bp spread to the new bond
+    assert out.loc[D("2026-06-23"), "prev_cusip"] == "CA 2035-12-01 3.25%" and out.loc[D("2026-06-23"), "cusip"] == "CA 2036-06-01 3.25%"
+    assert out.loc[D("2026-06-24"), "pnl_per_dv01"] == pytest.approx(0.0)    # no switch: unchanged
