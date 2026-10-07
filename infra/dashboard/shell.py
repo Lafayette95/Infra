@@ -14,6 +14,11 @@ from dash import Dash, Input, Output, dcc, html
 def build_shell() -> html.Div:
     return html.Div(id="root", className="theme-light", children=[
         html.Header(className="bar", children=[
+            html.Div(className="brand", children=[
+                # one image per theme, swapped by CSS on #root's theme class (assets/style.css)
+                html.Img(src=dash.get_asset_url("logo-light.jpg"), className="logo logo-light", alt="Gemini Capital"),
+                html.Img(src=dash.get_asset_url("logo-dark.jpg"), className="logo logo-dark", alt="Gemini Capital"),
+            ]),
             html.Div(className="nav", children=[
                 dcc.Link(page["name"], href=page["relative_path"], className="nav-link")
                 for page in dash.page_registry.values()

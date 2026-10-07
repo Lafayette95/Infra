@@ -1,20 +1,28 @@
-"""Design tokens (validated dataviz palette) for light and dark chart surfaces.
+"""Design tokens for light and dark chart surfaces - the Gemini Capital metallic scheme
+(2026-10-07): dark = metallic black page, carbon-grey surfaces, silver ink; light = silver
+/ platinum page, near-white chart surface, carbon ink. Chrome only: the DATA colours below
+(up/down, categorical series) are the validated dataviz palette, kept as is.
 
 Direction is encoded blue (up) / orange (down) - categorical slots 1 and 2 of the
 reference palette, separable under colour-vision deficiency - never red/green.
+
+Surfaces were checked against the series palette (WCAG contrast): the dark carbon surface
+#17181b RAISES every series' contrast slightly vs the old #1a1a19; the light CHART surface
+stays near-white (#fbfbfc) while the page around it is silver, because a fully silver
+chart surface pushed the orange 'down' series under 3:1 (3.12 -> 2.98).
 """
 from __future__ import annotations
 
 THEMES: dict[str, dict[str, str]] = {
     "light": {
-        "surface": "#fcfcfb", "page": "#f9f9f7", "ink": "#0b0b0b", "ink2": "#52514e",
-        "muted": "#898781", "grid": "#e1e0d9", "axis": "#c3c2b7",
-        "up": "#2a78d6", "down": "#eb6834", "volume": "#898781",
+        "surface": "#fbfbfc", "page": "#e9ebee", "ink": "#16171a", "ink2": "#4a4d52",
+        "muted": "#80848a", "grid": "#dde0e4", "axis": "#b9bdc3",
+        "up": "#2a78d6", "down": "#eb6834", "volume": "#80848a",
     },
     "dark": {
-        "surface": "#1a1a19", "page": "#0d0d0d", "ink": "#ffffff", "ink2": "#c3c2b7",
-        "muted": "#898781", "grid": "#2c2c2a", "axis": "#383835",
-        "up": "#3987e5", "down": "#d95926", "volume": "#898781",
+        "surface": "#17181b", "page": "#08090a", "ink": "#e6e8eb", "ink2": "#b4b8be",
+        "muted": "#858a91", "grid": "#2a2c30", "axis": "#3a3d42",
+        "up": "#3987e5", "down": "#d95926", "volume": "#858a91",
     },
 }
 

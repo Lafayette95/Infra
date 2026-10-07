@@ -1,10 +1,30 @@
-/* Page chrome tokens mirror infra/dashboard/theme.py (validated palette). */
-.theme-light { color-scheme: light; --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --grid:#e1e0d9; --axis:#c3c2b7; --accent:#2a78d6; }
-.theme-dark  { color-scheme: dark;  --page:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --grid:#2c2c2a; --axis:#383835; --accent:#3987e5; }
+/* Page chrome tokens mirror infra/dashboard/theme.py - Gemini Capital metallic scheme:
+   dark = metallic black / carbon grey / silver; light = silver-platinum / carbon ink.
+   --accent is the metallic button/selection colour; --bar is the header's brushed-metal gradient. */
+.theme-light { color-scheme: light; --page:#e9ebee; --surface:#fbfbfc; --ink:#16171a; --ink2:#4a4d52; --grid:#dde0e4; --axis:#b9bdc3;
+  --accent:#2b2d31; --accent-ink:#f2f3f5; --bar:linear-gradient(180deg,#f7f8f9 0%,#e3e6e9 55%,#d6dade 100%); --hairline:#c4c8cd; }
+.theme-dark  { color-scheme: dark;  --page:#08090a; --surface:#17181b; --ink:#e6e8eb; --ink2:#b4b8be; --grid:#2a2c30; --axis:#3a3d42;
+  --accent:#c9ccd1; --accent-ink:#0b0c0e; --bar:linear-gradient(180deg,#1b1c1f 0%,#0f1012 60%,#08090a 100%); --hairline:#34373c; }
+/* Dash 4 components (radios, dropdowns, sliders, ...) colour themselves from --Dash-* variables
+   (default accent purple #7f4bc4, white control fills): map them onto the metallic tokens. */
+.theme-light { --Dash-Fill-Interactive-Strong: var(--accent); --Dash-Fill-Interactive-Weak: rgba(43,45,49,0.10);
+  --Dash-Fill-Inverse-Strong: var(--surface); --Dash-Fill-Primary-Hover: rgba(22,23,26,0.06); --Dash-Fill-Primary-Active: rgba(22,23,26,0.10);
+  --Dash-Text-Primary: var(--ink); --Dash-Text-Strong: var(--ink); --Dash-Text-Weak: var(--ink2); --Dash-Text-Disabled: #9a9ea4;
+  --Dash-Stroke-Strong: var(--axis); --Dash-Stroke-Weak: var(--grid); }
+.theme-dark { --Dash-Fill-Interactive-Strong: var(--accent); --Dash-Fill-Interactive-Weak: rgba(201,204,209,0.14);
+  --Dash-Fill-Inverse-Strong: var(--surface); --Dash-Fill-Primary-Hover: rgba(230,232,235,0.08); --Dash-Fill-Primary-Active: rgba(230,232,235,0.14);
+  --Dash-Text-Primary: var(--ink); --Dash-Text-Strong: var(--ink); --Dash-Text-Weak: var(--ink2); --Dash-Text-Disabled: #6c7077;
+  --Dash-Stroke-Strong: var(--axis); --Dash-Stroke-Weak: var(--grid); }
+/* the logo matching the active theme */
+.theme-light .logo-dark, .theme-dark .logo-light { display: none; }
 html, body { margin: 0; }
-#root { min-height: 100vh; background: var(--page); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; padding: 0 16px 32px; }
-.bar { display: flex; justify-content: space-between; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--grid); margin-bottom: 20px; }
-.nav { display: flex; gap: 20px; }
+#root { accent-color: var(--accent); min-height: 100vh; background: var(--page); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; padding: 0 16px 32px; }
+.bar { display: flex; align-items: center; gap: 28px; padding: 10px 16px; margin: 0 -16px 20px; background: var(--bar);
+  border-bottom: 1px solid var(--hairline); box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset; }
+.brand { display: flex; align-items: center; flex: none; }
+.logo { height: 72px; width: auto; border-radius: 6px; display: block; }
+.nav { display: flex; gap: 20px; flex-wrap: wrap; flex: 1; }
+.theme-toggle { flex: none; }
 .nav-link, .nav-link:visited { color: var(--ink2); text-decoration: none; font-size: 14px; font-weight: 600; }
 .nav-link:hover { color: var(--ink); }
 .theme-toggle label { margin-left: 12px; color: var(--ink2); }
@@ -13,7 +33,7 @@ html, body { margin: 0; }
 .controls { display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: flex-end; background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; padding: 12px 16px; }
 .controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink2); min-width: 160px; }
 .fetch { display: flex; gap: 16px; align-items: center; font-size: 13px; color: var(--ink2); }
-.fetch button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 20px; font-weight: 600; cursor: pointer; }
+.fetch button { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 6px; padding: 8px 20px; font-weight: 600; cursor: pointer; }
 .status { font-size: 13px; color: var(--ink2); margin: 12px 0; min-height: 18px; }
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .kpi { background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; }
