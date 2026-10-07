@@ -40,7 +40,8 @@ def level_change_pnl(yields: pd.DataFrame, bmk: str, *, max_gap_days: int = 7, c
     return _finish(y, bmk, max_gap_days, currency)
 
 
-def held_bond_pnl(otr: pd.DataFrame, bond_yields: pd.DataFrame, bmk: str, *, max_gap_days: int = 7) -> pd.DataFrame:
+def held_bond_pnl(otr: pd.DataFrame, bond_yields: pd.DataFrame, bmk: str, *, max_gap_days: int = 7,
+                  currency: str = "USD") -> pd.DataFrame:
     """``otr``: ``timestamp, ticker, cusip`` (the on-the-run bond per day); ``bond_yields``:
     ``timestamp, cusip, yield`` for every CUSIP. Day D's P&L = the move from D-1 to D of the
     bond on the run on D-1 (``prev_cusip``); its own yield on D must exist."""
@@ -58,4 +59,4 @@ def held_bond_pnl(otr: pd.DataFrame, bond_yields: pd.DataFrame, bmk: str, *, max
     o["prev_timestamp"], o["prev_cusip"] = g["timestamp"].shift(1), g["cusip"].shift(1)
     o["yield"] = by.reindex(pd.MultiIndex.from_arrays([o["timestamp"], o["prev_cusip"].fillna("")])).to_numpy()
     o["prev_yield"] = by.reindex(pd.MultiIndex.from_arrays([o["prev_timestamp"], o["prev_cusip"].fillna("")])).to_numpy()
-    return _finish(o, bmk, max_gap_days)
+    return _finish(o, bmk, max_gap_days, currency)

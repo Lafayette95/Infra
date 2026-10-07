@@ -85,3 +85,24 @@ def test_px_source_and_checks_flag_an_unpriced_outstanding_bond(tmp_path, monkey
     assert checks["bunds_fetch_ok"][0] and checks["bunds_sane"][0]
     ok, _, details = checks["bunds_complete"]
     assert not ok and list(details["isin"]) == ["DE000BU22999"]  # the Schatz has no price that day
+
+
+def test_otr_map_ranks_by_issue_day_and_the_held_bond_pnl(tmp_path, monkeypatch):
+    rows = [("2026-01-07", "DE000BU22111", "Schatz", 0.02, "2028-03-10", "2 Y", "N"),
+            ("2026-04-08", "DE000BU22222", "Schatz", 0.025, "2028-06-10", "2 Y", "N")]
+    monkeypatch.setattr(bunds, "FETCH_ISSUANCE", lambda: _workbook(rows))
+    paths = CyclePaths.under(tmp_path)
+    bunds.update_auctions(root=paths.de_auctions_dir)
+    m = bunds.otr_map("2026-04-08", "2026-04-13", root=paths.de_auctions_dir)
+    on = m[m["rank"] == 0].set_index("timestamp")["isin"]
+    assert on[D("2026-04-09")] == "DE000BU22111" and on[D("2026-04-10")] == "DE000BU22222"  # issue = auction + 2 weekdays
+    # P&L on the bond held the previous day: the switch day measures the OLD bond's move
+    px = [("REN", "A610", isin, day, y) for isin, day, y in
+          (("DE000BU22111", "2026-04-09", "2.00"), ("DE000BU22111", "2026-04-10", "2.05"), ("DE000BU22222", "2026-04-10", "2.40"))]
+    monkeypatch.setattr(bunds, "FETCH_PRICES", lambda start, end, isin="": _csv(px))
+    bunds.fetch_and_store_prices([(D("2026-04-09"), D("2026-04-11"))], root=paths.bund_prices_dir,
+                                 coverage_file=paths.bund_prices_coverage)
+    from infra.cycle.bmk_yields import _de_otr_pnl
+    pnl = _de_otr_pnl(D("2026-04-08"), D("2026-04-11"), paths)
+    row = pnl.set_index("timestamp").loc[D("2026-04-10")]
+    assert row["ticker"] == "DE_BOND_2y" and abs(row["pnl_per_dv01"] + 5.0) < 1e-9 and row["currency"] == "EUR"

@@ -23,7 +23,7 @@ import pandas as pd
 
 from infra.api import bundesbank_client, finanzagentur_client
 from infra.config import (BUND_PRICES_SETTLE_DAYS, DAILY_BUND_PRICES_COVERAGE_FILE, DAILY_BUND_PRICES_DIR,
-                          DE_AUCTIONS_DIR)
+                          DE_AUCTIONS_DIR, DE_OTR_DEPTH, DE_OTR_TENORS)
 from infra.coverage.intervals import find_missing_ranges
 from infra.processing import bunds as pb
 from infra.storage import coverage_store, parquet_store
@@ -68,6 +68,43 @@ def read_securities(as_of=None, *, root: Path = DE_AUCTIONS_DIR) -> pd.DataFrame
     """One row per ISIN first auctioned by ``as_of`` (all if None)."""
     a = read_auctions(None, None if as_of is None else pd.Timestamp(as_of).normalize() + _ONE_DAY, root=root)
     return pb.securities(a)
+
+
+def otr_map(start, end, *, conventions=("issue",), depth: int = DE_OTR_DEPTH,
+            root: Path = DE_AUCTIONS_DIR) -> pd.DataFrame:
+    """The on/off-the-run map for business days in ``[start, end]``: per tenor
+    (``DE_OTR_TENORS``) the conventional issues of that maturity segment ranked newest first
+    (0 = on the run), dropped once matured - the US map's own function
+    (``infra.processing.treasury_otr.otr_map``) on the Bund table, ISINs in its ``cusip``
+    column. Computed, not stored (a view of the issuance history, ~a second). Point in time:
+    only securities first auctioned by ``end``, and each day counts an issue from its issue
+    day ("issue") or first auction ("auction")."""
+    from infra.processing.treasury_otr import otr_map as _otr_map
+    days = pd.bdate_range(pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize())
+    sec = read_securities(pd.Timestamp(end), root=root)
+    if days.empty or sec.empty:
+        return pd.DataFrame()
+    frames = []
+    for tenor, (types, segment) in DE_OTR_TENORS.items():
+        s = sec[sec["type"].isin(types) & (sec["segment"] == segment)]
+        s = s.assign(security_type="X", original_term=tenor, cusip=s["isin"], auction_date=s["first_auction"])
+        frames.append(_otr_map(s, days, {tenor: ("X", tenor)}, depth, conventions))
+    return pd.concat([f for f in frames if len(f)], ignore_index=True).rename(columns={"cusip": "isin"})
+
+
+def otr_yields(start, end, *, convention: str = "issue", prices_root: Path = DAILY_BUND_PRICES_DIR,
+               root: Path = DE_AUCTIONS_DIR) -> pd.DataFrame:
+    """``timestamp, ticker (DE_BOND_<t>y), isin, yield, price_clean`` - each day's on-the-run
+    bond's Bundesbank yield (an 11:15 Frankfurt snapshot, ``BUND_PRICES_LOCAL_TIME``). A day
+    whose on-the-run bond has no price gets no row."""
+    m = otr_map(start, end, conventions=(convention,), depth=0, root=root)
+    if m.empty:
+        return pd.DataFrame(columns=["timestamp", "ticker", "isin", "yield", "price_clean"])
+    px = read_bund_prices(start, pd.Timestamp(end) + _ONE_DAY, isins=sorted(set(m["isin"])), root=prices_root)
+    out = m[["timestamp", "tenor", "isin"]].merge(px[["timestamp", "isin", "yield", "price_clean"]],
+                                                    on=["timestamp", "isin"], how="inner").dropna(subset=["yield"])
+    out = out.assign(ticker="DE_BOND_" + out["tenor"])
+    return out[["timestamp", "ticker", "isin", "yield", "price_clean"]].sort_values(["timestamp", "ticker"]).reset_index(drop=True)
 
 
 # ------------------------------------------------------------------ prices

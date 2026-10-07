@@ -12,7 +12,9 @@ instrument. Local computation over stored data, no API:
 
 Non-US (``BMK_YIELD_OFFICIAL``): ``UK_BOND_<t>y`` / ``DE_BOND_<t>y`` from each country's official
 par curve in Daily/Bonds (the BoE's, the Bundesbank's), bmk ``yield_boe`` / ``yield_bundesbank``,
-in the curve's currency.
+in the curve's currency. And ``DE_BOND_<t>y`` under ``yield_otr`` too: the German on-the-run
+bond's Bundesbank yield (``infra.pipeline.bunds.otr_map``; an 11:15 Frankfurt snapshot), on the
+bond held the previous day - its ISIN in the ``cusip`` / ``prev_cusip`` columns.
 
 Upsert by ``timestamp, ticker, bmk``: a recomputed day replaces its row, a revised source
 yield shows up in ``pnl_no_revisions``.
@@ -58,6 +60,17 @@ def _otr_pnl(tickers, start, end, paths: CyclePaths) -> pd.DataFrame:
     return yp.held_bond_pnl(m, by, "yield_otr", max_gap_days=BMK_YIELD_MAX_GAP_DAYS)
 
 
+def _de_otr_pnl(start, end, paths: CyclePaths) -> pd.DataFrame:
+    from infra.pipeline import bunds
+    m = bunds.otr_map(start, end, depth=0, root=paths.de_auctions_dir)
+    if m.empty:
+        return pd.DataFrame(columns=yp.PNL_COLUMNS)
+    m = m.assign(ticker="DE_BOND_" + m["tenor"], cusip=m["isin"])[["timestamp", "ticker", "cusip"]]
+    px = bunds.read_bund_prices(start, end, isins=sorted(set(m["cusip"])), root=paths.bund_prices_dir)
+    return yp.held_bond_pnl(m, px.rename(columns={"isin": "cusip"})[["timestamp", "cusip", "yield"]], "yield_otr",
+                            max_gap_days=BMK_YIELD_MAX_GAP_DAYS, currency="EUR")
+
+
 def official_tickers(country: str) -> list[str]:
     return [f"{country}_BOND_{t}y" for t in BMK_YIELD_OFFICIAL_TENORS]
 
@@ -85,6 +98,7 @@ def compute_yield_pnl(start, end, *, paths: CyclePaths | None = None, tickers=BM
     for src in sources:
         if src == "otr":
             parts.append(_otr_pnl(tickers, lo, hi, paths))
+            parts.append(_de_otr_pnl(lo, hi, paths))
         else:
             parts.append(yp.level_change_pnl(_yields(src, tickers, lo, hi, paths), f"yield_{src}",
                                              max_gap_days=BMK_YIELD_MAX_GAP_DAYS))

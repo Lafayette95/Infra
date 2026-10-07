@@ -86,6 +86,14 @@ BUND_PRICES_SETTLE_DAYS = 1
 # (09:15 UTC, residual 0.33bp) and 11:20 in winter (10:20 UTC, 0.24bp), against 1-3bp an hour
 # either side and 3.4bp at 16:15 London - a late-morning snapshot, not a close.
 BUND_PRICES_LOCAL_TIME = ("11:15", "Europe/Berlin")
+# German on/off-the-run map (infra.pipeline.bunds.otr_map, computed on demand from the
+# issuance history): tenor -> (security types, maturity segment of the FIRST issuance);
+# conventional securities only (no Green, no inflation-linked). 7y / 15y from 2020, 20y from 2026.
+DE_OTR_TENORS: dict[str, tuple[tuple[str, ...], str]] = {
+    "2y": (("Schatz",), "2 Y"), "5y": (("Bobl",), "5 Y"), "7y": (("Bund",), "7 Y"), "10y": (("Bund",), "10 Y"),
+    "15y": (("Bund",), "15 Y"), "20y": (("Bund",), "20 Y"), "30y": (("Bund",), "30 Y"),
+}
+DE_OTR_DEPTH = 3
 DAILY_TIPS_PRICES_DIR = DAILY_ROOT / "TipsPrices"
 DAILY_TIPS_PRICES_COVERAGE_FILE = DAILY_COVERAGE_DIR / "tips_prices.parquet"
 # An empty page this many days old is a holiday (covered); a newer one, or a page whose
