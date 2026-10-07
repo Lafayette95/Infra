@@ -46,8 +46,10 @@ def daily_moves(spec: AsymmetrySpec, start, end) -> pd.DataFrame:
     out = {}
     for col in spec.instruments:
         s = panel[col].dropna()
-        mv = s.diff() if kind_of(col) == "level" else s
-        out[col] = mv * spec.sign * spec.scale
+        how, mult = spec.move_rule(col)
+        how = how or ("diff" if kind_of(col) == "level" else "as_is")
+        mv = {"diff": s.diff(), "logdiff": np.log(s).diff(), "as_is": s}[how]
+        out[col] = mv * mult
     return pd.DataFrame(out).reindex(panel.index)
 
 
@@ -168,11 +170,20 @@ def compute(spec: AsymmetrySpec | str, start=None, end=None) -> pd.DataFrame:
         moves, label = intraday_moves(spec, start, end)
     rows = []
 
-    # family 2: each instrument (and the factor) on its own
-    if spec.factor == "pc1":
+    # factors
+    factors = None
+    if spec.factor.startswith("pcs:"):
+        factors = asym.trailing_pcs(moves, spec.n_pcs, spec.pc_window, spec.pc_refit_every, spec.min_obs)
+        factor = factors["pc1"]
+    elif spec.multifactor:
+        factors = moves[spec.factor_instruments]
+        factor = factors.iloc[:, 0]
+    elif spec.factor == "pc1":
         factor, _ = asym.trailing_pc1(moves, spec.pc_window, spec.pc_refit_every, spec.min_obs)
     else:
         factor = moves[spec.factor_instrument].rename("factor")
+
+    # family 2: each instrument (and the first factor) on its own
     single = moves.assign(factor=factor)
     sv, _ = asym.semivariance_asymmetry(single, spec.window, spec.min_obs)
     vol = asym.trailing_vol(single, spec.vol_span, spec.min_obs)
@@ -182,10 +193,16 @@ def compute(spec: AsymmetrySpec | str, start=None, end=None) -> pd.DataFrame:
                         ("tail_n_down", nd)):
         rows.append(_long(frame, label, "single", name, spec.name))
 
-    # family 3: relative to the factor
-    others = moves.drop(columns=[c for c in [spec.factor_instrument] if c])
-    rel = asym.relative_asymmetry(others, factor, beta_window=spec.beta_window, window=spec.window, k=spec.k,
-                                  vol_span=spec.vol_span, min_obs=spec.min_obs, min_big=spec.min_big)
+    # family 3: relative to the usual covariance
+    if factors is not None:
+        rel = asym.multifactor_relative(moves, factors, beta_window=spec.beta_window, window=spec.window,
+                                        refit_every=spec.mf_refit_every, k=spec.k, vol_span=spec.vol_span,
+                                        min_obs=spec.min_obs, min_big=spec.min_big,
+                                        own_factor={f: f for f in spec.factor_instruments})
+    else:
+        others = moves.drop(columns=[c for c in [spec.factor_instrument] if c])
+        rel = asym.relative_asymmetry(others, factor, beta_window=spec.beta_window, window=spec.window, k=spec.k,
+                                      vol_span=spec.vol_span, min_obs=spec.min_obs, min_big=spec.min_big)
     for name, frame in rel.items():
         rows.append(_long(frame, label, "relative", name, spec.name))
 

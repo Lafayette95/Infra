@@ -506,8 +506,36 @@ FUTURES_ROOTS: dict[str, FuturesRoot] = {
         FuturesRoot("R", _ICE, "R.FUT", "UK Long Gilt", "Bonds", ticker_regex=_ICE_QUARTERLY,
                     volume_extra_candidates=_FRONT_TWO,
                     volume_lookback_days=_BOND_LOOKBACK),
+        # ---- Macro cross-asset (CME Globex), added 2026-10-07 for the positioning measures
+        # (infra/analytics/positioning): daily settlements first, quotes later. NOT in the
+        # daily cycle. Point values / currencies left unset (None = not verified against
+        # CME's contract specs - cmegroup.com blocks this machine). Expiry cycles: index and
+        # FX futures quarterly (serial FX months dropped); energy monthly; metals their
+        # ACTIVE months only (GC Feb/Apr/Jun/Aug/Oct/Dec; SI, HG Mar/May/Jul/Sep/Dec) -
+        # the inactive months trade little. v.0 among the front two, like bond futures.
+        *(FuturesRoot(root, _CME, f"{root}.FUT", name, cat, expiry_months=months,
+                      volume_extra_candidates=_FRONT_TWO, volume_lookback_days=_BOND_LOOKBACK)
+          for root, name, cat, months in (
+              ("ES", "E-mini S&P 500", "Equity", (3, 6, 9, 12)),
+              ("NQ", "E-mini Nasdaq-100", "Equity", (3, 6, 9, 12)),
+              ("RTY", "E-mini Russell 2000", "Equity", (3, 6, 9, 12)),
+              ("NKD", "Nikkei 225 (USD)", "Equity", (3, 6, 9, 12)),
+              ("6E", "Euro FX", "FX", (3, 6, 9, 12)),
+              ("6J", "Japanese Yen", "FX", (3, 6, 9, 12)),
+              ("6B", "British Pound", "FX", (3, 6, 9, 12)),
+              ("6A", "Australian Dollar", "FX", (3, 6, 9, 12)),
+              ("6C", "Canadian Dollar", "FX", (3, 6, 9, 12)),
+              ("6S", "Swiss Franc", "FX", (3, 6, 9, 12)),
+              ("6M", "Mexican Peso", "FX", (3, 6, 9, 12)),
+              ("CL", "WTI Crude Oil", "Commodity", tuple(range(1, 13))),
+              ("NG", "Henry Hub Natural Gas", "Commodity", tuple(range(1, 13))),
+              ("GC", "Gold", "Commodity", (2, 4, 6, 8, 10, 12)),
+              ("SI", "Silver", "Commodity", (3, 5, 7, 9, 12)),
+              ("HG", "Copper", "Commodity", (3, 5, 7, 9, 12)),
+          )),
     )
 }
+MACRO_ROOTS = ("ES", "NQ", "RTY", "NKD", "6E", "6J", "6B", "6A", "6C", "6S", "6M", "CL", "NG", "GC", "SI", "HG")
 
 # ------------------------------------------------------------------ trading calendar
 # What "trading day" means per exchange - the source of truth for infra.trading_calendar

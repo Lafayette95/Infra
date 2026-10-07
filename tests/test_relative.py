@@ -192,9 +192,10 @@ def test_root_config_is_consistent():
     datasets = {"GLBX.MDP3", "XEUR.EOBI", "IFLL.IMPACT"}
     for key, cfg in FUTURES_ROOTS.items():
         assert key == cfg.root and cfg.parent == f"{key}.FUT" and cfg.dataset in datasets
-        assert cfg.category in {"STIR", "Bonds"}
+        assert cfg.category in {"STIR", "Bonds", "Equity", "FX", "Commodity"}
+    # required roots (a subset: roots get added - Buxl, the macro set of 2026-10-07)
     assert {"SR3", "ESR", "SO3", "SR1", "ZQ", "ZT", "ZF", "ZN", "TN", "ZB", "UB",
-            "FGBL", "FGBM", "FGBS", "FBTP", "R"} == set(FUTURES_ROOTS)
+            "FGBL", "FGBM", "FGBS", "FBTP", "R"} <= set(FUTURES_ROOTS)
     assert all(parse_relative(t) and parse_relative(t).root in FUTURES_ROOTS for t in DEFAULT_RELATIVE_TICKERS)
 
 

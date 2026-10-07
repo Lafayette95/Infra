@@ -166,3 +166,53 @@ def test_skew_ignores_a_trend_that_semivariance_reads_as_asymmetry():
     sk = asym.rolling_skew(x, 250, 100)
     assert sv.dropna().mean() > 0.5
     assert abs(sk.dropna().mean()) < 0.1
+
+
+# ------------------------------------------------------------------ multi-factor (cross-asset)
+
+def _two_factor(extra=0.0, seed=8):
+    r = _rng(seed)
+    n = len(IDX)
+    f1, f2 = r.standard_normal(n), r.standard_normal(n)
+    m = 1.0 * f1 + 0.5 * f2
+    y = m + extra * np.where(m > 1.2, m, 0.0) + 0.3 * r.standard_normal(n)
+    z = -0.7 * f1 + 0.4 * f2 + 0.3 * r.standard_normal(n)
+    moves = pd.DataFrame({"y": y, "z": z, "f1": f1, "f2": f2}, index=IDX)
+    return moves
+
+
+def test_multifactor_finds_overshoot_on_the_painful_side_only():
+    mv = _two_factor(extra=0.8)
+    out = asym.multifactor_relative(mv[["y", "z"]], mv[["f1", "f2"]], beta_window=500, window=250,
+                                    refit_every=21, k=1.0, vol_span=63, min_obs=100, min_big=10)
+    a = out["mf_asym"].dropna()
+    assert a["y"].mean() > 0.2 and abs(a["z"].mean()) < 0.1
+    assert out["r2"]["z"].dropna().mean() > 0.6
+
+
+def test_multifactor_named_factor_excludes_itself_and_is_point_in_time():
+    mv = _two_factor()
+    kw = dict(beta_window=500, window=250, refit_every=21, k=1.0, vol_span=63, min_obs=100, min_big=10,
+              own_factor={"f1": "f1"})
+    out = asym.multifactor_relative(mv[["y", "f1"]], mv[["f1", "f2"]], **kw)
+    assert out["r2"]["f1"].dropna().abs().mean() < 0.05     # f1 on f2 alone: nothing explained
+    shocked = mv.copy()
+    shocked.iloc[2500:] *= 3
+    out2 = asym.multifactor_relative(shocked[["y", "f1"]], shocked[["f1", "f2"]], **kw)
+    pd.testing.assert_frame_equal(out["mf_asym"].iloc[:2500], out2["mf_asym"].iloc[:2500])
+
+
+def test_trailing_pcs_vol_scale_the_panel():
+    mv = _two_factor()
+    mv["big"] = 1000 * mv["f1"]                         # a huge-unit series must not own PC1
+    pcs = asym.trailing_pcs(mv[["y", "z", "big"]], 2, 500, 21, 100)
+    assert list(pcs.columns) == ["pc1", "pc2"] and pcs.dropna().std().max() < 10
+
+
+def test_macro_spec_move_rules():
+    s = get_spec("macro_daily")
+    assert s.multifactor and s.n_pcs == 4
+    assert s.move_rule("fut:ES.v.0") == ("logdiff", -100.0)
+    assert s.move_rule("otr:US_BOND_10y") == (None, 100.0)
+    named = get_spec("macro_daily_named")
+    assert named.multifactor and "fut:ES.v.0" in named.factor_instruments

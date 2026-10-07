@@ -171,6 +171,94 @@ def relative_asymmetry(moves: pd.DataFrame, factor: pd.Series, *, beta_window: i
     return out
 
 
+def trailing_pcs(moves: pd.DataFrame, n: int, window: int, refit_every: int, min_obs: int) -> pd.DataFrame:
+    """The first ``n`` principal components of a VOL-SCALED panel (each column divided by
+    its own trailing RMS, known before the move - so a cross-asset factor isn't just the
+    most volatile asset), refitted every ``refit_every`` rows on the trailing ``window``
+    complete rows and applied only to later rows. Each PC is signed so its loadings sum
+    to > 0 (with every instrument oriented "+ = a loss for longs", PC1 is the common
+    pain direction). Units: vol-scaled moves."""
+    scaled = moves / trailing_vol(moves, window, min_obs)
+    vals = scaled.to_numpy(dtype=float)
+    complete = np.isfinite(vals).all(axis=1)
+    out = np.full((len(vals), n), np.nan)
+    current = None
+    for i in range(len(vals)):
+        if i % refit_every == 0:
+            lo = max(0, i - window)
+            past = vals[lo:i][complete[lo:i]]
+            if len(past) >= min_obs:
+                w, v = np.linalg.eigh(past.T @ past / len(past))
+                vecs = v[:, np.argsort(w)[::-1][:n]]
+                current = vecs * np.where(vecs.sum(axis=0) < 0, -1.0, 1.0)
+        if current is not None and complete[i]:
+            out[i] = vals[i] @ current
+    return pd.DataFrame(out, index=moves.index, columns=[f"pc{j + 1}" for j in range(n)])
+
+
+def multifactor_relative(moves: pd.DataFrame, factors: pd.DataFrame, *, beta_window: int, window: int,
+                         refit_every: int, k: float, vol_span: int, min_obs: int, min_big: int,
+                         own_factor: dict[str, str] | None = None) -> dict[str, pd.DataFrame]:
+    """Family 3 with several factors. Per instrument: a trailing OLS of its move on the
+    factors, fitted every ``refit_every`` rows on the ``beta_window`` rows that END
+    ``window`` rows earlier (never the measurement window), gives the EXPECTED move
+    ``m = F b``; the residual ``e = move - m``. Then, on BIG expected moves
+    (|m / its trailing vol| > k):
+
+        excess up   = sum(e m | m big > 0) / sum(m^2 | m big > 0)
+        excess down = sum(e m | m big < 0) / sum(m^2 | m big < 0)
+        asym = up - down
+
+    > 0: when everything else said "this should fall" (a loss for longs) it fell MORE than
+    usual, and when it should have rallied it rallied less: crowded long. With one factor
+    this is the one-factor measure up to the beta's scale. ``own_factor``: an instrument
+    that IS one of the factors (named factors) is regressed on the OTHERS only."""
+    own_factor = own_factor or {}
+    F = factors.to_numpy(dtype=float)
+    idx = moves.index
+    expected = pd.DataFrame(np.nan, index=idx, columns=moves.columns)
+    for col in moves.columns:
+        use = [j for j, c in enumerate(factors.columns) if c != own_factor.get(col)]
+        y = moves[col].to_numpy(dtype=float)
+        Fu = F[:, use]
+        ok = np.isfinite(y) & np.isfinite(Fu).all(axis=1)
+        b = None
+        exp = np.full(len(y), np.nan)
+        for i in range(len(y)):
+            if i % refit_every == 0:
+                hi = i - window
+                lo = max(0, hi - beta_window)
+                rows = np.arange(lo, max(hi, lo))
+                rows = rows[ok[rows]] if len(rows) else rows
+                if len(rows) >= min_obs:
+                    X, yy = Fu[rows], y[rows]
+                    b = np.linalg.lstsq(X, yy, rcond=None)[0]
+            if b is not None and np.isfinite(Fu[i]).all():
+                exp[i] = Fu[i] @ b
+        expected[col] = exp
+    resid = moves - expected
+    zm = expected / trailing_vol(expected, vol_span, min_obs)
+    up, down = zm > k, zm < -k
+    valid = resid.notna() & expected.notna()
+    em, m2 = resid * expected, expected * expected
+    up_num = _rsum(em.where(up & valid, 0.0).where(valid), window, min_obs)
+    dn_num = _rsum(em.where(down & valid, 0.0).where(valid), window, min_obs)
+    up_den = _rsum(m2.where(up & valid, 0.0).where(valid), window, min_obs)
+    dn_den = _rsum(m2.where(down & valid, 0.0).where(valid), window, min_obs)
+    n_up = _rsum((up & valid).astype(float).where(valid), window, min_obs)
+    n_dn = _rsum((down & valid).astype(float).where(valid), window, min_obs)
+    enough = (n_up >= min_big) & (n_dn >= min_big)
+    out = {"excess_up": _ratio(up_num, up_den).where(enough), "excess_down": _ratio(dn_num, dn_den).where(enough)}
+    out["mf_asym"] = out["excess_up"] - out["excess_down"]
+    out["n_up"], out["n_down"] = n_up, n_dn
+    # share of the move the factors explain over the window (how much "usual covariance" there is)
+    ss_res = _rsum((resid * resid).where(valid), window, min_obs)
+    ss_tot = _rsum((moves * moves).where(valid), window, min_obs)
+    out["r2"] = 1 - _ratio(ss_res, ss_tot)
+    out["resid_skew"] = rolling_skew(resid, window, min_obs)
+    return out
+
+
 # ------------------------------------------------------------------ family 1
 
 def standardise_surprises(surprises: pd.DataFrame, min_obs: int) -> pd.DataFrame:
