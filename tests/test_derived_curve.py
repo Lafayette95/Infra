@@ -179,3 +179,19 @@ def test_vrp_metric_last_and_its_ex_post_fills_are_not_revisions(tmp_path):
     assert check.fn(ctx)[0]
     parquet_store.write_partitioned(row(87.0, 71.0), paths.vrp_dir, ["timestamp", "instrument"])
     assert not check.fn(ctx)[0]
+
+
+def test_best_closes_take_adjusted_where_present_else_pure(tmp_path):
+    from infra.pipeline.swap_closes import read_swap_closes
+    from infra.storage import parquet_store as ps
+    store = tmp_path / "SwapCloses"
+    def rows(method, tenor, rate):
+        return pd.DataFrame({"timestamp": pd.to_datetime(["2026-09-30 19:30"]).astype("datetime64[ms]"), "close": "NY1530",
+                             "currency": "USD", "tenor": pd.Series([tenor], dtype="int32"), "method": method, "rate": rate,
+                             "n_trades": pd.Series([1], dtype="int32"), "half_window_min": pd.Series([30], dtype="int32"),
+                             "dispersion_bp": 0.0, "se_bp": 0.4})
+    ps.write_partitioned(pd.concat([rows("pure", 5, 3.50), rows("adjusted", 5, 3.52), rows("pure", 10, 3.80)]), store,
+                         list(derived.SWAP_CLOSE_KEYS))
+    best = read_swap_closes(D("2026-09-30"), D("2026-10-01"), method="best", root=store).set_index("tenor")
+    assert best.loc[5, "method"] == "adjusted" and best.loc[5, "rate"] == 3.52
+    assert best.loc[10, "method"] == "pure" and best.loc[10, "rate"] == 3.80

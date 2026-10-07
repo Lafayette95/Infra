@@ -143,7 +143,17 @@ def backfill_swap_closes(start, end, *, as_of=None, root: Path = SWAP_CLOSES_DIR
 
 def read_swap_closes(start, end, *, close: str | None = None, currency: str | None = None, method: str | None = None,
                      root: Path = SWAP_CLOSES_DIR) -> pd.DataFrame:
-    """Stored closes with ``timestamp`` in ``[start, end)``, optionally filtered. No compute."""
+    """Stored closes with ``timestamp`` in ``[start, end)``, optionally filtered. No compute.
+    ``method="best"``: per snap and tenor the ADJUSTED close where one exists, else the PURE
+    one (rows keep their own ``method``)."""
+    if method == "best":
+        both = read_swap_closes(start, end, close=close, currency=currency, root=root)
+        if both.empty:
+            return both
+        both = both.assign(_rank=both["method"].astype(str).map({"adjusted": 0, "pure": 1}))
+        both = both.dropna(subset=["_rank"]).sort_values("_rank")
+        best = both.drop_duplicates(["timestamp", "close", "currency", "tenor"], keep="first").drop(columns="_rank")
+        return best.sort_values(KEYS).reset_index(drop=True)
     eq = {k: [v] for k, v in (("close", close), ("currency", currency), ("method", method)) if v is not None}
     df = parquet_store.read_partitioned(root, start=pd.Timestamp(start), end=pd.Timestamp(end), equals_in=eq or None)
     if df is None or df.empty:

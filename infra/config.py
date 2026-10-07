@@ -781,7 +781,7 @@ class OisCurveSpec:
     swap pillar, and the fewest tenors a day needs."""
     currency: str
     close: str  # a SWAP_CLOSES name: the snap the curve is AT
-    method: str = "pure"  # the swap closes' method ("pure" / "adjusted")
+    method: str = "pure"  # the swap closes' method: "pure" / "adjusted" / "best" (adjusted where present, else pure)
     # "sofr_path" (SR1-fitted overnight path, monthly nodes) / "esr_futures" (the ESR strip's
     # quarters, compounded) / "boe_ois" (the BoE's SONIA curve, monthly nodes) / "none" (flat
     # forward to the first swap pillar); short nodes stop 3 months before the first pillar
@@ -820,11 +820,17 @@ class OisCurveSpec:
 # (USD 4.1-5.1bp); fills miss a hidden close by 0.7-2.7bp, unbiased; GBP vs the BoE's own
 # curve (same day): +0.6..+2.2bp mean, sd 1.5-3.1bp; EUR's ESR strip 1y vs the 1y close
 # -0.1bp mean. Days with a curve: GBP 96%, JPY 89%, EUR 86%, CAD 62%.
+# method "best" (USD / EUR / GBP, user decision 2026-10-07): each tenor's FUTURES-ADJUSTED close
+# where one exists, else the pure one. Held-out (prints within +-2 min of the snap as truth):
+# EUR 0.56 -> 0.34bp, GBP 0.54 -> 0.42bp MAE - better than choosing by the lower standard
+# error (0.43 / 0.45bp), even where the adjusted close rests on one print: the variance model
+# understates the drift over the pure method's wide window. Curves moved 0.15-0.3bp (median
+# |change|) on the switch; JPY / CAD have no hedges, so stay pure.
 OIS_CURVES: dict[str, OisCurveSpec] = {
-    "USD_SOFR": OisCurveSpec("USD", "NY1530"),
-    "EUR_ESTR": OisCurveSpec("EUR", "LDN1615", short_end="esr_futures", short_end_months=9, min_tenors=4,
+    "USD_SOFR": OisCurveSpec("USD", "NY1530", method="best"),
+    "EUR_ESTR": OisCurveSpec("EUR", "LDN1615", method="best", short_end="esr_futures", short_end_months=9, min_tenors=4,
                              fill_ends=True),
-    "GBP_SONIA": OisCurveSpec("GBP", "LDN1615", short_end="boe_ois", short_end_months=12, min_tenors=4,
+    "GBP_SONIA": OisCurveSpec("GBP", "LDN1615", method="best", short_end="boe_ois", short_end_months=12, min_tenors=4,
                               fill_ends=True),
     "JPY_TONA": OisCurveSpec("JPY", "TKY1500", short_end="none", min_tenors=4, fill_ends=True),
     "CAD_CORRA": OisCurveSpec("CAD", "TOR1500", short_end="none", min_tenors=4, fill_ends=True),

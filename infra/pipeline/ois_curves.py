@@ -41,7 +41,7 @@ FILL_LOOKBACK_DAYS = 31
 
 log = logging.getLogger(__name__)
 KEYS = ["timestamp", "curve", "node"]
-COLUMNS = KEYS + ["t_years", "df", "zero_pct", "source", "input_rate", "n_trades", "se_bp"]
+COLUMNS = KEYS + ["t_years", "df", "zero_pct", "source", "input_rate", "n_trades", "se_bp", "input_method"]
 _ONE_DAY = pd.Timedelta(days=1)
 
 
@@ -142,6 +142,7 @@ def compute_ois_curves(start, end, *, curves: tuple[str, ...] | None = None, swa
             inputs = g.assign(node=g["tenor"].astype(int).astype(str) + "Y").set_index("node")
             nodes["n_trades"] = nodes["node"].map(inputs["n_trades"]).fillna(0).astype("Int32")
             nodes["se_bp"] = nodes["node"].map(inputs["se_bp"]).astype(float)
+            nodes["input_method"] = nodes["node"].map(inputs["method"].astype(str)).astype("string")
             was_filled = {f"{int(t)}Y" for t, f in filled.loc[day].items() if f}
             nodes.loc[nodes["node"].isin(was_filled), "source"] = "filled"
             nodes["timestamp"] = snap_instants([day], SWAP_CLOSES[spec.close].local_time, SWAP_CLOSES[spec.close].timezone)[0]
@@ -187,7 +188,7 @@ def read_ois_curves(start=None, end=None, *, curve: str | None = None, root: Pat
         return pd.DataFrame(columns=COLUMNS)
     df["curve"] = df["curve"].astype(str)
     df["node"] = df["node"].astype(str)
-    return df[COLUMNS].sort_values(["timestamp", "curve", "t_years"]).reset_index(drop=True)
+    return df.reindex(columns=COLUMNS).sort_values(["timestamp", "curve", "t_years"]).reset_index(drop=True)
 
 
 def ois_curve(as_of, curve: str = "USD_SOFR", *, root: Path = OIS_CURVES_DIR,

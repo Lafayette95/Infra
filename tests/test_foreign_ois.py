@@ -144,7 +144,8 @@ def test_a_partial_store_replaces_only_its_own_curves(tmp_path):
     from infra.pipeline.ois_curves import COLUMNS, read_ois_curves, store_ois_curves
     def rows(curve, df):
         return pd.DataFrame([{"timestamp": D("2026-10-01 15:15"), "curve": curve, "node": "1Y", "t_years": 1.0, "df": df,
-                              "zero_pct": 3.0, "source": "swap", "input_rate": 3.0, "n_trades": 2, "se_bp": 0.5}])[COLUMNS]
+                              "zero_pct": 3.0, "source": "swap", "input_rate": 3.0, "n_trades": 2, "se_bp": 0.5,
+                              "input_method": "pure"}])[COLUMNS]
     store_ois_curves(pd.concat([rows("USD_SOFR", 0.97), rows("EUR_ESTR", 0.98)]), "2026-10-01", "2026-10-01", root=tmp_path)
     store_ois_curves(rows("EUR_ESTR", 0.99), "2026-10-01", "2026-10-01", root=tmp_path, curves=("EUR_ESTR",))
     got = read_ois_curves("2026-10-01", "2026-10-02", root=tmp_path).set_index("curve")["df"].to_dict()
