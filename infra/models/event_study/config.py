@@ -49,10 +49,25 @@ class EventStudySpec:
     trim: int = 1                               # events dropped at EACH tail for the trimmed mean
     condition: ConditionSpec | None = None      # a third series' regime (None = unconditional)
     frequency: str = "intraday"                 # intraday | daily: must match the code's cycle and the source
+    # how the statistics become a decision (infra.models.fit_modes): fitted = the mean's sign where the tests
+    # pass; exante = the STATED sign, no tests; prior = the fitted sign, 0 where it isn't the stated one
+    fit_mode: str = "fitted"
+    expected_sign: tuple[tuple[str, float], ...] = ()   # (instrument | "instrument|+1" bucket | "*", +1 / -1)
 
     def __post_init__(self):
+        from infra.models.fit_modes import check_fit_mode
         check_frequency(self.frequency, cycle=self.code.rsplit(";;", 1)[-1] if self.code else None,
                         source=self.source, what=f"event study {self.name!r}")
+        check_fit_mode(self.fit_mode, has_direction=bool(self.expected_sign), what=f"event study {self.name!r}")
+
+    def stated_sign(self, key: str) -> float:
+        """The stated sign of a table row (an instrument, or ``instrument|<bucket>``): its own entry,
+        else its instrument's, else ``*``; 0 if none."""
+        d = dict(self.expected_sign)
+        for k in (key, key.split("|", 1)[0], "*"):
+            if k in d:
+                return float(d[k])
+        return 0.0
 
 
 FREQUENCIES = ("intraday", "daily")

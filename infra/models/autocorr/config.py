@@ -20,7 +20,7 @@ class AutocorrSpec:
     x: str = "bmk:curve:FLY__US_BOND_5y__US_BOND_7y__US_BOND_10y"   # the third variable (series id)
     x_feature: str = "move:20"                  # move:K (X's K-day move / its vol) | absmove:K (its size, for
                                                 # U-shaped effects) | level | z:W (level z-scored)
-    mode: str = "chase"                         # chase: E[sign(past) x fwd | X bucket] (symmetric in the past move's
+    form: str = "chase"                         # chase: E[sign(past) x fwd | X bucket] (symmetric in the past move's
                                                 # sign) | cells: E[fwd | X bucket, past-move bucket], a 3x3 with a
                                                 # signal per cell (the user's quadrant spec; captures asymmetric /
                                                 # co-move vs counter-move effects, including X's direction)
@@ -45,15 +45,26 @@ class AutocorrSpec:
     # CELL trades if its own |t| >= cell_t with >= cell_min_obs windows (and, in a family, its q)
     controls: tuple[str, ...] = ("vol", "abs_past")   # what `beats_controls` regresses X's effect beyond
     fallback: str = "flat"                      # gates fail -> flat | benchmark (the unconditional chase/fade rule)
-    fixed_map: tuple[tuple[float, float], ...] | None = None
-                                                # a NO-FIT rule: (X bucket, +1 chase / -1 fade / 0 flat) - the
-                                                # signal map is this, always; fit only reports statistics and no
-                                                # gate applies (a pre-stated hypothesis, like the fixed 5s30s rule)
+    fit_mode: str = "fitted"                    # exante | fitted | prior (infra.models.fit_modes)
+    fixed_map: tuple[tuple[object, float], ...] | None = None
+                                                # the STATED direction: chase form (X bucket, +1 chase / -1 fade /
+                                                # 0 flat); cells form ("x|p" cell key, +1 long / -1 short / 0).
+                                                # exante: the signal map IS this (fit only reports statistics, no
+                                                # gate - a pre-stated hypothesis, like the fixed 5s30s rule);
+                                                # prior: the fitted map, kept only where it agrees with this
     # out-of-sample evaluation suite (EVALUATIONS registry) for research runs
     evaluations: tuple[str, ...] = ("benchmark", "clark_west", "spanning", "sharpe_diff", "subperiods",
                                     "permutation", "synthetic_ar1", "time_shift")
     n_placebo: int = 100                        # placebo walk-forwards per placebo evaluation
     placebo_block_days: int = 63                # block length of the X permutation (keeps X's persistence)
+
+    def __post_init__(self):
+        from infra.models.fit_modes import check_fit_mode
+        if self.form not in ("chase", "cells"):
+            raise ValueError(f"autocorr {self.name!r}: form {self.form!r} (chase | cells)")
+        check_fit_mode(self.fit_mode, has_direction=self.fixed_map is not None, what=f"autocorr {self.name!r}")
+        if self.fit_mode == "fitted" and self.fixed_map is not None:
+            raise ValueError(f"autocorr {self.name!r}: a fixed_map is a stated direction - fit_mode exante or prior")
 
     def threshold(self, gate: str, default: float | None = None) -> float | None:
         return dict(self.thresholds).get(gate, default)
@@ -66,20 +77,25 @@ AUTOCORR_MODELS: dict[str, AutocorrSpec] = {s.name: s for s in (
                  thresholds=(("min_obs", 150.0), ("x_t", 1.5), ("bucket_spread_t", 1.5))),
     AutocorrSpec("none", "no gate: always use the conditional rule (research)", gates=("min_obs",),
                  thresholds=(("min_obs", 100.0),)),
-    AutocorrSpec("cells", "the 3x3 cell model (X bucket x past-move bucket), cells at |t| >= 2", mode="cells",
+    AutocorrSpec("cells", "the 3x3 cell model (X bucket x past-move bucket), cells at |t| >= 2", form="cells",
                  gates=("min_obs",)),
     AutocorrSpec("fade_high_chase_low", "no fit: fade the target's move when X is in its + tercile, chase it in "
-                 "the - tercile, flat in the middle", fixed_map=((1.0, -1.0), (0.0, 0.0), (-1.0, 1.0)),
+                 "the - tercile, flat in the middle", fit_mode="exante", fixed_map=((1.0, -1.0), (0.0, 0.0), (-1.0, 1.0)),
                  gates=(), evaluations=("benchmark", "spanning", "subperiods", "permutation", "synthetic_ar1",
                                         "time_shift")),
     AutocorrSpec("chase_high_fade_low", "no fit: the mirror - chase when X is high, fade when low",
-                 fixed_map=((1.0, 1.0), (0.0, 0.0), (-1.0, -1.0)), gates=(),
+                 fit_mode="exante", fixed_map=((1.0, 1.0), (0.0, 0.0), (-1.0, -1.0)), gates=(),
                  evaluations=("benchmark", "spanning", "subperiods", "permutation", "synthetic_ar1", "time_shift")),
-    AutocorrSpec("cells_loose", "the cell model, cells at |t| >= 1.5", mode="cells", gates=("min_obs",),
+    AutocorrSpec("cells_loose", "the cell model, cells at |t| >= 1.5", form="cells", gates=("min_obs",),
                  thresholds=(("min_obs", 150.0), ("cell_min_obs", 30.0), ("cell_t", 1.5))),
 )}
 
 
 def get_autocorr_spec(spec: AutocorrSpec | str | None = None, **overrides) -> AutocorrSpec:
     base = AUTOCORR_MODELS["default"] if spec is None else (AUTOCORR_MODELS[spec] if isinstance(spec, str) else spec)
+    # legacy names (runs stored before 2026-10-07): `mode` was the form; a bare fixed_map meant exante
+    if "mode" in overrides:
+        overrides["form"] = overrides.pop("mode")
+    if overrides.get("fixed_map") is not None and "fit_mode" not in overrides and base.fit_mode == "fitted":
+        overrides["fit_mode"] = "exante"
     return replace(base, **overrides) if overrides else base

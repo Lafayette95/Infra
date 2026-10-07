@@ -204,3 +204,21 @@ def test_regime_pca_with_explicit_regimes():
                         regime_model=RuleRegimes(probabilities=probs))
     m.fit(m.prepare(lvl), as_of=lvl.index[1499])
     assert _angle(m.fitted_.L[0], W0) < 8 and _angle(m.fitted_.L[1], W1) < 8
+
+
+def test_rule_regimes_grid_combines_columns():
+    idx = pd.bdate_range("2020-01-01", periods=4)
+    raw = pd.DataFrame({"cycle": [-1.0, -1.0, 1.0, 1.0], "vol": [-1.0, 1.0, -1.0, np.nan]}, index=idx)
+    m = RuleRegimes("hmm2", method="rule", prep=(), rule="grid", rule_columns=("cycle", "vol"),
+                    rule_grid=((0.0,), (0.0,)), n_regimes=4)
+    p = m._probs(m.prepare(raw))
+    # last column fastest: R0 both below, R1 cycle below / vol above, R2 cycle above / vol below
+    assert (p[0] == [1, 0, 0, 0]).all() and (p[1] == [0, 1, 0, 0]).all() and (p[2] == [0, 0, 1, 0]).all()
+    assert np.isnan(p[3]).all()
+    soft = RuleRegimes("hmm2", method="rule", prep=(), rule="grid", rule_columns=("cycle", "vol"),
+                       rule_grid=((0.0,), (0.0,)), n_regimes=4, rule_softness=1.0)
+    q = soft._probs(soft.prepare(raw))
+    assert np.allclose(q[:3].sum(axis=1), 1.0) and q[0, 0] > 0.5
+    with pytest.raises(ValueError):
+        RuleRegimes("hmm2", method="rule", prep=(), rule="grid", rule_columns=("cycle", "vol"),
+                    rule_grid=((0.0,), (0.0,)), n_regimes=3)._probs(m.prepare(raw))

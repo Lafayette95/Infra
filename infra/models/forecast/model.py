@@ -8,7 +8,7 @@ regressor's carry limit and fill); the forward move is the target's sum over the
 closes after the decision day's close, / (EWMA vol at D x sqrt h).
 
 ``fit(as_of)`` uses rows whose forward window ended before ``as_of``'s day: OLS with HAC errors
-(lags = h) of the forward move on [1, regressors] - always computed, for the statistics; the MODE
+(lags = h) of the forward move on [1, regressors] - always computed, for the statistics; the FIT MODE
 decides the coefficients used: ``fitted`` (the estimate, if the gates pass, else flat), ``exante``
 (the spec's weights - no fit), ``prior`` (ridge, then any coefficient on the wrong side of its
 stated sign set to 0). The intercept (drift) never enters the forecast - it is the benchmark.
@@ -144,19 +144,19 @@ class ForecastModel(Model):
             stats["t"] = [float(b[i] / se[i]) if se[i] > 0 else np.nan for i in range(1, X.shape[1])]
             for i, c in enumerate(cols):
                 stats[f"coef_{c}"], stats[f"t_{c}"] = float(b[i + 1]), stats["t"][i]
-            if sp.mode == "fitted":
+            if sp.fit_mode == "fitted":
                 beta_used = b[1:]
-            elif sp.mode == "prior":
+            elif sp.fit_mode == "prior":
                 bp, _ = ols_hac(y, X, lags, ridge=sp.prior_lambda)
                 beta_used = np.where(np.sign(bp[1:]) == np.sign(w), bp[1:], 0.0)
-            elif sp.mode == "exante":
+            elif sp.fit_mode == "exante":
                 beta_used = w
             else:
-                raise ValueError(f"mode {sp.mode!r} (exante | fitted | prior)")
-        elif sp.mode == "exante":
+                raise ValueError(f"fit_mode {sp.fit_mode!r} (exante | fitted | prior)")
+        elif sp.fit_mode == "exante":
             beta_used = w
         passed = True
-        if sp.mode != "exante":
+        if sp.fit_mode != "exante":
             for g in sp.gates:
                 th = sp.threshold(g)
                 _, ok = GATES[g](stats, th) if n >= 20 else (np.nan, False)

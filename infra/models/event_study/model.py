@@ -190,8 +190,30 @@ class EventStudy(Model):
                 rows[f"{inst}|{int(b):+d}"] = sb
         table = pd.DataFrame(rows).T
         table.index.name = "instrument"
+        table["signal"] = [self._decide(k, table.loc[k]) for k in table.index]
         self.fitted_ = EventStudyFit(as_of=as_of, table=table.astype("float64"), code=self.code.encode())
         return self
+
+    def _decide(self, key: str, row: pd.Series) -> float:
+        """A table row's signal by ``fit_mode`` (infra.models.fit_modes): fitted = the mean's sign
+        where its tests pass (``cond_passed`` for a condition bucket); exante = the stated sign;
+        prior = the fitted sign where it is the stated one, else 0."""
+        from infra.models.fit_modes import prior_keep
+        ok = row.get("cond_passed" if "|" in key else "passed", 0.0) == 1.0
+        mean = row.get("mean", np.nan)
+        fitted = float(np.sign(mean)) if ok and np.isfinite(mean) else 0.0
+        mode = self.spec.fit_mode
+        if mode == "fitted":
+            return fitted + 0.0
+        stated = self.spec.stated_sign(key)
+        return (stated if mode == "exante" else prior_keep(fitted, stated)) + 0.0
+
+    def _row_signal(self, key: str) -> float:
+        """The stored decision; fits stored before fit modes existed lack it - the fitted rule then."""
+        t = self.fitted_.table
+        if "signal" in t.columns and np.isfinite(t.loc[key, "signal"]):
+            return float(t.loc[key, "signal"])
+        return self._decide(key, t.loc[key]) if self.spec.fit_mode == "fitted" else 0.0
 
     def _instruments(self, prepared) -> list[str]:
         return prepared.attrs.get("instruments") or [c.split(":", 1)[1] for c in prepared.columns
@@ -201,8 +223,8 @@ class EventStudy(Model):
     def predict(self, prepared: pd.DataFrame | None = None, *, start=None, end=None) -> pd.DataFrame:
         """Each EVENT window starting after ``start`` up to ``end``: ``end``, ``legal``,
         ``reason``, and per instrument the realised ``pnl:`` (NaN until it has ended / where
-        data is missing), ``expected:`` (the fitted mean move) and ``signal:`` (+1 / -1 = the
-        mean's sign where the study passes, else 0); ``in_sample``."""
+        data is missing), ``expected:`` (the fitted mean move) and ``signal:`` (+1 / -1 / 0 by the
+        spec's ``fit_mode``: fitted = the mean's sign where the study passes); ``in_sample``."""
         self.check_fitted()
         if prepared is None:
             raise ValueError("EventStudy.predict needs prepared data")
@@ -221,9 +243,7 @@ class EventStudy(Model):
         for inst in t.index:
             out[f"pnl:{inst}"] = ev[f"pnl:{inst}"].to_numpy() if f"pnl:{inst}" in ev else np.nan
             out[f"expected:{inst}"] = np.where(ev["legal"], t.loc[inst, "mean"], np.nan)
-            sig = float(np.sign(t.loc[inst, "mean"]) * t.loc[inst, "passed"]) + 0.0 \
-                if np.isfinite(t.loc[inst, "mean"]) else 0.0
-            out[f"signal:{inst}"] = np.where(ev["legal"], sig, 0.0)
+            out[f"signal:{inst}"] = np.where(ev["legal"], self._row_signal(inst), 0.0)
             for stat in ROW_STATS:
                 out[f"{stat}:{inst}"] = np.where(ev["legal"], t.loc[inst, stat], np.nan)
         ends = pd.Series(pd.DatetimeIndex(ev["end"]), index=ev.index)
@@ -251,9 +271,8 @@ class EventStudy(Model):
                 if key not in t.index:
                     continue
                 m = legal & (ev["cond_bucket"].to_numpy(dtype="float64") == b)
-                mean, ok = t.loc[key, "mean"], t.loc[key, "cond_passed"] == 1.0
-                exp[m] = mean
-                sig[m] = (float(np.sign(mean)) if ok and np.isfinite(mean) else 0.0) + 0.0
+                exp[m] = t.loc[key, "mean"]
+                sig[m] = self._row_signal(key)
                 for stat in COND_ROW_STATS:
                     extra[stat][m] = t.loc[key, stat]
             out[f"expected:{inst}"], out[f"signal:{inst}"] = exp, sig

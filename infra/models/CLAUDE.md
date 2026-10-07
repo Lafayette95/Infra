@@ -136,6 +136,28 @@ specification). Use case (a) of 0a, run live.
     outputs; optional `warm_start_from` / `align_to` / `restore_path`; then a `RunConfig`
     kind, and the incremental-equals-rebuild test in `tests/test_model_runs.py`.
 
+## 0c. Fit modes: exante / fitted / prior (every directional framework; user decision 2026-10-07)
+*   **One field, `fit_mode`, the same meaning in A (`infra/models/forecast`), B1 (`infra/models/autocorr`) and
+    D (`infra/models/event_study`)** - vocabulary and helpers `infra/models/fit_modes.py`:
+    *   `exante`: NO fit - the direction is STATED in the spec; the fit only reports statistics; no gate
+        applies. Honest only if the direction comes from outside the data.
+    *   `fitted`: estimated and gated (the default).
+    *   `prior`: estimated and gated like `fitted`, then anything AGAINST the stated sign is set to 0 - the
+        data sizes or switches off a stated direction, never flips it.
+*   **Where the stated direction lives:** A = each `Regressor.weight` (prior: ridge, wrong-signed
+    coefficients 0); B1 = `fixed_map` (chase form: per X bucket +1 chase / -1 fade / 0; cells form: per
+    `"x|p"` cell +1 / -1 / 0; prior keeps a fitted bucket or cell only where it agrees); D =
+    `expected_sign` (per instrument, per `instrument|<bucket>` in a conditional study, `*` as default;
+    the fit writes each table row's decision as `signal`, so stored params carry it - fits stored before
+    2026-10-07 have no `signal` and keep the fitted rule).
+*   **`exante` / `prior` without a stated direction is rejected; so is a B1 `fixed_map` with
+    `fit_mode="fitted"`.** Legacy names still build the same spec (stored runs keep loading): A's and B1's
+    old `mode` (A: the fit mode; B1: the form, now `form` = `chase` | `cells`) and a bare B1 `fixed_map`
+    (= exante). A rebuild of an event-study run fitted before this reports the new `signal` params as a
+    difference once.
+*   Tests: `tests/test_forecast.py` (three modes, legacy name), `tests/test_autocorr.py::test_fit_modes_prior_and_legacy_names`,
+    `tests/test_event_study_model.py::test_fit_modes_exante_fitted_prior`.
+
 ## 1. Scope and layering
 *   **`infra/models` is a consumer layer, like `infra/analytics`**: pure computation on data
     the pipeline already stored. It never calls an API and never writes storage. Modules

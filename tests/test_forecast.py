@@ -123,3 +123,9 @@ def test_evaluation_and_family_gate():
     # noise: on average rarely through; one chance member can persist (expanding-window fits are autocorrelated)
     assert s.loc["x", "fdr_share"] > 0.9 and s.drop(index="x")["fdr_share"].mean() < 0.2
     assert fam["fits"].groupby("fit_as_of")["q"].count().min() == 6
+
+
+def test_legacy_mode_name_reads_as_fit_mode():
+    assert get_forecast_spec("default", mode="prior").fit_mode == "prior"
+    with pytest.raises(ValueError):
+        get_forecast_spec("default", fit_mode="guess")

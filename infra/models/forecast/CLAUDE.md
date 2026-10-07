@@ -6,9 +6,10 @@ Known gaps: the ONE root `TOFIX.md`, headings "Forecast: ...". Built 2026-10-06 
 
 ## 1. The question
 *   **Do point-in-time features predict an instrument's forward move?** Framework A of the user's
-    four (A direction, B autocorrelation, C covariance, D time/catalyst). Time-series first; the
+    four (A direction, B autocorrelation, C covariance, D time/catalyst = the existing event-study model, `infra/models/event_study`). Time-series first; the
     cross-sectional variant is not built.
-*   **Three modes, one model** (user decision 2026-10-06), as with every framework here:
+*   **Three fit modes, one model** (`fit_mode`; user decision 2026-10-06, made common to A / B1 / D on
+    2026-10-07 - `infra/models/CLAUDE.md` 0c):
     *   `exante`: no fit - forecast = sum of weight x feature, ANY feature string of the feature
         maker with a stated direction (a sign, a weight); the fit only reports statistics. Honest
         only if the direction comes from outside the data.
@@ -28,7 +29,7 @@ Known gaps: the ONE root `TOFIX.md`, headings "Forecast: ...". Built 2026-10-06 
     the momentum benchmark) is public only on D+1.
 *   **Fit(as_of)** uses rows whose forward window ended before `as_of`'s day: OLS (or ridge) of the
     forward move on [1, regressors], HAC lags = h, always computed for the statistics (`coef_*`,
-    `t_*`, `r2`, `drift`); the mode picks the coefficients. The intercept (drift) never enters the
+    `t_*`, `r2`, `drift`); `fit_mode` picks the coefficients. The intercept (drift) never enters the
     forecast: it is a benchmark.
 *   **Gates** (`GATES`: `min_obs`, `coef_t` - every regressor's |t| -, `r2`), swappable per spec.
 *   **Predict:** `forecast` (vol units), `signal` = forecast / (2 x its in-sample sd) clipped to

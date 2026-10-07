@@ -111,7 +111,7 @@ def run_family(family: AutocorrFamilySpec | str, panel: pd.DataFrame, start, thr
         for fa, row in stat.iterrows():
             st = row.dropna().to_dict()
             _, own = run_gates(st, spec.gates, th) if st.get("n", 0) >= 20 else ({}, False)
-            if spec.mode == "cells":
+            if spec.form == "cells":
                 for xb, pb in CELLS:
                     k = cell_key(xb, pb)
                     t, cnt = st.get(f"cell_t_{k}", np.nan), st.get(f"cell_n_{k}", 0.0)
@@ -135,7 +135,7 @@ def run_family(family: AutocorrFamilySpec | str, panel: pd.DataFrame, start, thr
         p = res.predictions
         fm = f[f["member"] == name]
         fa = pd.to_datetime(p["fit_as_of"])
-        if spec.mode == "cells":
+        if spec.form == "cells":
             key = [cell_key(x, q) if np.isfinite(x) and np.isfinite(q) else "" for x, q in zip(p["bucket"], p["pbucket"])]
             idx = pd.MultiIndex.from_arrays([fa, key])
             gate = fm.set_index(["fit_as_of", "cell"])["passed"].reindex(idx).fillna(0.0).to_numpy()

@@ -247,6 +247,40 @@ class SeriesSource:
                           # maker differences a level and sums moves (infra.processing.features)
 
 
+def _model_out(keys, start, end, as_of):
+    """A stored model run's prediction column: key ``<run>:<column>`` (the column may itself contain
+    ``:``, e.g. ``c_rpca_curve:residual:bmk:otr:US_BOND_10y``), indexed by the row's label."""
+    from infra.config import MODEL_RUNS_DIR
+    from infra.storage import model_runs as store
+    out = {}
+    for k in keys:
+        run, _, col = k.partition(":")
+        p = store.read_predictions(run, root=MODEL_RUNS_DIR)
+        if p.empty or col not in p:
+            out[k] = pd.Series(dtype="float64")
+            continue
+        sl = p[col].astype("float64")
+        sl.index = pd.DatetimeIndex(sl.index).normalize()
+        sl = sl[~sl.index.duplicated(keep="last")]
+        out[k] = sl[(sl.index >= pd.Timestamp(start)) & (sl.index <= pd.Timestamp(end))]
+    return pd.DataFrame(out).reindex(columns=list(keys))
+
+
+def _feat(keys, start, end, as_of):
+    """Any feature-maker expression as a series (``feat:<expr>``, e.g.
+    ``feat:vol(otr:US_BOND_10y,20) | lvl``), labelled by the DAY it became available
+    (conservative: a value known on D+1 is row D+1, never row D); warm-up read from 1500 days back."""
+    from infra.pipeline.features import feature            # features reads this module: import late
+    out = {}
+    for k in keys:
+        f = feature(k, pd.Timestamp(start) - pd.Timedelta(days=1500), pd.Timestamp(end) + _ONE_DAY)
+        f = f.dropna()
+        f.index = pd.DatetimeIndex(f.index).normalize()
+        f = f.groupby(level=0).last()
+        out[k] = f[(f.index >= pd.Timestamp(start)) & (f.index <= pd.Timestamp(end))]
+    return pd.DataFrame(out).reindex(columns=list(keys))
+
+
 def kind_of(series_id: str) -> str:
     """``level`` or ``moves`` (the source's declared input kind)."""
     return SERIES_SOURCES[parse_id(series_id)[0]].kind
@@ -317,6 +351,19 @@ SERIES_SOURCES: dict[str, SeriesSource] = {
                             ("release:PAYEMS", "release:UNRATE", "release:CPIAUCSL"), point_in_time_index=False,
                             availability=Availability("publication", note="each vintage at its publication day, "
                                                       "at the release's registry time")),
+    "feat": SeriesSource(_feat, "any feature-maker expression (infra.pipeline.features), labelled by its availability day",
+                         ("feat:vol(otr:US_BOND_10y,20) | lvl",),
+                         availability=Availability("day", 0, "00:00", "America/New_York", calendar="market",
+                                                   verified=False, note="the label IS the availability day"),
+                         kind="level"),
+    "model": SeriesSource(_model_out, "a stored model run's prediction column (model:<run>:<column>), e.g. a PCA "
+                          "residual = that residual portfolio's daily P&L with the fit's frozen weights",
+                          ("model:c_rpca_curve:residual:bmk:otr:US_BOND_10y",),
+                          availability=Availability("day", 1, "10:00", "America/New_York", calendar="market",
+                                                    verified=False,
+                                                    note="row D is computed from inputs known by D+1 10:00 New York "
+                                                         "(the bmk yield P&L); the late one of the usual inputs"),
+                          kind="moves"),
     "bar": SeriesSource(_bar, "1-minute trade-bar close (UTC)", ("bar:ZN.v.0",),
                         availability=Availability("instant", offset=pd.Timedelta(minutes=1),
                                                   note="a bar is stamped at its START: known one minute later")),

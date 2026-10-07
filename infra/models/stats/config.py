@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 
 REGRESSION_METHODS = ("ols", "stepwise", "ridge", "lasso", "elasticnet", "huber", "quantile",
                       "hockey", "tls", "logit", "probit", "kalman")
-PCA_METHODS = ("pca", "weighted", "missing")
+PCA_METHODS = ("pca", "weighted", "missing", "similarity")
 REGIME_METHODS = ("hmm", "rule")
 REGIME_PCA_COMBINES = ("covariance", "residual", "robust")
 
@@ -86,6 +86,9 @@ class PCASpec:
     # weighted PCA
     halflife: float | None = None              # exponential observation (time) weights, rows
     var_weights: tuple[tuple[str, float], ...] = ()  # (column, weight): importance of each variable
+    # similarity weights (method "similarity"): rows weighted by closeness of their state to the fit date's
+    state_columns: tuple[str, ...] = ()        # the N state series (not decomposed)
+    bandwidth: float = 1.0                     # Gaussian kernel width, in standard deviations of the state
     # missing data
     missing: str = "drop"                      # drop (complete rows) | em | pairwise
     em_max_iter: int = 500
@@ -140,6 +143,8 @@ class RegimeSpec:
     rule_column: str | None = None
     rule_thresholds: tuple[float, ...] = ()
     rule_softness: float = 0.0
+    rule_columns: tuple[str, ...] = ()            # grid rule: the columns ...
+    rule_grid: tuple[tuple[float, ...], ...] = ()  # ... and each one's thresholds
 
     def __post_init__(self):
         if self.method not in REGIME_METHODS:

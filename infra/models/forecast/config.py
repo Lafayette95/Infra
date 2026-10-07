@@ -3,7 +3,7 @@
 
 A spec: the TARGET (a daily-moves series id, bp, + = a long position made money), the forward
 window (``horizon_days`` after a ``gap``), the REGRESSORS (feature-maker expressions, read point in
-time and aligned onto the decision instants), the MODE:
+time and aligned onto the decision instants), the FIT MODE (``fit_mode``, ``infra.models.fit_modes``):
 
 * ``exante``: no fit - forecast = sum_i weight_i x feature_i (a pre-stated direction: ANY feature
   string from the feature maker, signed); the fit only reports statistics;
@@ -36,7 +36,7 @@ class ForecastSpec:
     description: str = ""
     target: str = "bmk:otr:US_BOND_10y"         # daily moves, bp, + = long gains
     regressors: tuple[Regressor, ...] = ()
-    mode: str = "fitted"                        # exante | fitted | prior
+    fit_mode: str = "fitted"                    # exante | fitted | prior (infra.models.fit_modes)
     horizon_days: int = 5
     gap_days: int = 1                           # decision on day D + gap at `decision_time` (New York); the
                                                 # forward window starts at that day's close
@@ -55,6 +55,10 @@ class ForecastSpec:
     n_placebo: int = 50
     placebo_block_days: int = 63
 
+    def __post_init__(self):
+        from infra.models.fit_modes import check_fit_mode
+        check_fit_mode(self.fit_mode, has_direction=True, what=f"forecast {self.name!r}")
+
     def threshold(self, gate: str, default: float = 0.0) -> float:
         return dict(self.thresholds).get(gate, default)
 
@@ -69,12 +73,14 @@ def surprise(ticker: str, weight: float = 1.0, *, window: int = 36, days: str = 
 
 FORECAST_MODELS: dict[str, ForecastSpec] = {s.name: s for s in (
     ForecastSpec("default", "fitted OLS (HAC) on the spec's regressors"),
-    ForecastSpec("exante", "no fit: the regressors' stated weights", mode="exante", gates=()),
-    ForecastSpec("prior", "sign fixed ex ante (the weights' signs), size fitted (ridge)", mode="prior",
+    ForecastSpec("exante", "no fit: the regressors' stated weights", fit_mode="exante", gates=()),
+    ForecastSpec("prior", "sign fixed ex ante (the weights' signs), size fitted (ridge)", fit_mode="prior",
                  gates=("min_obs",)),
 )}
 
 
 def get_forecast_spec(spec: ForecastSpec | str | None = None, **overrides) -> ForecastSpec:
     base = FORECAST_MODELS["default"] if spec is None else (FORECAST_MODELS[spec] if isinstance(spec, str) else spec)
+    if "mode" in overrides:                              # legacy name (runs stored before 2026-10-07)
+        overrides["fit_mode"] = overrides.pop("mode")
     return replace(base, **overrides) if overrides else base

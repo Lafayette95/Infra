@@ -345,3 +345,26 @@ def test_daily_studies_are_guarded_and_run_on_the_daily_grid(monkeypatch):
     t = m.fitted_.table.loc["US_BOND_10y"]
     assert t["n"] >= 30 and t["mean"] == pytest.approx(-3.0, abs=0.5) and t["passed"] == 1.0
     assert ep.PNL_SOURCES["YIELD_BPS_CMT"].frequency == "daily" and resolve_cycle("DAILY_SETTLE").points_per_day == 1
+
+
+def test_fit_modes_exante_fitted_prior():
+    """fitted = the mean's sign where the tests pass; exante = the stated sign, no tests; prior = the
+    fitted sign only where it is the stated one; a fit stored before fit modes keeps the fitted rule."""
+    panel, occ = _synthetic(effect=1.0)
+    data = _study().prepare(panel, occurrences=occ)
+    sig = lambda **kw: _study(**kw).fit(data, as_of="2023-12-31").predict(data, start="2023-12-31")["signal:X"]  # noqa: E731
+    assert (sig() == 1.0).all()
+    assert (sig(fit_mode="exante", expected_sign=(("X", -1.0),)) == -1.0).all()       # stated, against the data
+    assert (sig(fit_mode="prior", expected_sign=(("*", 1.0),)) == 1.0).all()
+    assert (sig(fit_mode="prior", expected_sign=(("X", -1.0),)) == 0.0).all()          # wrong-signed: off
+    noise = _synthetic(effect=0.0)
+    nd = _study().prepare(noise[0], occurrences=noise[1])
+    ex = _study(fit_mode="exante", expected_sign=(("X", 1.0),)).fit(nd, as_of="2023-12-31")
+    assert ex.fitted_.table.loc["X", "passed"] == 0.0 and (ex.predict(nd, start="2023-12-31")["signal:X"] == 1.0).all()
+    with pytest.raises(ValueError):
+        _study(fit_mode="prior")                                                       # no stated direction
+    m = _study().fit(data, as_of="2023-12-31")
+    old = m.params()
+    old = old[~((old["section"] == "event_stat") & (old["col"] == "signal"))]          # a pre-fit-mode fit
+    pd.testing.assert_series_equal(EventStudy.from_params(old, _study().spec).predict(data, start="2023-12-31")["signal:X"],
+                                   m.predict(data, start="2023-12-31")["signal:X"])

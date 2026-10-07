@@ -177,23 +177,25 @@ class ConditionalAutocorr(Model):
             sp1 = s1.loc[s1.bucket == 1, "chase"].mean() - s1.loc[s1.bucket == -1, "chase"].mean()
             sp2 = s2.loc[s2.bucket == 1, "chase"].mean() - s2.loc[s2.bucket == -1, "chase"].mean()
             stats["halves"] = float(np.sign(sp1) == np.sign(sp2)) if np.isfinite(sp1) and np.isfinite(sp2) else 0.0
-        if sp.fixed_map is not None:                    # a no-fit rule: report the statistics, impose the map
+        if sp.fit_mode == "exante":                    # no fit: report the statistics, impose the stated map
             if n >= 20:
                 for xb in (-1, 0, 1):
                     m = d["bucket"] == float(xb)
                     stats[f"row_mean_{xb}"] = float(d.loc[m, "fwd"].mean()) if m.any() else np.nan
-            self.fitted_ = AutocorrFit(as_of, stats, {}, True, {float(k): float(v) for k, v in sp.fixed_map},
+                if sp.form == "cells":
+                    self._fit_cells(d, stats, lags)
+            self.fitted_ = AutocorrFit(as_of, stats, {}, True, self._stated_map(),
                                        float(np.sign(stats.get("bench_mean", 0.0))))
             return self
         if n >= 20:
             for xb in (-1, 0, 1):                       # X's own direction: mean forward move per X bucket
                 m = d["bucket"] == float(xb)
                 stats[f"row_mean_{xb}"] = float(d.loc[m, "fwd"].mean()) if m.any() else np.nan
-        if sp.mode == "cells" and n >= 20:
+        if sp.form == "cells" and n >= 20:
             self._fit_cells(d, stats, lags)
         gates, passed = run_gates(stats, sp.gates, dict(sp.thresholds)) if n >= 20 else ({}, False)
         bench_sign = float(np.sign(stats.get("bench_mean", 0.0)))
-        if sp.mode == "cells":
+        if sp.form == "cells":
             th = dict(sp.thresholds)
             smap = {}
             for xb, pb in CELLS:
@@ -201,6 +203,7 @@ class ConditionalAutocorr(Model):
                 t, cnt, mean = stats.get(f"cell_t_{k}", np.nan), stats.get(f"cell_n_{k}", 0.0), stats.get(f"cell_mean_{k}", np.nan)
                 ok = passed and np.isfinite(t) and abs(t) >= th.get("cell_t", 2.0) and cnt >= th.get("cell_min_obs", 40.0)
                 smap[k] = float(np.sign(mean)) if ok else 0.0
+            smap = self._apply_prior(smap)
             passed = passed and any(v != 0 for v in smap.values())
             self.fitted_ = AutocorrFit(as_of, stats, gates, passed, smap, bench_sign)
             return self
@@ -210,8 +213,21 @@ class ConditionalAutocorr(Model):
             smap = {bk: bench_sign for bk in (-1, 0, 1)}
         else:
             smap = {bk: 0.0 for bk in (-1, 0, 1)}
+        smap = self._apply_prior(smap)
         self.fitted_ = AutocorrFit(as_of, stats, gates, passed, smap, bench_sign)
         return self
+
+    def _stated_map(self) -> dict:
+        """The spec's fixed_map, keyed like the fitted map (X bucket float / cell key string)."""
+        return {(str(k) if self.spec.form == "cells" else float(k)): float(v) for k, v in self.spec.fixed_map}
+
+    def _apply_prior(self, smap: dict) -> dict:
+        """fit_mode prior: the fitted map, 0 wherever it disagrees with the stated sign."""
+        if self.spec.fit_mode != "prior":
+            return smap
+        from infra.models.fit_modes import prior_keep
+        stated = self._stated_map()
+        return {k: prior_keep(float(np.sign(v)), float(np.sign(stated.get(k, 0.0)))) for k, v in smap.items()}
 
     def _fit_cells(self, d: pd.DataFrame, stats: dict, lags: int) -> None:
         """3x3 cells (X bucket x past-move bucket): the raw mean forward move (the traded sign),
@@ -255,7 +271,7 @@ class ConditionalAutocorr(Model):
         s_past = np.sign(d["past"]).fillna(0.0)
         xdir = d["bucket"].map({float(bk): float(np.sign(f.stats.get(f"row_mean_{bk}", 0.0) or 0.0))
                                 for bk in (-1, 0, 1)}).fillna(0.0)
-        if sp.mode == "cells":
+        if sp.form == "cells":
             keys = [cell_key(x, p) if np.isfinite(x) and np.isfinite(p) else "" for x, p in zip(d["bucket"], d["pbucket"])]
             sig = pd.Series([f.signal_map.get(k, 0.0) for k in keys], index=d.index)
             mean_c = pd.Series([f.stats.get(f"cell_mean_{k}", np.nan) for k in keys], index=d.index)

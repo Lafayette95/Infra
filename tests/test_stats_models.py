@@ -407,3 +407,27 @@ def test_models_page_runs_every_method_headless():
     for method in ("pca", "missing"):
         res = run_model("pca", method, list(df.columns), None, None, IDX[400], panel=df, diagnostics=True)
         assert len(render_pca(res, "dark")) == 6
+
+
+def test_similarity_pca_weights_days_like_the_fit_dates_state():
+    """Two states with different factor structure: fitted in state B, the similarity-weighted
+    PCA recovers B's loading; the plain PCA gets the blend. The state's own columns are not
+    decomposed, and an incomplete state row weighs 0."""
+    from infra.models.stats.pca import make_pca
+    rng = np.random.default_rng(3)
+    n = 1200
+    state = np.r_[np.zeros(600), np.ones(600)] + rng.normal(0, 0.1, n)
+    load_a, load_b = np.array([1.0, 1.0, 1.0, 1.0]), np.array([1.0, 0.3, -0.3, -1.0])
+    f = rng.normal(0, 1, n)
+    X = np.where(state[:, None] < 0.5, f[:, None] * load_a, f[:, None] * load_b) + rng.normal(0, 0.2, (n, 4))
+    idx = pd.bdate_range("2015-01-01", periods=n)
+    df = pd.DataFrame(X, index=idx, columns=list("abcd"))
+    df["s"] = state
+    df.iloc[650, 4] = np.nan
+    sim = make_pca("pca", method="similarity", columns=tuple("abcd"), state_columns=("s",), bandwidth=0.5,
+                   n_components=1).fit(df, as_of=idx[-1])
+    plain = make_pca("pca", columns=tuple("abcd"), n_components=1).fit(df[list("abcd")], as_of=idx[-1])
+    cos = lambda f, v: abs(f.fitted_.loadings[:, 0] @ v) / np.linalg.norm(v)  # noqa: E731
+    assert sim.fitted_.columns == list("abcd")
+    assert cos(sim, load_b) > 0.99 > cos(plain, load_b)
+    assert sim.fitted_.stats["n_eff"] < 700 and sim.fitted_.stats["state:s"] == pytest.approx(state[-1])

@@ -169,6 +169,7 @@ class PCA(StatModel):
 
     def fit(self, prepared: pd.DataFrame, as_of=None) -> "PCA":
         sample, as_of = self.fit_sample(prepared, as_of)
+        sample, w_state = self._state_weights(sample)
         sample = sample.dropna(how="all")
         cols = list(sample.columns)
         if self.spec.min_coverage > 0:
@@ -178,6 +179,8 @@ class PCA(StatModel):
         k = min(self.spec.n_components, len(cols))
         w_all = decay_weights(len(sample), self.spec.halflife)
         w_all = np.ones(len(sample)) if w_all is None else w_all
+        if w_state is not None:
+            w_all = w_all * w_state.reindex(sample.index).fillna(0.0).to_numpy(dtype="float64")
         self.prep.fit(sample, w_all)
         scaled = self.prep.transform(sample)
         mu, C, used = self._fit_covariance(scaled, w_all)
@@ -193,7 +196,7 @@ class PCA(StatModel):
         vals, vecs = np.clip(vals[order], 0.0, None), vecs[:, order]
         L = orient(vecs[:, :k], self.spec.sign)
         w_used = w_all[used]
-        n_eff = effective_n(w_used if self.spec.halflife else None, int(used.sum()))
+        n_eff = effective_n(w_used if (self.spec.halflife or w_state is not None) else None, int(used.sum()))
         total = vals.sum()
         sigma2, edge = noise_edge(vals, n_eff, k)
         self.fitted_ = PCAFit(as_of=pd.Timestamp(as_of), columns=cols, mean=mu, scale=sd, var_weight=vw,
@@ -213,6 +216,10 @@ class PCA(StatModel):
 
     def _extra_stats(self) -> dict:
         return {}
+
+    def _state_weights(self, sample: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series | None]:
+        """(the columns to decompose, optional row weights from other columns). Plain PCA: all, none."""
+        return sample, None
 
     # ------------------------------------------------------------------ projection
     def _project(self, X: np.ndarray):
@@ -368,6 +375,40 @@ class WeightedPCA(PCA):
         return super().fit(prepared, as_of)
 
 
+class SimilarityPCA(PCA):
+    """Rows weighted by how close each day's STATE (``state_columns``: N series, not
+    decomposed) is to the state on the fit date: w_t = exp(-d_t^2 / (2 bandwidth^2)), d_t^2 =
+    the mean squared distance of the state z-scored over the fit sample (so ``bandwidth`` is in
+    standard deviations, whatever the number of state series). A row with an incomplete
+    state weighs 0. The fit date's state is the last complete one in the fit sample (point in
+    time); the loadings are then frozen like any fit, so a residual portfolio keeps its
+    weights until the next refit. Multiplies with ``halflife`` time weights if both are set."""
+    method = "similarity"
+
+    def input_columns(self, raw):
+        state = list(self.spec.state_columns)
+        return [c for c in super().input_columns(raw) if c not in state] + state
+
+    def _state_weights(self, sample):
+        state = list(self.spec.state_columns)
+        if not state:
+            raise ValueError("SimilarityPCA needs state_columns")
+        Z = sample[state].astype("float64")
+        ok = Z.notna().all(axis=1)
+        if not ok.any():
+            raise ValueError("SimilarityPCA: no complete state row in the fit sample")
+        mu, sd = Z[ok].mean(), Z[ok].std().replace(0.0, 1.0)
+        z = (Z - mu) / sd
+        target = z[ok].iloc[-1]
+        d2 = ((z - target) ** 2).mean(axis=1)
+        w = np.exp(-0.5 * d2 / self.spec.bandwidth ** 2).where(ok, 0.0)
+        self._state_target = {f"state:{c}": float(Z[ok].iloc[-1][c]) for c in state}
+        return sample[[c for c in sample.columns if c not in state]], w
+
+    def _extra_stats(self) -> dict:
+        return dict(getattr(self, "_state_target", {}))
+
+
 def ppca_em(Y: np.ndarray, w: np.ndarray, k: int, *, max_iter: int = 500, tol: float = 1e-7,
             init: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, dict]:
     """Maximum likelihood of the probabilistic PCA model ``y = mu + W z + e``,
@@ -478,7 +519,8 @@ class MissingDataPCA(PCA):
         return dict(getattr(self, "_em_info", {}))
 
 
-PCA_CLASSES: dict[str, type[PCA]] = {"pca": PCA, "weighted": WeightedPCA, "missing": MissingDataPCA}
+PCA_CLASSES: dict[str, type[PCA]] = {"pca": PCA, "weighted": WeightedPCA, "missing": MissingDataPCA,
+                                     "similarity": SimilarityPCA}
 
 
 def make_pca(spec: PCASpec | str | None = None, **overrides) -> PCA:

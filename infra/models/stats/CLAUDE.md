@@ -222,6 +222,48 @@ the models MEAN and HOW to use them. Built 2026-10-03.
     variance 0.52 / 0.94 / 0.65 of plain PCA on seeds 0-2; z calibrated in both regimes;
     walk-forward shock test for all three combine modes; params round trip.
 
+## 7a. Covariance conditioned on third variables - framework C (2026-10-06/07)
+*   **The user's framework C:** bias the covariance (the PCA) by third variables, trade the residuals.
+    Residual trading itself runs through the other frameworks: a stored run's residual is a series
+    (`model:<run>:residual:<col>` in `infra.pipeline.series_panel` = that residual's daily P&L), so
+    "fade the residual" is an A spec (ex ante, weight -1) or a B1 spec on it.
+*   **Three ways to condition, by how fast the state moves:**
+    *   **Fast states (daily moves) - `RegimePCA` with the HMM** on the N series' daily factor scores
+        (section 7): the regime probability updates daily, so the loadings follow a switch within days.
+        Its Gaussian HMM assumes observations independent given the regime - right for daily moves,
+        WRONG for slow states: on levels, slope, a 6-month change or an EWMA vol it collapses into
+        one wide regime or into eras (found 2026-10-06: one regime held every day from 2015; z-scoring
+        the features over 3 years did not help).
+    *   **Slow states, discrete - rule regimes, `rule="grid"`** (`RegimeSpec.rule_columns` /
+        `rule_grid`): regime = the combination of intervals on several columns (last column varying
+        fastest), soft boundaries multiply. E.g. cycle priced (hikes / cuts) x vol above / below its
+        3-year norm = 4 states.
+    *   **Slow states, continuous - `SimilarityPCA`** (PCA method `similarity`; `PCASpec.state_columns`,
+        `bandwidth`): each day weighted by how close its state (z-scored over the fit sample) is to the
+        state on the fit date, Gaussian kernel (`bandwidth` in standard deviations, mean squared distance
+        across the state series); an incomplete state weighs 0; the loadings are FROZEN until the next
+        refit, so a residual stays one portfolio for the month (RegimePCA's blend moves with the day's
+        probability: right for fast regimes, but the residual's weights then change daily).
+    *   They combine naturally (similarity on the slow state x the HMM probability of the fast regime) -
+        not built.
+*   **Run inputs can be any feature:** `feat:<expression>` (series_panel) puts a feature-maker
+    expression into a run, labelled by the DAY it became available (conservative).
+*   **First test (2026-10-06/07; the US on-the-run curve 2/3/5/7/10/30y, bmk otr P&L, 3 factors, monthly
+    refits; signal: fade each residual's 20-day sum, z over a year, 1 / 5 / 20 days; scratch runs
+    `c_*` in `ModelRuns`):**
+    *   Plain PCA residuals revert at 1-5 days, belly strongest (2013-2026 Sharpe 0.4-0.8 at 1 day,
+        spanning t ~2 at 3y / 5y); nothing at 20 days; strong in 2010-14, ~0.2 since 2015. Gross, and
+        part of the 1-day reversion is likely noise in the end-of-day marks.
+    *   HMM on the curve's own scores (K = N): residuals 0.98-0.995 correlated with plain, no gain.
+    *   The user's slow states (front-end shape = SR1 12 months out minus SR1 now - hikes / cuts priced;
+        10y EWMA vol; 10y level; 2s10s): rule grid (cycle sign x vol) and similarity (bandwidth 0.5 / 1.0),
+        on 2019-09.. (the SR1 strip's history), fades evaluated 2021-10..2026-09 against a plain PCA on
+        the same sample: NO gain - the front end WORSE (2y / 3y incremental t -1.8 to -3.0 at 1 day), no
+        tenor with incremental t >= 2. Likely: the plain fade barely works in this window (the front end
+        trended with policy), and conditioning costs effective sample (15-40% at bandwidth 0.5), adding
+        loading noise that doesn't revert. Short sample: a 2012+ test needs a pre-2018 front-end series
+        (`TOFIX.md`).
+
 ## 8. Running it
 ```python
 from infra.pipeline.series_panel import read_panel

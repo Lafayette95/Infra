@@ -1317,3 +1317,20 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **No seasonality adjustment:** ZC rates are on CPI-U NSA with the 3-month lag; short tenors and forwards starting mid-year carry CPI seasonality (1y moves ~7bp a day vs 1.9bp at 10y).
 *   **TIPS not built yet:** FedInvest lists TIPS (we filter them out - `TREASURY_TYPES`), index ratios follow from CPI-U NSA (stored); a real curve would give the long history (2008+) and the per-bond TIPS-ZC basis. Planned next (user, 2026-10-07).
 *   **The pure method only:** an adjusted method (moving prints by the futures, as the OIS closes) would need a breakeven-futures hedge ratio - none obvious; the wide window is the trade-off instead.
+
+## C: covariance conditioned on slow states - short sample, untested combinations
+
+**Found:** 2026-10-07. **Where:** `infra/models/stats` (rule `grid`, `SimilarityPCA`), scratch runs `c_*` in
+`Database/Derived/ModelRuns`. **Status:** open (research).
+
+*   **The front-end shape (SR1 12 months out minus SR1 now) only exists from 2019-09** (SR1's launch;
+    the 12-month contract settles properly from 2019-09-27 - its first day settled at 0, a "+9,779bp"
+    shape). SR3 is on disk only from 2025-03 (the cycle's universe). So the conditioned-covariance test
+    covers 2021-10..2026-09 only. A 2012+ test needs a pre-2018 front-end series: Eurodollar (GE)
+    settlements from Databento (daily statistics, a few dollars - price it with a dry run first), or
+    the 2y's 6-month change as a cruder proxy (tried: the HMM on it collapsed, a rule on it untested).
+*   **Not built:** similarity on the slow state x the HMM probability of the fast regime (combined
+    weights); conditioning on flow features (positioning, vol of vol) instead of the macro state.
+*   **The `c_*` runs are scratch** (no spec in a registry; their `feat:` inputs and overrides live in
+    their `meta.json`): delete or re-create them as named specs if the work continues.
+

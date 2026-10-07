@@ -184,3 +184,25 @@ def test_fixed_map_is_a_no_fit_rule():
     assert (hi.signal == -1.0).all() and (out.loc[out.bucket == 0, "signal"] == 0).all()
     mirror = ConditionalAutocorr(_spec("chase_high_fade_low")).fit(m.prepare(panel), as_of="2015-12-31")
     pd.testing.assert_series_equal(mirror.predict(m.prepare(panel), start="2015-12-31")["signal"], -out["signal"])
+
+
+def test_fit_modes_prior_and_legacy_names():
+    """prior keeps the fitted map only where it agrees with the stated one; exante works in cells form;
+    the legacy names (mode = the form, a bare fixed_map = exante) still build the same spec."""
+    from infra.models.autocorr.config import get_autocorr_spec
+    panel = _panel(rho=0.35)
+    fitted = ConditionalAutocorr(_spec("none")).fit(ConditionalAutocorr(_spec("none")).prepare(panel), as_of="2015-12-31")
+    fm = fitted.fitted_.signal_map
+    stated = ((1.0, fm[1.0]), (0.0, 0.0), (-1.0, -fm[-1.0]))                          # agree on +, disagree on -
+    pr = ConditionalAutocorr(_spec("none", fit_mode="prior", fixed_map=stated)).fit(fitted.prepare(panel), as_of="2015-12-31")
+    assert pr.fitted_.signal_map == {1.0: fm[1.0], 0.0: 0.0, -1.0: 0.0}
+    cells = (("1|1", 1.0), ("-1|-1", -1.0))
+    ex = ConditionalAutocorr(_spec("cells", fit_mode="exante", fixed_map=cells, gates=()))
+    ex.fit(ex.prepare(panel), as_of="2015-12-31")
+    assert ex.fitted_.signal_map == {"1|1": 1.0, "-1|-1": -1.0}
+    out = ex.predict(ex.prepare(panel), start="2015-12-31")
+    assert set(out["signal"].unique()) <= {-1.0, 0.0, 1.0} and (out["signal"] != 0).any()
+    assert get_autocorr_spec("default", mode="cells").form == "cells"
+    assert get_autocorr_spec("default", fixed_map=((1.0, 1.0),), gates=()).fit_mode == "exante"
+    with pytest.raises(ValueError):
+        get_autocorr_spec("default", fixed_map=((1.0, 1.0),), fit_mode="fitted")

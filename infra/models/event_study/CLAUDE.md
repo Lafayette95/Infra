@@ -10,7 +10,7 @@ headings "Event study: ...". Built 2026-10-05 from the user's spec.
     a P&L source x test thresholds (`config.EventStudySpec`, registry `EVENT_STUDIES`).
 *   **Model lingo:** steps 1-2 (events -> windows -> window P&L) are `prepare`; steps 3-4 (the
     tests, per instrument, and what passes) are `fit`; `predict` gives each later event the
-    fitted expectation and the signal (+1 / -1 where the study passes, else 0) next to the
+    fitted expectation and the signal (by `fit_mode`, `infra/models/CLAUDE.md` 0c: fitted = +1 / -1 where the study passes, else 0; exante = `expected_sign`; prior = the fitted sign only where it is the stated one) next to the
     realised move. The operating model applies unchanged: a run of kind `event_study`
     (`scripts/model_run.py create ... --kind event_study --spec <study> --series <instruments>`),
     weekly fit-append, daily predict-append, rebuild + reconciliation.

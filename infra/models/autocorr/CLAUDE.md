@@ -7,7 +7,7 @@ prepare -> fit -> predict, the operating model of 0b, named specs). Known gaps: 
 ## 1. The question
 *   **Does a third variable X decide whether an instrument's price action continues (chase) or
     reverts (fade)?** Framework B1 of the user's four (A direction, B autocorrelation, C
-    covariance, D time/catalyst). Model: `r_fwd = a + b r_past + c X + d (X x r_past)`; `b` is the
+    covariance, D time/catalyst = the event-study model). Model: `r_fwd = a + b r_past + c X + d (X x r_past)`; `b` is the
     unconditional momentum / reversal (the BENCHMARK), `c` X's directional effect (framework A, not
     this), `d` the B1 effect.
 *   **One-dimensional form:** `chase = sign(past) x fwd` is the P&L of chasing the past move. The
@@ -111,7 +111,7 @@ prepare -> fit -> predict, the operating model of 0b, named specs). Known gaps: 
     is symmetric in the past move's sign, so an asymmetric effect (a fly that co-moved with duration
     reverts, one that counter-moved continues) cancels inside an X bucket; (2) the x_t / spread tests
     only see monotonic dependence, missing "after a LARGE duration move either way".
-*   **Built:** `mode="cells"` - the 3x3 of X bucket x the target's own past-move bucket, a signal per
+*   **Built:** `form="cells"` (`mode` until 2026-10-07) - the 3x3 of X bucket x the target's own past-move bucket, a signal per
     cell (the user's quadrant spec), the family's FDR over CELLS, spanning against BOTH benchmarks
     jointly (own momentum rule, X's direction-only rule `xdir_signal`); `x_feature="absmove:K"`
     for |X|. Specs `cells`, `cells_loose`; families `duration_flies_cells` (288 members x 9 cells) and
@@ -134,7 +134,7 @@ prepare -> fit -> predict, the operating model of 0b, named specs). Known gaps: 
     is real at minutes-to-hours), a different X (positioning, vol, risk aversion), or a sample
     ending around 2015 (several curve effects were 3-5x stronger in 2009-2013).
 
-## 4c. No-fit rules (`fixed_map`; the user's prior, 2026-10-06)
+## 4c. No-fit rules (`fixed_map`; the user's prior, 2026-10-06; `fit_mode` exante / prior since 2026-10-07, `infra/models/CLAUDE.md` 0c)
 *   **`AutocorrSpec.fixed_map`:** a pre-stated signal per X bucket, no fitting and no gates (the fit
     only reports statistics) - like the fixed 5s30s auction rule. Specs `fade_high_chase_low` (fade
     the target's move when X is in its + tercile, chase in the - tercile, flat in the middle) and its

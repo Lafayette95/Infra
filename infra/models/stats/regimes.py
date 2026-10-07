@@ -363,7 +363,11 @@ class RuleRegimes(RegimeModel):
 
     Built-in rule (``RegimeSpec.rule``): ``"threshold"`` - regime = which interval of
     ``rule_thresholds`` the (prepared) ``rule_column`` falls in; ``rule_softness`` > 0 makes
-    each boundary a logistic of that width instead of a step."""
+    each boundary a logistic of that width instead of a step. ``"grid"`` - several columns
+    (``rule_columns``), each cut by its own thresholds (``rule_grid``); regime = the combination
+    of intervals, numbered with the LAST column varying fastest (2 columns x 1 cut each: R0 =
+    both below, R1 = first below / second above, R2, R3); soft boundaries multiply (the columns'
+    intervals are treated as independent)."""
 
     def __init__(self, spec=None, probabilities: pd.DataFrame | None = None, **overrides):
         if probabilities is not None:
@@ -375,7 +379,7 @@ class RuleRegimes(RegimeModel):
     def input_columns(self, raw):
         if self.probabilities is not None:
             return []
-        return [self.spec.rule_column]
+        return list(self.spec.rule_columns) if self.spec.rule == "grid" else [self.spec.rule_column]
 
     def prepare(self, raw, *, skip=()):
         if self.probabilities is not None:
@@ -385,12 +389,27 @@ class RuleRegimes(RegimeModel):
     def _probs(self, prepared: pd.DataFrame) -> np.ndarray:
         if self.probabilities is not None:
             return self.probabilities.reindex(prepared.index).to_numpy(dtype="float64")
+        if self.spec.rule == "grid":
+            cols, grid = list(self.spec.rule_columns), [list(c) for c in self.spec.rule_grid]
+            if len(cols) != len(grid) or not cols:
+                raise ValueError("grid rule: one threshold tuple per rule column")
+            n = int(np.prod([len(c) + 1 for c in grid]))
+            if n != self.n_regimes:
+                raise ValueError(f"grid of {[len(c) + 1 for c in grid]} intervals makes {n} regimes, spec says {self.n_regimes}")
+            p = np.ones((len(prepared), 1))
+            for c, cuts in zip(cols, grid):
+                q = self._intervals(prepared[c].to_numpy(dtype="float64"), cuts)
+                p = (p[:, :, None] * q[:, None, :]).reshape(len(prepared), -1)
+            return p
         if self.spec.rule != "threshold":
             raise ValueError(f"unknown rule {self.spec.rule!r}")
-        x = prepared[self.spec.rule_column].to_numpy(dtype="float64")
         cuts = list(self.spec.rule_thresholds)
         if len(cuts) + 1 != self.n_regimes:
             raise ValueError(f"{len(cuts)} thresholds make {len(cuts) + 1} regimes, spec says {self.n_regimes}")
+        return self._intervals(prepared[self.spec.rule_column].to_numpy(dtype="float64"), cuts)
+
+    def _intervals(self, x: np.ndarray, cuts: list) -> np.ndarray:
+        """P(x in each interval of ``cuts``): steps, or logistics of width ``rule_softness``."""
         s = self.spec.rule_softness
         above = np.column_stack([(x > c).astype(float) if not s else 1 / (1 + np.exp(-(x - c) / s)) for c in cuts]) \
             if cuts else np.zeros((len(x), 0))
