@@ -8,8 +8,11 @@ instrument. Local computation over stored data, no API:
 * ``cmt``: the Treasury par curve (Daily/Bonds, the px step);
 * ``otr``: the on-the-run bond's END OF DAY yield (the OTR map, ref step; FedInvest prices, px
   step), on the bond held the previous day;
-* ``curve``: our fitted spline's par yield (Derived/TreasuryCurves) - NOT built by the cycle yet,
-  so its rows reach only as far as the last hand build (``yield_pnl_present`` warns).
+* ``curve``: our fitted spline's par yield (Derived/TreasuryCurves).
+
+Non-US (``BMK_YIELD_OFFICIAL``): ``UK_BOND_<t>y`` / ``DE_BOND_<t>y`` from each country's official
+par curve in Daily/Bonds (the BoE's, the Bundesbank's), bmk ``yield_boe`` / ``yield_bundesbank``,
+in the curve's currency.
 
 Upsert by ``timestamp, ticker, bmk``: a recomputed day replaces its row, a revised source
 yield shows up in ``pnl_no_revisions``.
@@ -19,7 +22,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from infra.config import BMK_YIELD_AGREE_BP, BMK_YIELD_MAX_GAP_DAYS, BMK_YIELD_SOURCES, BMK_YIELD_TICKERS
+from infra.config import (BMK_YIELD_AGREE_BP, BMK_YIELD_MAX_GAP_DAYS, BMK_YIELD_OFFICIAL, BMK_YIELD_OFFICIAL_TENORS,
+                          BMK_YIELD_SOURCES, BMK_YIELD_TICKERS, BOND_CURVES)
 from infra.cycle.core import StepContext
 from infra.cycle.paths import CyclePaths
 from infra.processing import yield_pnl as yp
@@ -54,9 +58,26 @@ def _otr_pnl(tickers, start, end, paths: CyclePaths) -> pd.DataFrame:
     return yp.held_bond_pnl(m, by, "yield_otr", max_gap_days=BMK_YIELD_MAX_GAP_DAYS)
 
 
+def official_tickers(country: str) -> list[str]:
+    return [f"{country}_BOND_{t}y" for t in BMK_YIELD_OFFICIAL_TENORS]
+
+
+def _official_pnl(lo, hi, paths: CyclePaths, official) -> list[pd.DataFrame]:
+    from infra.pipeline.bonds import read_bonds_from_disk
+    parts = []
+    for country, src in official.items():
+        df = read_bonds_from_disk(official_tickers(country), lo, hi, root=paths.daily_bonds_dir)
+        if len(df):
+            parts.append(yp.level_change_pnl(df.rename(columns={"par_yield": "yield"})[["timestamp", "ticker", "yield"]],
+                                             f"yield_{src}", max_gap_days=BMK_YIELD_MAX_GAP_DAYS,
+                                             currency=BOND_CURVES[country].currency))
+    return parts
+
+
 def compute_yield_pnl(start, end, *, paths: CyclePaths | None = None, tickers=BMK_YIELD_TICKERS,
-                      sources=BMK_YIELD_SOURCES) -> pd.DataFrame:
-    """Rows for days in ``[start, end]`` (inclusive), every source."""
+                      sources=BMK_YIELD_SOURCES, official=BMK_YIELD_OFFICIAL) -> pd.DataFrame:
+    """Rows for days in ``[start, end]`` (inclusive), every source - the US ones and each
+    ``official`` country curve."""
     paths = paths or CyclePaths.default()
     start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
     lo, hi = start - _LOOKBACK, end + _ONE_DAY
@@ -67,6 +88,7 @@ def compute_yield_pnl(start, end, *, paths: CyclePaths | None = None, tickers=BM
         else:
             parts.append(yp.level_change_pnl(_yields(src, tickers, lo, hi, paths), f"yield_{src}",
                                              max_gap_days=BMK_YIELD_MAX_GAP_DAYS))
+    parts += _official_pnl(lo, hi, paths, official)
     parts = [p for p in parts if len(p)]
     if not parts:
         return pd.DataFrame(columns=yp.PNL_COLUMNS)
@@ -88,6 +110,12 @@ def input_last_days(start, end, *, paths: CyclePaths, tickers=BMK_YIELD_TICKERS)
     px = px.dropna(subset=["yield_eod"]) if len(px) else px
     if len(px):
         out["yield_otr"] = out["yield_curve"] = str(pd.Timestamp(px["timestamp"].max()).date())
+    from infra.pipeline.bonds import read_bonds_from_disk
+    for country, src in BMK_YIELD_OFFICIAL.items():
+        b = read_bonds_from_disk(official_tickers(country), lo, hi, root=paths.daily_bonds_dir)
+        b = b.dropna(subset=["par_yield"]) if len(b) else b
+        if len(b):
+            out[f"yield_{src}"] = str(pd.Timestamp(b["timestamp"].max()).date())
     return out
 
 

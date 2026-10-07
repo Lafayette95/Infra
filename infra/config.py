@@ -158,6 +158,11 @@ BMK_YIELD_TICKERS = tuple(f"US_BOND_{t}y" for t in (2, 3, 5, 7, 10, 20, 30))
 BMK_YIELD_SOURCES = ("cmt", "otr", "curve")
 BMK_YIELD_MAX_GAP_DAYS = 7          # a change spanning a longer gap (missing data) is not a day's P&L
 BMK_YIELD_AGREE_BP = 5.0            # sources disagreeing on a day's move by more than this are listed
+# Non-US benchmark yield P&L (2026-10-07): the official par curve per country (Daily/Bonds,
+# BOND_CURVES), bmk ``yield_<source>`` - its own name, not ``yield_cmt``, since it is the
+# central bank's fitted curve, not the US Treasury's CMT: country -> source key.
+BMK_YIELD_OFFICIAL = {"UK": "boe", "DE": "bundesbank"}
+BMK_YIELD_OFFICIAL_TENORS = (2, 3, 5, 7, 10, 20, 30)
 
 # Repo rates and the NY Fed's Treasury securities lending (CLAUDE.md 19), both fetched by
 # the px step. Free sources, verified 2026-10-02 (source facts in each infra/api client).

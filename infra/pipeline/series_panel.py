@@ -303,8 +303,9 @@ def _bmk(keys, start, end, as_of):
     for src, names in by_src.items():
         weights = {n: (yield_structure_weights(n) if "__" in n else {n: 1.0}) for n in names}
         tickers = sorted({t for w in weights.values() for t in w})
-        from infra.config import BMK_YIELD_SOURCES
-        bmk = f"yield_{src}" if src in BMK_YIELD_SOURCES else src     # curve -> yield_curve; swsp_cmt as is
+        from infra.config import BMK_YIELD_OFFICIAL, BMK_YIELD_SOURCES
+        short = set(BMK_YIELD_SOURCES) | set(BMK_YIELD_OFFICIAL.values())
+        bmk = f"yield_{src}" if src in short else src     # curve -> yield_curve, boe -> yield_boe; swsp_cmt as is
         raw = parquet_store.read_partitioned(BMK_ROOT / "Pnl", start=pd.Timestamp(start), end=pd.Timestamp(end) + pd.Timedelta(days=1),
                                              equals_in={"bmk": [bmk], "ticker": tickers})
         if raw is None or raw.empty:

@@ -18,26 +18,26 @@ PNL_COLUMNS = ["timestamp", "ticker", "bmk", "currency", "yield", "prev_timestam
                "prev_cusip", "pnl", "pnl_per_dv01"]
 
 
-def _finish(df: pd.DataFrame, bmk: str, max_gap_days: int) -> pd.DataFrame:
+def _finish(df: pd.DataFrame, bmk: str, max_gap_days: int, currency: str = "USD") -> pd.DataFrame:
     gap = (pd.to_datetime(df["timestamp"]) - pd.to_datetime(df["prev_timestamp"])).dt.days
     df = df[df["prev_yield"].notna() & df["yield"].notna() & (gap <= max_gap_days)].copy()
     df["pnl_per_dv01"] = -(df["yield"] - df["prev_yield"]) * 100.0
     df["pnl"] = df["pnl_per_dv01"]          # per $1 of DV01 the $ P&L is the bp number
-    df["bmk"], df["currency"] = bmk, "USD"
+    df["bmk"], df["currency"] = bmk, currency
     for c in ("cusip", "prev_cusip"):
         if c not in df:
             df[c] = None
     return df[PNL_COLUMNS].sort_values(["ticker", "timestamp"]).reset_index(drop=True)
 
 
-def level_change_pnl(yields: pd.DataFrame, bmk: str, *, max_gap_days: int = 7) -> pd.DataFrame:
+def level_change_pnl(yields: pd.DataFrame, bmk: str, *, max_gap_days: int = 7, currency: str = "USD") -> pd.DataFrame:
     """``yields``: ``timestamp, ticker, yield`` (percent)."""
     if yields.empty:
         return pd.DataFrame(columns=PNL_COLUMNS)
     y = yields.dropna(subset=["yield"]).sort_values(["ticker", "timestamp"]).copy()
     g = y.groupby("ticker")
     y["prev_timestamp"], y["prev_yield"] = g["timestamp"].shift(1), g["yield"].shift(1)
-    return _finish(y, bmk, max_gap_days)
+    return _finish(y, bmk, max_gap_days, currency)
 
 
 def held_bond_pnl(otr: pd.DataFrame, bond_yields: pd.DataFrame, bmk: str, *, max_gap_days: int = 7) -> pd.DataFrame:

@@ -149,3 +149,20 @@ def test_a_partial_store_replaces_only_its_own_curves(tmp_path):
     store_ois_curves(rows("EUR_ESTR", 0.99), "2026-10-01", "2026-10-01", root=tmp_path, curves=("EUR_ESTR",))
     got = read_ois_curves("2026-10-01", "2026-10-02", root=tmp_path).set_index("curve")["df"].to_dict()
     assert got == {"EUR_ESTR": 0.99, "USD_SOFR": 0.97}
+
+
+# ------------------------------------------------------------------ UK / DE yield P&L
+def test_official_curve_yield_pnl_in_its_currency(tmp_path):
+    from infra.cycle.bmk_yields import compute_yield_pnl
+    from infra.cycle.paths import CyclePaths
+    from infra.storage import parquet_store
+    paths = CyclePaths.under(tmp_path)
+    days = pd.bdate_range("2026-09-28", periods=3)
+    rows = pd.DataFrame([(d, t, y) for d, base in zip(days, (4.00, 4.10, 4.05)) for t, y in
+                         (("UK_BOND_10y", base), ("DE_BOND_10y", base - 1.5))], columns=["timestamp", "ticker", "par_yield"])
+    rows = rows.assign(timestamp=rows.timestamp.astype("datetime64[ms]"), par_yield=(rows.par_yield * 1e4).round().astype("Int32"))
+    parquet_store.write_partitioned(rows, paths.daily_bonds_dir, ["timestamp", "ticker"])
+    df = compute_yield_pnl(days[0], days[-1], paths=paths, sources=())
+    uk = df[df.ticker == "UK_BOND_10y"].set_index("timestamp")
+    assert set(df.bmk) == {"yield_boe", "yield_bundesbank"} and set(uk.currency) == {"GBP"}
+    assert list(uk.pnl_per_dv01.round(6)) == [-10.0, 5.0]  # + = long the bond: yields fell
