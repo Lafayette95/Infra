@@ -98,9 +98,10 @@ def compute_closes(day, *, closes: dict[str, SwapCloseSpec] = SWAP_CLOSES, as_of
     out = []
     for name, spec in closes.items():
         instant = snap_instants([day], spec.local_time, spec.timezone)[0]
-        _window_inside_day(instant, spec, day)
         for ccy in spec.currencies:
-            out.append(pure_closes(trades[ccy], instant, spec, SWAP_CLOSE_WEIGHTING, close_name=name, currency=ccy))
+            cs = spec.for_currency(ccy)
+            _window_inside_day(instant, cs, day)
+            out.append(pure_closes(trades[ccy], instant, cs, SWAP_CLOSE_WEIGHTING, close_name=name, currency=ccy))
             if ccy in hedged and len(trades[ccy]):
                 moved = trades[ccy].assign(futures_move_bp=futures_moves(trades[ccy], instant, ccy, day, book))
                 out.append(adjusted_closes(moved, instant, spec, SWAP_CLOSE_WEIGHTING, close_name=name, currency=ccy))

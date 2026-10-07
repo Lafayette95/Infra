@@ -259,7 +259,7 @@ SWAP_CLOSES_PURE = DerivedMetric(
     presence_severity=Severity.WARN,  # like every DTCC check: a thin day must not cost the vintage
 )
 
-# ------------------------------------------------- OIS (SOFR) curves from the swap closes
+# ------------------------------------------------- OIS curves (SOFR, €STR, SONIA, TONA, CORRA) from the swap closes
 OIS_CURVE_KEYS = ("timestamp", "curve", "node")
 OIS_FORWARD_BOUNDS_PCT = (-1.0, 15.0)
 OIS_REPRICE_TOL_BP = 0.01
@@ -273,7 +273,8 @@ def compute_ois_curve(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths)
     from infra.pipeline.ois_curves import compute_ois_curves
     lo = start - pd.Timedelta(days=SWAP_CORRECTION_DAYS)
     df, diag = compute_ois_curves(lo, end, swap_closes_root=paths.swap_closes_dir, futures_root=paths.daily_futures_dir,
-                                  contracts_file=paths.contracts_file, repo_root=paths.repo_dir)
+                                  contracts_file=paths.contracts_file, repo_root=paths.repo_dir,
+                                  boe_root=paths.boe_ois_dir)
     return df, {**diag, "range": (lo, end)}
 
 
@@ -287,17 +288,17 @@ def _check_ois_curve(ctx: StepContext):
     """(c) every stored curve in the window: each swap pillar reprices its input close
     (within ``OIS_REPRICE_TOL_BP``), and every forward between nodes lies in bounds."""
     from infra.analytics import swap_curve as sc
-    from infra.config import OIS_CURVES, SWAP_CURVES
-    from infra.pipeline.ois_curves import read_ois_curves
+    from infra.config import OIS_CURVES
+    from infra.pipeline.ois_curves import pillar_schedule, read_ois_curves
     df = read_ois_curves(ctx.start, ctx.end + pd.Timedelta(days=1), root=ctx.paths.ois_curves_dir)
     if df.empty:
         return True, "no OIS curves in window", None
     bad, worst = [], 0.0
     for (ts, name), g in df.groupby(["timestamp", "curve"]):
         c, day = sc.curve_from_nodes(g), pd.Timestamp(ts).normalize()
-        lag = SWAP_CURVES[OIS_CURVES[name].currency].spot_lag_days
+        ccy = OIS_CURVES[name].currency
         for r in g[g["source"] != "short_end"].itertuples():
-            err = abs(sc.par_rate(c, day, sc.swap_schedule(day, int(r.node[:-1]), lag)) - r.input_rate) * 100.0
+            err = abs(sc.par_rate(c, day, pillar_schedule(day, int(r.node[:-1]), ccy)) - r.input_rate) * 100.0
             worst = max(worst, err)
             if err > OIS_REPRICE_TOL_BP:
                 bad.append({"timestamp": ts, "curve": name, "node": r.node, "issue": f"reprices {err:.3f}bp off"})

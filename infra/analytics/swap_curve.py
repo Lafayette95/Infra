@@ -32,30 +32,36 @@ YEAR = 365.25
 _BDAYS: set | None = None
 
 
-def _is_bday(d: pd.Timestamp) -> bool:
+def _is_bday(d: pd.Timestamp, calendar: str = "us") -> bool:
+    """``calendar``: "us" (SIFMA-like: federal holidays + Good Friday) or "weekday" (Monday
+    to Friday - the non-USD curves for now: their own holiday calendars aren't encoded, so
+    a date next to a TARGET / UK / Tokyo / Toronto holiday can roll one day differently
+    than the market's - TOFIX)."""
     global _BDAYS
+    if calendar == "weekday":
+        return d.dayofweek < 5
     if _BDAYS is None:
         _BDAYS = set(business_days("1990-01-01", "2075-12-31"))
     return d in _BDAYS
 
 
-def add_business_days(day, n: int) -> pd.Timestamp:
+def add_business_days(day, n: int, calendar: str = "us") -> pd.Timestamp:
     d = pd.Timestamp(day).normalize()
     while n > 0:
         d += pd.Timedelta(days=1)
-        if _is_bday(d):
+        if _is_bday(d, calendar):
             n -= 1
     return d
 
 
-def modified_following(day) -> pd.Timestamp:
+def modified_following(day, calendar: str = "us") -> pd.Timestamp:
     d0 = pd.Timestamp(day).normalize()
     d = d0
-    while not _is_bday(d):
+    while not _is_bday(d, calendar):
         d += pd.Timedelta(days=1)
     if d.month != d0.month:  # rolled into the next month: go back instead
         d = d0
-        while not _is_bday(d):
+        while not _is_bday(d, calendar):
             d -= pd.Timedelta(days=1)
     return d
 
@@ -64,15 +70,48 @@ def modified_following(day) -> pd.Timestamp:
 class SwapSchedule:
     effective: pd.Timestamp
     dates: tuple  # adjusted accrual end (= payment) dates, the last one is maturity
-    accruals: np.ndarray  # ACT/360 year fractions
+    accruals: np.ndarray  # ACT/<basis> year fractions
 
 
-def swap_schedule(trade_day, tenor_years: int, spot_lag: int = 2) -> SwapSchedule:
-    eff = add_business_days(trade_day, spot_lag)
-    ends = [modified_following(eff + pd.DateOffset(years=k)) for k in range(1, tenor_years + 1)]
+def swap_schedule(trade_day, tenor_years: int, spot_lag: int = 2, *, freq_months: int = 12, basis: float = 360.0,
+                  calendar: str = "us") -> SwapSchedule:
+    """Fixed-leg schedule of a spot-starting par OIS: payments every ``freq_months`` (12 =
+    annual: SOFR, €STR, SONIA, TONA; 6 = semi-annual: CORRA beyond 1y), accruals ACT/``basis``
+    (360: SOFR, €STR; 365: SONIA, TONA, CORRA). An OIS's floating leg is DF(eff) - DF(T)
+    whatever its own payment frequency, so only the fixed leg's schedule matters."""
+    eff = add_business_days(trade_day, spot_lag, calendar)
+    n = int(round(tenor_years * 12 / freq_months))
+    ends = [modified_following(eff + pd.DateOffset(months=k * freq_months), calendar) for k in range(1, n + 1)]
     starts = [eff] + ends[:-1]
-    acc = np.array([(e - s).days / 360.0 for s, e in zip(starts, ends)])
+    acc = np.array([(e - s).days / basis for s, e in zip(starts, ends)])
     return SwapSchedule(eff, tuple(ends), acc)
+
+
+def fixed_freq(tenor_years, freq_months: int) -> int:
+    """Fixed-leg payment interval of a ``tenor_years`` par OIS: one payment up to 1y (all
+    the OIS markets here), else ``freq_months``."""
+    return 12 if tenor_years <= 1 else freq_months
+
+
+def strip_nodes(trade_day, periods, months: int) -> list[tuple[float, float]]:
+    """(t, DF) nodes at each period end within ``months`` of ``trade_day``, from a futures
+    strip of consecutive periods ``[(start, end, rate %)]`` (a 3M OIS future: compounded
+    overnight rate over its reference quarter, ACT/360). The period holding the trade day
+    applies its rate from the trade day (its fixings so far are taken at the same rate - an
+    approximation, small unless a policy move fell inside the elapsed part)."""
+    t0 = pd.Timestamp(trade_day).normalize()
+    horizon = t0 + pd.DateOffset(months=months)
+    out, df, prev = [], 1.0, t0
+    for start, end, rate in sorted(periods, key=lambda p: p[1]):
+        end = pd.Timestamp(end)
+        if end <= t0:
+            continue
+        if end > horizon or pd.Timestamp(start) > prev + pd.Timedelta(days=7):
+            break  # beyond the horizon, or a hole in the strip
+        df /= 1.0 + rate / 100.0 * (end - prev).days / 360.0
+        out.append(((end - t0).days / YEAR, df))
+        prev = end
+    return out
 
 
 def year_fraction(trade_day, dates) -> np.ndarray:
@@ -115,7 +154,8 @@ def par_rate(curve: OisCurve, trade_day, sched: SwapSchedule) -> float:
     return float((d_eff - dfs[-1]) / (sched.accruals @ dfs) * 100.0)
 
 
-def bootstrap_ois(trade_day, quotes: dict[int, float], *, spot_lag: int = 2,
+def bootstrap_ois(trade_day, quotes: dict[int, float], *, spot_lag: int = 2, freq_months: int = 12,
+                  basis: float = 360.0, calendar: str = "us",
                   short_nodes: list[tuple[float, float]] | None = None) -> tuple[OisCurve, pd.DataFrame]:
     """Bootstrap from par rates ``{tenor_years: rate %}``. ``short_nodes``: fixed (t, DF)
     nodes, all before the first pillar's maturity. Returns the curve and one row per node
@@ -124,9 +164,13 @@ def bootstrap_ois(trade_day, quotes: dict[int, float], *, spot_lag: int = 2,
     nodes_df = [d for _, d in (short_nodes or [])]
     rows = [{"node": f"{round(t * 12)}M", "t_years": t, "df": d, "source": "short_end", "input_rate": np.nan}
             for t, d in (short_nodes or [])]
+    if nodes_t and quotes:  # short nodes stop 3 months before the first pillar's maturity
+        keep = [k for k, t in enumerate(nodes_t) if t < min(quotes) - 0.25]
+        nodes_t, nodes_df, rows = [nodes_t[k] for k in keep], [nodes_df[k] for k in keep], [rows[k] for k in keep]
     for tenor in sorted(quotes):
         r = quotes[tenor] / 100.0
-        sched = swap_schedule(trade_day, tenor, spot_lag)
+        sched = swap_schedule(trade_day, tenor, spot_lag, freq_months=fixed_freq(tenor, freq_months), basis=basis,
+                              calendar=calendar)
         tm = year_fraction(trade_day, [sched.dates[-1]])[0]
         if nodes_t and tm <= nodes_t[-1]:
             raise ValueError(f"{tenor}y pillar ({tm:.3f}y) not after the last node ({nodes_t[-1]:.3f}y)")
@@ -144,7 +188,9 @@ def bootstrap_ois(trade_day, quotes: dict[int, float], *, spot_lag: int = 2,
     curve = OisCurve(np.array(nodes_t), np.array(nodes_df))
     out = pd.DataFrame(rows)
     out["zero_pct"] = curve.zero(out["t_years"].to_numpy())
-    rep = [(par_rate(curve, trade_day, swap_schedule(trade_day, int(n[:-1]), spot_lag)) - q) * 100.0
+    rep = [(par_rate(curve, trade_day, swap_schedule(trade_day, int(n[:-1]), spot_lag,
+                                                     freq_months=fixed_freq(int(n[:-1]), freq_months),
+                                                     basis=basis, calendar=calendar)) - q) * 100.0
            if s == "swap" else np.nan for n, s, q in zip(out["node"], out["source"], out["input_rate"])]
     out["reprice_bp"] = rep
     return curve, out
@@ -169,13 +215,20 @@ def short_end_nodes(compounded, trade_day, months: int) -> list[tuple[float, flo
     return out
 
 
-def fill_missing_tenors(rates: pd.DataFrame, *, max_age_days: int = 14) -> tuple[pd.DataFrame, pd.DataFrame]:
+def fill_missing_tenors(rates: pd.DataFrame, *, max_age_days: int = 14,
+                        fill_ends: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Fill an interior tenor missing on a day (no print in its close window) from the SAME
     day's nearest available tenors on each side plus that tenor's last observed FLY RESIDUAL
     against that same neighbour pair (rate minus the line through the pair), if observed in
     the last ``max_age_days`` calendar days - the curve's shape persists, its level moves.
     ``rates``: day x tenor (%), days ascending. Point in time: a day uses its own and earlier
-    days only. End tenors are never filled. Returns (filled rates, bool frame of fills).
+    days only. End tenors are never filled, except with ``fill_ends`` (the thin non-USD
+    curves): then residuals are learned against EVERY observed neighbour pair, a one-sided
+    pair being a plain spread to that neighbour, so a first / last tenor, or a run of missing
+    tenors, fills from the closest pair seen within ``max_age_days``. Without it a EUR day
+    with nothing past 10y extrapolated the last forward to 30y (2024-10-02: 2.40% against
+    2.15-2.27% either side); EUR's 30y zero moved 13.8bp a day (sd) against 3.4bp for the
+    30y close itself (2026-10-07). Returns (filled rates, bool frame of fills).
 
     Out of sample on observed tenors (USD NY1530 pure, 2024-09..2026-10): MAE 0.48-0.64bp,
     bias <= 0.05bp, against 0.7-7.1bp (biased up to 7bp: the curve's hump) for the bare line."""
@@ -186,10 +239,38 @@ def fill_missing_tenors(rates: pd.DataFrame, *, max_age_days: int = 14) -> tuple
     def pair(row, t):
         lo = [x for x in tenors if x < t and pd.notna(row[x])]
         hi = [x for x in tenors if x > t and pd.notna(row[x])]
-        return (lo[-1], hi[0]) if lo and hi else None
+        if lo and hi:
+            return lo[-1], hi[0]
+        return None
 
     def line(row, t, a, b):
+        if a is None or b is None:
+            return row[b if a is None else a]
         return row[a] + (row[b] - row[a]) * (t - a) / (b - a)
+
+    def pairs(row, t):
+        """Every observed (lo, hi) around ``t`` - ends included - closest first."""
+        lo = [x for x in tenors if x < t and pd.notna(row[x])][::-1] + [None]
+        hi = [x for x in tenors if x > t and pd.notna(row[x])] + [None]
+        out_ = [(a, b) for a in lo for b in hi if (a, b) != (None, None)]
+        return sorted(out_, key=lambda p: ((p[0] is None) + (p[1] is None),
+                                           (t - p[0] if p[0] is not None else 0) + (p[1] - t if p[1] is not None else 0)))
+
+    if fill_ends:  # thin curves: learn against EVERY observed neighbour pair, fill from the closest seen
+        for day, row in rates.iterrows():
+            for t in tenors:
+                if pd.notna(row[t]):
+                    for p in pairs(row, t):
+                        last[(t, *p)] = (day, row[t] - line(row, t, *p))
+            for t in tenors:
+                if pd.isna(row[t]):
+                    for p in pairs(row, t):
+                        seen = last.get((t, *p))
+                        if seen and (day - seen[0]).days <= max_age_days:
+                            out.loc[day, t] = line(row, t, *p) + seen[1]
+                            filled.loc[day, t] = True
+                            break
+        return out, filled
 
     for day, row in rates.iterrows():
         for t in tenors[1:-1]:  # learn today's residuals from observed tenors

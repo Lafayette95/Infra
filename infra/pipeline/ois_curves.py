@@ -20,6 +20,7 @@ import pandas as pd
 
 from infra.analytics import swap_curve as sc
 from infra.config import (
+    DAILY_BOE_OIS_DIR,
     DAILY_FUTURES_DIR,
     FUTURES_CONTRACTS_FILE,
     OIS_CURVES,
@@ -44,9 +45,58 @@ COLUMNS = KEYS + ["t_years", "df", "zero_pct", "source", "input_rate", "n_trades
 _ONE_DAY = pd.Timedelta(days=1)
 
 
-def _short_nodes(spec: OisCurveSpec, day, *, futures_root, contracts_file, repo_root):
+ESR_ROOT = "ESR"
+
+
+def _third_wednesday(year: int, month: int) -> pd.Timestamp:
+    first = pd.Timestamp(year, month, 1)
+    return first + pd.Timedelta(days=(2 - first.dayofweek) % 7 + 14)
+
+
+def esr_periods(day, *, futures_root: Path = DAILY_FUTURES_DIR, contracts_file: Path = FUTURES_CONTRACTS_FILE,
+                lookback_days: int = 10) -> list[tuple[pd.Timestamp, pd.Timestamp, float]]:
+    """The ESR strip as ``(quarter start, quarter end, rate %)``, from the latest settlement
+    day STRICTLY BEFORE ``day``. A contract's reference quarter runs IMM to IMM: it ends on
+    the 3rd Wednesday after its last trading day (a Tuesday - checked on every stored
+    contract) and starts on the 3rd Wednesday three months earlier."""
+    from infra.pipeline.daily import read_daily_from_disk
+    from infra.storage import contract_store
+    d = pd.Timestamp(day).normalize()
+    k = contract_store.read_contracts(contracts_file, ESR_ROOT)
+    k = k[pd.to_datetime(k["expiry"]) >= d - pd.Timedelta(days=lookback_days)]
+    if k.empty:
+        return []
+    px = read_daily_from_disk(list(k["ticker"].astype(str)), d - pd.Timedelta(days=lookback_days), d, root=futures_root)
+    px = px.dropna(subset=["settlement_price"])
+    px = px[(100.0 - px["settlement_price"].astype(float)).between(-1.0, 25.0)]
+    if px.empty:
+        return []
+    px = px[px["timestamp"] == px["timestamp"].max()]
+    expiry = dict(zip(k["ticker"].astype(str), pd.to_datetime(k["expiry"])))
+    out = []
+    for t, p in zip(px["ticker"].astype(str), px["settlement_price"].astype(float)):
+        end = expiry[t] + pd.Timedelta(days=1)
+        s = end - pd.DateOffset(months=3)
+        out.append((_third_wednesday(s.year, s.month), end, 100.0 - p))
+    return sorted(out, key=lambda x: x[1])
+
+
+def pillar_schedule(day, tenor: int, currency: str) -> sc.SwapSchedule:
+    """A ``tenor``-year par OIS's fixed-leg schedule in ``currency``'s conventions."""
+    conv = SWAP_CURVES[currency]
+    return sc.swap_schedule(day, tenor, conv.spot_lag_days, freq_months=sc.fixed_freq(tenor, conv.fixed_freq_months),
+                            basis=conv.day_basis, calendar=conv.calendar)
+
+
+def _short_nodes(spec: OisCurveSpec, day, *, futures_root, contracts_file, repo_root, boe_root=DAILY_BOE_OIS_DIR):
     if spec.short_end == "none":
         return []
+    if spec.short_end == "esr_futures":
+        return sc.strip_nodes(day, esr_periods(day, futures_root=futures_root, contracts_file=contracts_file),
+                              spec.short_end_months)
+    if spec.short_end == "boe_ois":
+        from infra.pipeline.boe_ois import boe_ois_nodes
+        return boe_ois_nodes(day, max_years=spec.short_end_months / 12.0, root=boe_root)
     if spec.short_end == "sofr_path":
         from infra.pipeline.financing import sofr_path
         path = sofr_path(day, futures_root=futures_root, contracts_file=contracts_file, repo_root=repo_root)
@@ -56,7 +106,7 @@ def _short_nodes(spec: OisCurveSpec, day, *, futures_root, contracts_file, repo_
 
 def compute_ois_curves(start, end, *, curves: tuple[str, ...] | None = None, swap_closes_root: Path = SWAP_CLOSES_DIR,
                        futures_root: Path = DAILY_FUTURES_DIR, contracts_file: Path = FUTURES_CONTRACTS_FILE,
-                       repo_root: Path = REPO_DIR) -> tuple[pd.DataFrame, dict]:
+                       repo_root: Path = REPO_DIR, boe_root: Path = DAILY_BOE_OIS_DIR) -> tuple[pd.DataFrame, dict]:
     """Every configured curve on every day in ``[start, end]`` with swap closes. No writes.
     Returns the node rows and ``{"days": input days, "empty_days": {day: reason}}``."""
     start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
@@ -72,7 +122,7 @@ def compute_ois_curves(start, end, *, curves: tuple[str, ...] | None = None, swa
         rates = closes.pivot(index="day", columns="tenor", values="rate").sort_index()
         filled = pd.DataFrame(False, index=rates.index, columns=rates.columns)
         if spec.fill_missing:
-            rates, filled = sc.fill_missing_tenors(rates, max_age_days=spec.fill_max_age_days)
+            rates, filled = sc.fill_missing_tenors(rates, max_age_days=spec.fill_max_age_days, fill_ends=spec.fill_ends)
         for day, g in closes[closes["day"] >= start].groupby("day"):
             days.add(day)
             if len(g) < spec.min_tenors:
@@ -81,9 +131,11 @@ def compute_ois_curves(start, end, *, curves: tuple[str, ...] | None = None, swa
             q = rates.loc[day].dropna()
             try:
                 short = _short_nodes(spec, day, futures_root=futures_root, contracts_file=contracts_file,
-                                     repo_root=repo_root)
+                                     repo_root=repo_root, boe_root=boe_root)
+                conv = SWAP_CURVES[spec.currency]
                 _, nodes = sc.bootstrap_ois(day, {int(t): float(r) for t, r in q.items()},
-                                            spot_lag=SWAP_CURVES[spec.currency].spot_lag_days, short_nodes=short)
+                                            spot_lag=conv.spot_lag_days, freq_months=conv.fixed_freq_months,
+                                            basis=conv.day_basis, calendar=conv.calendar, short_nodes=short)
             except Exception as e:  # noqa: BLE001 - recorded with the reason, judged by the presence check
                 empty[day] = f"{name}: {type(e).__name__}: {e}"
                 continue
@@ -101,11 +153,14 @@ def compute_ois_curves(start, end, *, curves: tuple[str, ...] | None = None, swa
     return df, {"days": sorted(days), "empty_days": empty}
 
 
-def store_ois_curves(df: pd.DataFrame, start, end, *, root: Path = OIS_CURVES_DIR) -> int:
-    """Replace every row with ``timestamp`` in the days ``[start, end]`` by ``df``."""
+def store_ois_curves(df: pd.DataFrame, start, end, *, root: Path = OIS_CURVES_DIR,
+                     curves: tuple[str, ...] | None = None) -> int:
+    """Replace every row with ``timestamp`` in the days ``[start, end]`` by ``df`` - of the
+    ``curves`` named only, if given (a hand build of some curves leaves the others)."""
     lo, hi = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize() + _ONE_DAY
     parquet_store.delete_where(root, lambda part: pd.to_datetime(part["timestamp"]).ge(lo)
-                               & pd.to_datetime(part["timestamp"]).lt(hi))
+                               & pd.to_datetime(part["timestamp"]).lt(hi)
+                               & (True if curves is None else part["curve"].astype(str).isin(curves)))
     if df.empty:
         return 0
     parquet_store.write_partitioned(df, root, KEYS)
@@ -117,7 +172,7 @@ def build_ois_curves(start, end, **kw) -> dict:
     runs the same compute)."""
     root = kw.pop("root", OIS_CURVES_DIR)
     df, diag = compute_ois_curves(start, end, **kw)
-    n = store_ois_curves(df, start, end, root=root)
+    n = store_ois_curves(df, start, end, root=root, curves=kw.get("curves"))
     log.info("ois curves %s..%s: %d day(s), %d node row(s), %d empty", pd.Timestamp(start).date(),
              pd.Timestamp(end).date(), len(diag["days"]), n, len(diag["empty_days"]))
     return {"rows": n, **diag}
@@ -149,7 +204,14 @@ def ois_curve(as_of, curve: str = "USD_SOFR", *, root: Path = OIS_CURVES_DIR,
     return pd.Timestamp(ts), sc.curve_from_nodes(df[df["timestamp"] == ts])
 
 
-def par_curve(curve: sc.OisCurve, trade_day, tenors=range(1, 31), *, spot_lag: int = 2) -> pd.Series:
-    """Par OIS rates (%) at whole-year tenors on a curve."""
-    return pd.Series({t: sc.par_rate(curve, trade_day, sc.swap_schedule(trade_day, t, spot_lag)) for t in tenors},
-                     name="par_rate")
+def par_curve(curve: sc.OisCurve, trade_day, tenors=range(1, 31), *, spot_lag: int | None = None,
+              currency: str = "USD") -> pd.Series:
+    """Par OIS rates (%) at whole-year tenors on a curve, in ``currency``'s conventions
+    (``SWAP_CURVES``; ``spot_lag`` overrides its spot lag)."""
+    if spot_lag is not None:
+        conv = SWAP_CURVES[currency]
+        sched = lambda t: sc.swap_schedule(trade_day, t, spot_lag, freq_months=sc.fixed_freq(t, conv.fixed_freq_months),
+                                           basis=conv.day_basis, calendar=conv.calendar)
+    else:
+        sched = lambda t: pillar_schedule(trade_day, t, currency)
+    return pd.Series({t: sc.par_rate(curve, trade_day, sched(t)) for t in tenors}, name="par_rate")

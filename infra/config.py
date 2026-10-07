@@ -68,6 +68,8 @@ DAILY_OPTIONS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "options.parquet"
 # CURVE ("US", "UK"), since one request always returns the whole curve.
 DAILY_BONDS_DIR = DAILY_ROOT / "Bonds"
 DAILY_BONDS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "bonds.parquet"
+DAILY_BOE_OIS_DIR = DAILY_ROOT / "BoeOIS"  # the BoE's SONIA OIS spot curve (2009 on)
+DAILY_BOE_OIS_COVERAGE_FILE = DAILY_COVERAGE_DIR / "boe_ois.parquet"
 # US Treasury prices per CUSIP (FedInvest END OF DAY, + accrued and yield) - CLAUDE.md 18.
 # Every in-scope security on the page is stored (one free request per day returns them
 # all); which bonds a consumer uses is a VIEW (on-the-run map, futures baskets).
@@ -604,6 +606,13 @@ class SwapCurveSpec:
     spot_lag_days: int  # business days from trade to the standard effective date
     tenors: tuple[int, ...]  # whole-year par tenors snapped
     fixed_frequencies: tuple[str, ...] = ("YEAR", "EXPI")  # annual; EXPI = one payment (<=1y)
+    # the fixed leg's conventions, for pricing (infra.analytics.swap_curve.swap_schedule):
+    # accruals ACT/day_basis, a payment every fixed_freq_months beyond 1y (one payment up to
+    # 1y), dates on ``calendar`` ("us" = SIFMA-like; "weekday" for the non-USD curves, whose
+    # holiday calendars aren't encoded - TOFIX)
+    day_basis: float = 360.0
+    fixed_freq_months: int = 12
+    calendar: str = "us"
 
 
 @dataclass(frozen=True)
@@ -633,8 +642,16 @@ class InflationSwapSpec:
 
 SWAP_CURVES: dict[str, SwapCurveSpec] = {
     "USD": SwapCurveSpec("NA/Swap OIS USD", "SOFR", 2, (1, 2, 3, 5, 7, 10, 15, 20, 30)),
-    "EUR": SwapCurveSpec("NA/Swap OIS EUR", "EuroSTR", 2, (1, 2, 3, 5, 7, 10, 15, 20, 30)),
-    "GBP": SwapCurveSpec("NA/Swap OIS GBP", "SONIA", 0, (1, 2, 3, 5, 7, 10, 15, 20, 30)),
+    "EUR": SwapCurveSpec("NA/Swap OIS EUR", "EuroSTR", 2, (1, 2, 3, 5, 7, 10, 15, 20, 30), calendar="weekday"),
+    "GBP": SwapCurveSpec("NA/Swap OIS GBP", "SONIA", 0, (1, 2, 3, 5, 7, 10, 15, 20, 30), day_basis=365.0,
+                         calendar="weekday"),
+    # added 2026-10-07; CAD's fixed leg is SEMI-ANNUAL beyond 1y (reported MNTH x 6 - found:
+    # an annual-only filter let 1.5 prints a day through instead of ~30)
+    "JPY": SwapCurveSpec("NA/Swap OIS JPY", "TONA", 2, (1, 2, 3, 5, 7, 10, 15, 20, 30), day_basis=365.0,
+                         calendar="weekday"),
+    "CAD": SwapCurveSpec("NA/Swap OIS CAD", "CORRA", 1, (1, 2, 3, 5, 7, 10, 15, 20, 30),
+                         fixed_frequencies=("MNTH", "YEAR", "EXPI"), day_basis=365.0, fixed_freq_months=6,
+                         calendar="weekday"),
 }
 
 @dataclass(frozen=True)
@@ -692,11 +709,15 @@ class OisCurveSpec:
     currency: str
     close: str  # a SWAP_CLOSES name: the snap the curve is AT
     method: str = "pure"  # the swap closes' method ("pure" / "adjusted")
-    short_end: str = "sofr_path"  # "sofr_path" (SR1-fitted overnight path, monthly nodes) / "none" (flat to 1y)
+    # "sofr_path" (SR1-fitted overnight path, monthly nodes) / "esr_futures" (the ESR strip's
+    # quarters, compounded) / "boe_ois" (the BoE's SONIA curve, monthly nodes) / "none" (flat
+    # forward to the first swap pillar); short nodes stop 3 months before the first pillar
+    short_end: str = "sofr_path"
     short_end_months: int = 6
     min_tenors: int = 6  # tenors with a close (fills not counted)
     fill_missing: bool = True  # fill an interior missing tenor by its last fly residual
     fill_max_age_days: int = 14  # ... observed at most this many calendar days before
+    fill_ends: bool = False  # fill a missing first / last tenor too (neighbour + its last spread)
 
 
 # SOFR's front end comes from the SR1-fitted overnight path (financing layer 1, CLAUDE.md 20):
@@ -710,8 +731,30 @@ class OisCurveSpec:
 # (106 forward segments jumped > 15bp and reversed next day, mostly on such days). The fill
 # (infra.analytics.swap_curve.fill_missing_tenors) misses observed tenors by 0.5-0.6bp
 # out of sample, unbiased, against 0.7-7bp biased for the bare line (2026-10-06).
+# Foreign OIS curves (added 2026-10-07), from DTCC closes, all free:
+# * EUR: the 16:15 London close; short end from the ESR strip (3M €STR futures, IMM quarters)
+#   of the PREVIOUS settlement day (point in time - ESR's settlement time vs 16:15 London is
+#   not verified, TOFIX), 9 months.
+# * GBP: the 16:15 London close; short end from the Bank of England's own SONIA curve of the
+#   previous day (published by the next morning), up to 3 months before the first pillar -
+#   the 1y SONIA close is missing on ~60% of days, and SONIA futures are not fetched.
+# * JPY (Tokyo 15:00) and CAD (Toronto 15:00): no short-end source (no TONA / CORRA futures
+#   on Databento), so a flat forward to the first pillar.
+# Thin markets (lone prints: CAD 47% of closes, EUR 41%, GBP 24%, JPY 9%), so: wider close
+# windows (SWAP_CLOSES fallback_by_currency), a 4-tenor minimum, and FILLED end tenors and
+# runs of missing tenors (fill_ends). Checked 2026-10-07 over 2024-09..2026-10: zero rates
+# move 3.8-5.2bp a day (sd) at every tenor in EUR / GBP, 1.6-4.4bp in JPY, 5.4-7.5bp in CAD
+# (USD 4.1-5.1bp); fills miss a hidden close by 0.7-2.7bp, unbiased; GBP vs the BoE's own
+# curve (same day): +0.6..+2.2bp mean, sd 1.5-3.1bp; EUR's ESR strip 1y vs the 1y close
+# -0.1bp mean. Days with a curve: GBP 96%, JPY 89%, EUR 86%, CAD 62%.
 OIS_CURVES: dict[str, OisCurveSpec] = {
     "USD_SOFR": OisCurveSpec("USD", "NY1530"),
+    "EUR_ESTR": OisCurveSpec("EUR", "LDN1615", short_end="esr_futures", short_end_months=9, min_tenors=4,
+                             fill_ends=True),
+    "GBP_SONIA": OisCurveSpec("GBP", "LDN1615", short_end="boe_ois", short_end_months=12, min_tenors=4,
+                              fill_ends=True),
+    "JPY_TONA": OisCurveSpec("JPY", "TKY1500", short_end="none", min_tenors=4, fill_ends=True),
+    "CAD_CORRA": OisCurveSpec("CAD", "TOR1500", short_end="none", min_tenors=4, fill_ends=True),
 }
 
 # Swap spreads (Derived/SwapSpreads, infra.pipeline.swap_spreads; bmk P&L
@@ -888,6 +931,15 @@ class SwapCloseSpec:
     pure_fallback_half_window_min: int = 60
     pure_min_trades: int = 3
     adjusted_half_window_min: int = 90
+    # per-currency override of the pure fallback window, ((currency, minutes), ...): the
+    # non-USD OIS markets are thinner and trade all day (2026-10-07: EUR at LDN1615 +-60 had a
+    # 5y close on 63% of days, 10y 57%, 30y 34%; a wider window doesn't raise day-to-day
+    # noise - the inflation and cross-currency tests). USD keeps its calibrated windows.
+    fallback_by_currency: tuple = ()
+
+    def for_currency(self, currency: str) -> "SwapCloseSpec":
+        m = dict(self.fallback_by_currency).get(currency)
+        return self if m is None else replace(self, pure_fallback_half_window_min=m)
 
 
 # CALIBRATED 2026-10-01 on 185,045 USD par trades (2024-09-30..2026-09-30):
@@ -949,7 +1001,17 @@ SWAP_CLOSES: dict[str, SwapCloseSpec] = {
         "16:15", "Europe/London", ("USD", "EUR", "GBP"), "Gilt closing prices / BoE curves / Long Gilt futures",
         source="https://www.ice.com/publicdocs/futures/Designated_Settlement_Periods_Volume_Thresholds.pdf; "
                "Tradeweb FTSE Gilt Closing Prices calculation guide (verified 2026-10-01)",
+        fallback_by_currency=(("EUR", 240), ("GBP", 240)),
     ),
+    # added 2026-10-07 for the foreign OIS curves: TONA trades in Tokyo hours (UTC 0-1 and
+    # 4-5 hold ~65% of prints), so its close is Tokyo's 15:00 (06:00 UTC), +-6h = the whole UTC
+    # morning; CORRA trades 12-19 UTC, its close Toronto's 15:00 with the widest window inside
+    # the UTC day (+-225: 88-90% of days at 2-10y, 10y daily-change sd 4.4bp; a noon snap
+    # covered 1y / 30y better but was noisier at 10y)
+    "TKY1500": SwapCloseSpec("15:00", "Asia/Tokyo", ("JPY",), "Tokyo close (TONA OIS)",
+                             source="DTCC print timing, 2026-10-07", fallback_by_currency=(("JPY", 360),)),
+    "TOR1500": SwapCloseSpec("15:00", "America/Toronto", ("CAD",), "Toronto close (CORRA OIS)",
+                             source="DTCC print timing, 2026-10-07", fallback_by_currency=(("CAD", 225),)),
 }
 
 # Futures snaps (CLAUDE.md 23): per snap instant and contract, the last two-sided bbo-1m

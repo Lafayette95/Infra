@@ -16,6 +16,8 @@ class CyclePaths:
     daily_futures_coverage: Path
     daily_bonds_dir: Path
     daily_bonds_coverage: Path
+    boe_ois_dir: Path
+    boe_ois_coverage: Path
     contracts_file: Path
     defs_coverage: Path
     wirp_dir: Path
@@ -74,6 +76,8 @@ class CyclePaths:
             daily_futures_coverage=config.DAILY_FUTURES_COVERAGE_FILE,
             daily_bonds_dir=config.DAILY_BONDS_DIR,
             daily_bonds_coverage=config.DAILY_BONDS_COVERAGE_FILE,
+            boe_ois_dir=config.DAILY_BOE_OIS_DIR,
+            boe_ois_coverage=config.DAILY_BOE_OIS_COVERAGE_FILE,
             contracts_file=config.FUTURES_CONTRACTS_FILE,
             defs_coverage=config.FUTURES_DEFS_COVERAGE_FILE,
             wirp_dir=config.WIRP_DIR,
