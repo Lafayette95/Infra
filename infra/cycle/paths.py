@@ -18,6 +18,9 @@ class CyclePaths:
     daily_bonds_coverage: Path
     boe_ois_dir: Path
     bund_prices_dir: Path
+    eurex_cf_dir: Path
+    eurex_baskets_dir: Path
+    eurex_basis_dir: Path
     bund_curves_dir: Path
     bund_rv_dir: Path
     bund_prices_coverage: Path
@@ -83,6 +86,9 @@ class CyclePaths:
             daily_bonds_coverage=config.DAILY_BONDS_COVERAGE_FILE,
             boe_ois_dir=config.DAILY_BOE_OIS_DIR,
             bund_prices_dir=config.DAILY_BUND_PRICES_DIR,
+            eurex_cf_dir=config.EUREX_CF_DIR,
+            eurex_baskets_dir=config.EUREX_BASKETS_DIR,
+            eurex_basis_dir=config.EUREX_BASIS_DIR,
             bund_curves_dir=config.BUND_CURVES_DIR,
             bund_rv_dir=config.BUND_RV_DIR,
             bund_prices_coverage=config.DAILY_BUND_PRICES_COVERAGE_FILE,

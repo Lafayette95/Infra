@@ -131,7 +131,10 @@ def implied_commencement(accrued: float, coupon: float, settle, maturity) -> pd.
     """Interest start implied by a published accrued, ACT/ACT on the annual period."""
     from infra.processing.treasury_prices import coupon_dates
     prev, nxt = coupon_dates(pd.Timestamp(maturity), pd.Timestamp(settle), 1)[:2]
-    return (pd.Timestamp(settle) - pd.Timedelta(days=round(accrued / coupon * (nxt - prev).days))).normalize()
+    days = accrued / coupon * (nxt - prev).days
+    if not np.isfinite(days) or abs(days) > 800:      # no sensible start (an index-linked accrued, a typo)
+        return pd.NaT
+    return (pd.Timestamp(settle) - pd.Timedelta(days=round(days))).normalize()
 
 
 def first_period_flows(coupon: float, maturity, settle, commencement, short_first: bool = False):

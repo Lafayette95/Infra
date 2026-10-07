@@ -34,6 +34,13 @@ def backfill_daily_bund_px(start, end, *, paths: CyclePaths | None = None, force
         ranges += [r for r in bunds.plan_prices(lo, pd.Timestamp(start) - _ONE_DAY, coverage_file=paths.bund_prices_coverage)]
         out["planned"] = [(str(s.date()), str((e - _ONE_DAY).date())) for s, e in ranges]
         out["rows"] = bunds.fetch_and_store_prices(ranges, root=paths.bund_prices_dir, coverage_file=paths.bund_prices_coverage)
+        # Eurex: archive today's deliverables file, then the baskets of the window (they need the
+        # issuance history and the first-coupon dates read from the prices just stored)
+        from infra.pipeline import eurex_basis as xb
+        out["eurex_file"] = str(xb.archive_deliverables(root=paths.eurex_cf_dir) or "")
+        b = xb.compute_baskets(start, end, auctions_root=paths.de_auctions_dir, prices_root=paths.bund_prices_dir,
+                               cf_root=paths.eurex_cf_dir)
+        out["basket_rows"] = xb.store_days(b, start, end, paths.eurex_baskets_dir, xb.BASKET_KEYS)
     except Exception as exc:  # noqa: BLE001 - reported by bunds_fetch_ok
         out["error"] = f"{type(exc).__name__}: {exc}"
     return out
@@ -51,7 +58,8 @@ def _check_fetch_ok(ctx: StepContext):
     o = _out(ctx)
     if o.get("error"):
         return False, f"Bund prices: {o['error']}", None
-    return True, f"Bund prices: {o.get('rows', 0)} rows over {o.get('planned', [])}; {o.get('auctions', 0)} auction rows", None
+    return True, (f"Bund prices: {o.get('rows', 0)} rows over {o.get('planned', [])}; {o.get('auctions', 0)} auction rows; "
+                  f"Eurex baskets {o.get('basket_rows', 0)} rows"), None
 
 
 def _check_fresh(ctx: StepContext):

@@ -596,7 +596,8 @@ def test_bond_futures_dv01_unavailable_with_reason_and_only_warns(env):
     cov = next(c for c in report.outcome("bmk_risk").checks if c.name == "dv01_coverage")
     assert not cov.passed and cov.severity.value == "warn"
     reasons = cov.details.set_index("root")["method"]
-    assert "US Treasury futures only" in reasons["FGBL"] and "no deterministic CTD" in reasons["ZN"]
+    # both on the CTD path (US: the M0 model; Eurex since 2026-10-07: the stored basis table), no inputs here
+    assert "no CTD that day" in reasons["FGBL"] and "no CTD that day" in reasons["ZN"]
     pnl = _store(paths, "Pnl")
     assert pnl["pnl"].notna().all() and pnl["pnl_per_dv01"].isna().all()  # pnl yes, per-DV01 no
     assert set(pnl.loc[pnl["root"] == "FGBL", "currency"]) == {"EUR"}

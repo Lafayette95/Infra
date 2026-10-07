@@ -139,6 +139,13 @@ TREASURY_RV_DIR = DERIVED_ROOT / "TreasuryRV"
 # one on the Bundesbank's per-ISIN DIRTY prices (an 11:15 Frankfurt snapshot), settlement T+2,
 # from BUND_CURVES_START - the first day with dirty prices AND the complete universe.
 BUND_CURVES_DIR = DERIVED_ROOT / "BundCurves"
+# Eurex German bond futures (infra.pipeline.eurex_basis): delivery baskets with conversion
+# factors per day and listed contract, and the daily basis table (gross basis, implied repo,
+# cheapest-to-deliver, futures DV01) at the Bundesbank's 11:15 Frankfurt price time
+EUREX_BASKETS_DIR = REFERENCE_ROOT / "Bunds" / "FuturesBaskets"
+EUREX_BASIS_DIR = DERIVED_ROOT / "EurexBasis"
+EUREX_BASKETS_START = "2015-01-02"
+EUREX_BASIS_START = "2025-03-20"   # the first day of stored Eurex futures quotes
 BUND_RV_DIR = DERIVED_ROOT / "BundRV"
 BUND_CURVES_START = "2022-06-01"
 BUND_SETTLEMENT_DAYS = 2
@@ -149,6 +156,26 @@ BUND_SETTLEMENT_DAYS = 2
 # 30y at 3.5bp (5.8 excluding both); Svensson is within 0.8-1.4bp to 20y.
 BUND_CURVE_KNOTS = (1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0)
 BUND_FIT_EXCLUDE_RANKS = 1
+@dataclass(frozen=True)
+class EurexBondFuture:
+    """A Eurex German government-bond future (infra.processing.eurex_baskets): remaining term
+    of deliverables at delivery, the cap on their ORIGINAL term (None = none), the notional
+    coupon of the conversion factor, the minimum issued volume. Verified 2026-10-07 against
+    Eurex's deliverable-bonds file (every German contract listed then: basket and CFs)."""
+    min_years: float
+    max_years: float
+    max_original_years: float | None
+    notional_pct: float
+    min_volume_m: float = 5000.0
+
+
+EUREX_BOND_FUTURES: dict[str, EurexBondFuture] = {
+    "FGBS": EurexBondFuture(1.75, 2.25, 11.0, 6.0),
+    "FGBM": EurexBondFuture(4.5, 5.5, 11.0, 6.0),
+    "FGBL": EurexBondFuture(8.5, 10.5, 11.0, 6.0),
+    "FGBX": EurexBondFuture(24.0, 35.0, None, 4.0),
+}
+BUND_CURVE_BMK_METHOD = "svensson"   # the yield_curve bmk for DE_BOND_<t>y: Svensson, the closer and steadier fit
 BUND_IRREGULAR_DAYS = 3    # Bundesbank accrued off a regular annual schedule by more than this: an irregular first coupon
 TIPS_CURVES_DIR = DERIVED_ROOT / "TipsCurves"
 TIPS_RV_DIR = DERIVED_ROOT / "TipsRV"
@@ -358,6 +385,7 @@ CME_TCF_ROOTS: dict[str, str] = {"26": "ZT", "3YR": "Z3N", "25": "ZF", "21": "ZN
 # every published VINTAGE of each source series (a release date per value), not just the
 # latest revised history - see MACRO_RELEASES below and infra/pipeline/releases.py.
 RAW_DATA_ROOT = DATABASE_ROOT / "RawData"
+EUREX_CF_DIR = RAW_DATA_ROOT / "EUREX_CF"   # Eurex's deliverable-bonds CSV, archived raw per day (a file = coverage)
 DE_AUCTIONS_DIR = RAW_DATA_ROOT / "DE_Auctions"  # the Finanzagentur issuance history, one row per (day, ISIN)
 RELEASES_DIR = RAW_DATA_ROOT / "Releases"
 RELEASES_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "releases.parquet"

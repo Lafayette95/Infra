@@ -14,7 +14,9 @@ Non-US (``BMK_YIELD_OFFICIAL``): ``UK_BOND_<t>y`` / ``DE_BOND_<t>y`` from each c
 par curve in Daily/Bonds (the BoE's, the Bundesbank's), bmk ``yield_boe`` / ``yield_bundesbank``,
 in the curve's currency. And ``DE_BOND_<t>y`` under ``yield_otr`` too: the German on-the-run
 bond's Bundesbank yield (``infra.pipeline.bunds.otr_map``; an 11:15 Frankfurt snapshot), on the
-bond held the previous day - its ISIN in the ``cusip`` / ``prev_cusip`` columns.
+bond held the previous day - its ISIN in the ``cusip`` / ``prev_cusip`` columns. And under
+``yield_curve``: our German curve's par yield (``Derived/BundCurves``, method
+``BUND_CURVE_BMK_METHOD`` = Svensson; from 2022-06).
 
 Upsert by ``timestamp, ticker, bmk``: a recomputed day replaces its row, a revised source
 yield shows up in ``pnl_no_revisions``.
@@ -71,6 +73,19 @@ def _de_otr_pnl(start, end, paths: CyclePaths) -> pd.DataFrame:
                             max_gap_days=BMK_YIELD_MAX_GAP_DAYS, currency="EUR")
 
 
+def _de_curve_pnl(start, end, paths: CyclePaths) -> pd.DataFrame:
+    from infra.config import BUND_CURVE_BMK_METHOD
+    from infra.pipeline.bund_curves import read_bund_curves
+    c = read_bund_curves(start, end, method=BUND_CURVE_BMK_METHOD, root=paths.bund_curves_dir)
+    if c.empty:
+        return pd.DataFrame(columns=yp.PNL_COLUMNS)
+    long = c.melt(id_vars=["timestamp"], value_vars=[f"par_{t}y" for t in BMK_YIELD_OFFICIAL_TENORS if f"par_{t}y" in c],
+                  var_name="col", value_name="yield")
+    long["ticker"] = "DE_BOND_" + long["col"].str[4:]
+    return yp.level_change_pnl(long[["timestamp", "ticker", "yield"]], "yield_curve", max_gap_days=BMK_YIELD_MAX_GAP_DAYS,
+                               currency="EUR")
+
+
 def official_tickers(country: str) -> list[str]:
     return [f"{country}_BOND_{t}y" for t in BMK_YIELD_OFFICIAL_TENORS]
 
@@ -102,6 +117,8 @@ def compute_yield_pnl(start, end, *, paths: CyclePaths | None = None, tickers=BM
         else:
             parts.append(yp.level_change_pnl(_yields(src, tickers, lo, hi, paths), f"yield_{src}",
                                              max_gap_days=BMK_YIELD_MAX_GAP_DAYS))
+            if src == "curve":
+                parts.append(_de_curve_pnl(lo, hi, paths))
     parts += _official_pnl(lo, hi, paths, official)
     parts = [p for p in parts if len(p)]
     if not parts:

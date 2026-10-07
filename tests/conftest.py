@@ -186,6 +186,8 @@ def _hermetic_bond_futures_dv01(monkeypatch):
     import pandas as pd
     empty = pd.DataFrame(columns=["timestamp", "ticker", "futures_dv01", "ctd"])
     monkeypatch.setattr("infra.cycle.bmk.BOND_FUTURES_DV01", lambda start, end, tickers: empty)
+    monkeypatch.setattr("infra.cycle.bmk.EUREX_FUTURES_DV01", lambda start, end, tickers: empty)
+    monkeypatch.setattr("infra.pipeline.eurex_basis.FETCH", lambda: None)
 
 
 @pytest.fixture(autouse=True)

@@ -217,6 +217,40 @@ def _check_bund_curve(ctx: StepContext):
     return False, f"{len(bad)} implausible Bund curve fit(s)", bad[["timestamp", "method", "n_fit", "rmse_bp"]]
 
 
+def compute_eurex_basis(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> tuple[pd.DataFrame, dict]:
+    """Eurex German bond-futures basis (``infra.pipeline.eurex_basis``): per day, front-two
+    contract and deliverable, gross basis, implied repo, CTD and futures DV01 - at the
+    Bundesbank's 11:15 Frankfurt price time, futures from the intraday step's bbo-1m."""
+    from infra.cycle.intraday import IntradayPaths
+    from infra.pipeline.eurex_basis import compute_basis
+    df = compute_basis(start, end, baskets_root=paths.eurex_baskets_dir, prices_root=paths.bund_prices_dir,
+                       auctions_root=paths.de_auctions_dir, bbo_root=IntradayPaths.default().bbo_dir,
+                       daily_root=paths.daily_futures_dir)
+    days = sorted(pd.to_datetime(df["timestamp"]).unique()) if len(df) else []
+    return df, {"days": days, "empty_days": {}}
+
+
+def _check_eurex_basis(ctx: StepContext):
+    """(c) each contract-day's CTD has an implied repo in [-3, 8]% (a wrong CF, basket or
+    futures mark shows as an implausible repo) - judged more than 15 days before delivery:
+    annualised over a few days, a cent of basis noise is several percent of repo."""
+    from infra.pipeline.eurex_basis import read_basis
+    df = read_basis(ctx.start, ctx.end, root=ctx.paths.eurex_basis_dir)
+    if df.empty:
+        return True, "no Eurex basis rows in the window", None
+    ctd = df[df["is_ctd"] & ((pd.to_datetime(df["delivery"]) - pd.to_datetime(df["timestamp"])).dt.days > 15)]
+    bad = ctd[~ctd["implied_repo"].between(-3, 8)]
+    if bad.empty:
+        return True, f"{len(ctd)} contract-day(s), CTD implied repo {ctd['implied_repo'].min():.2f}..{ctd['implied_repo'].max():.2f}%", None
+    return False, f"{len(bad)} CTD implied repo(s) outside [-3, 8]%", bad[["timestamp", "contract", "isin", "implied_repo"]]
+
+
+EUREX_BASIS = DerivedMetric(
+    "eurex_basis", lambda p: p.eurex_basis_dir, ("timestamp", "contract", "isin"), compute_eurex_basis,
+    checks=(Check("eurex_basis_sane", _check_eurex_basis, Severity.WARN),), presence_severity=Severity.WARN,
+)
+
+
 BUND_CURVE = DerivedMetric(
     "bund_curve", lambda p: p.bund_curves_dir, CURVE_KEYS, compute_bund_curve,
     checks=(Check("bund_curve_fit_sane", _check_bund_curve, Severity.WARN),),
@@ -686,7 +720,7 @@ VRP_METRIC = DerivedMetric(
 # order matters: ois_curve reads what swap_closes just wrote, swap_spreads what ois_curve wrote;
 # swaption prints need the records and the OIS curve, vols the prints, OI the records; vrp the vols
 DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE, "tips_curve": TIPS_CURVE,
-                                             "bund_curve": BUND_CURVE,
+                                             "bund_curve": BUND_CURVE, "eurex_basis": EUREX_BASIS,
                                              "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE,
                                              "swap_spreads": SWAP_SPREADS, "inflation_swap_closes": INFLATION_CLOSES,
                                              "inflation_curve": INFLATION_CURVE, "xccy_basis_closes": XCCY_BASIS_CLOSES,

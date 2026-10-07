@@ -27,6 +27,7 @@ a partial run (e.g. ``specs={"ZQ": ...}``) didn't recompute.
 """
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
 import numpy as np
@@ -40,6 +41,8 @@ from infra.cycle.universe import UniverseMember, daily_universe
 from infra.pipeline import daily as dl
 from infra.pipeline import futures_basis as fb
 from infra.storage import parquet_store
+
+log = logging.getLogger(__name__)
 
 _ONE_DAY = pd.Timedelta(days=1)
 _PRIOR_LOOKBACK = pd.Timedelta(days=14)  # how far back to look for a prior settlement
@@ -56,12 +59,24 @@ def _dv01(member: UniverseMember, cfg: FuturesRoot) -> tuple[float, str]:
         return np.nan, "unavailable: point value not verified for this root"
     if cfg.category == "STIR":
         return cfg.point_value * 0.01, "stir_index: point_value x 0.01"
-    return np.nan, "unavailable: no cheapest-to-deliver model for this root (US Treasury futures only)"
+    return np.nan, "unavailable: no cheapest-to-deliver model for this root (US Treasury and Eurex German futures only)"
 
 
 # (start, end, tickers) -> timestamp, ticker, futures_dv01 (points per bp), ctd ; module-level
 # so tests stub it (it reads the real cash, basket and funding stores)
 BOND_FUTURES_DV01 = fb.deterministic_futures_dv01
+
+
+def _eurex_futures_dv01(start, end, tickers):
+    from infra.pipeline.eurex_basis import futures_dv01
+    return futures_dv01(start, end, tickers)
+
+
+# Eurex German bond futures (FGBS / FGBM / FGBL / FGBX): the CTD's DV01 / CF from the stored
+# basis table (infra.pipeline.eurex_basis, built by derived the run before - bmk reads it);
+# same shape as BOND_FUTURES_DV01; stubbed suite-wide in tests
+EUREX_FUTURES_DV01 = _eurex_futures_dv01
+EUREX_DV01_ROOTS = ("FGBS", "FGBM", "FGBL", "FGBX")
 
 
 RISK_MODELS: dict[str, RiskModel] = {"DV01": _dv01}
@@ -119,13 +134,20 @@ def backfill_daily_risk(
     days = _member_days(members, _settlements(list(members), start, end, paths), start, end)
     model = RISK_MODELS[risk]
     us_bonds = sorted(t for t in set(days["ticker"]) if members[t].root in fb.US_ROOTS)
+    eu_bonds = sorted(t for t in set(days["ticker"]) if members[t].root in EUREX_DV01_ROOTS)
     bond_dv01 = None
-    if risk == "DV01" and us_bonds:
-        try:
-            bond_dv01 = BOND_FUTURES_DV01(start, end, us_bonds)
-        except Exception as exc:  # a missing input must not fail the step: rows go NaN with the reason
-            bond_dv01 = pd.DataFrame(columns=["timestamp", "ticker", "futures_dv01", "ctd"])
-            bond_dv01.attrs["errors"] = {None: f"{type(exc).__name__}: {exc}"}
+    if risk == "DV01" and (us_bonds or eu_bonds):
+        parts = []
+        for fn, tickers in ((BOND_FUTURES_DV01, us_bonds), (EUREX_FUTURES_DV01, eu_bonds)):
+            if not tickers:
+                continue
+            try:
+                parts.append(fn(start, end, tickers))
+            except Exception as exc:  # a missing input must not fail the step: rows go NaN with the reason
+                log.warning("bond futures DV01 failed for %s: %s", tickers[:3], exc)
+        bond_dv01 = pd.concat([p for p in parts if len(p)], ignore_index=True) if any(len(p) for p in parts) \
+            else pd.DataFrame(columns=["timestamp", "ticker", "futures_dv01", "ctd"])
+        us_bonds = us_bonds + eu_bonds
     out = []
     for ticker, g in days.groupby("ticker"):
         m = members[ticker]
@@ -133,8 +155,9 @@ def backfill_daily_risk(
         if bond_dv01 is not None and ticker in us_bonds:
             x = g[["timestamp"]].merge(bond_dv01[bond_dv01["ticker"] == ticker], on="timestamp", how="left")
             value = (x["futures_dv01"] * cfg.point_value).to_numpy(dtype="float64")
-            method = np.where(x["futures_dv01"].notna(), "ctd_m0: futures_dv01 x point_value, ctd " + x["ctd"].astype(str),
-                              "unavailable: no deterministic CTD that day (missing cash prices, basket or funding)")
+            how = "ctd_m0" if m.root not in EUREX_DV01_ROOTS else "ctd_eurex_irr"
+            method = np.where(x["futures_dv01"].notna(), how + ": futures_dv01 x point_value, ctd " + x["ctd"].astype(str),
+                              "unavailable: no CTD that day (missing cash prices, basket, funding or futures quote)")
         else:
             value, method = model(m, cfg)
         out.append(pd.DataFrame({"timestamp": g["timestamp"].to_numpy(), "ticker": ticker,

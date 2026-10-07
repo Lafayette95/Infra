@@ -65,7 +65,7 @@ def first_periods(prices: pd.DataFrame, sec: pd.DataFrame) -> pd.DataFrame:
                 continue
             prev = coupon_dates(b["maturity_date"], settle, 1)[0]
             c = pb.implied_commencement(x, b["coupon"], settle, b["maturity_date"])
-            if abs((c - prev).days) > BUND_IRREGULAR_DAYS:
+            if pd.notna(c) and abs((c - prev).days) > BUND_IRREGULAR_DAYS:
                 starts.append(c)
         if not starts:
             continue
