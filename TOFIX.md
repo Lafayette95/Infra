@@ -1294,3 +1294,14 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
     reaction). The release-day move itself, and its reversal (NFP / GDP hint), belong to the
     event-study and autocorrelation frameworks.
 
+---
+
+## Listed option chains (ZN, SOFR): priced, on hold
+
+**Found:** 2026-10-06. **Where:** would extend `infra.pipeline.futures_options_iv` (today ZN near-the-money only) / `infra.pipeline.daily_options`. **Status:** on hold (user decision 2026-10-06: priced, not fetched).
+
+**Why:** the better source for skew, the short end of the vol term structure and a REAL open-interest / gamma map: CME settles every strike daily and publishes open interest per strike (Databento `statistics`), unlike the DTCC swaption flow (too thin for skew - see "Swaptions: open items"). Direction is still unknown; the candidates are aggressor-side `trades` on liquid strikes and the CFTC TFF combined-minus-futures-only options delta by category (already stored).
+
+**Products (parents resolving on GLBX, 2026-09-29):** ZN `OZN.OPT` (monthly/quarterly), weeklies `ZN1` / `ZN2` / `ZN3` (Friday), `WY1` (Wednesday), `VY1` (Monday); SOFR `SR3.OPT` plus mid-curves `S0`, `S2`-`S5` (listed from 2020); `SR1.OPT` exists too. A parent also carries spreads/combos: outrights were 44% (OZN) / 66% (SR3) of the parent's statistics cost in Sep 2026.
+
+**Dry-run prices (free metadata, 2026-10-06; est. = parent x outright share, max = parent):** ZN monthlies 2016-2026 ~$4.1 (max $9.3), all ZN products ~$6.3 (max $14.3); SOFR all products 2020-2026 ~$12 (max $18); definition snapshots ~$0.0102 each - monthly grid ~$8 (ZN) / ~$5 (SOFR); weekly snapshots for ZN weeklies' history (they live < 1 month) ~$28 extra; ongoing ~$0.003 (ZN) + ~$0.009 (SOFR) per trading day, ~$7/yr both with snapshots. Proposed order when resumed: ZN monthlies 2016+, SOFR 2020+, ZN weeklies forward only (~$22 up front). Script: the session's scratch `price_chains.py` (rebuild from this description: `estimate_cost` per parent per year, and per outright id from a cached definition snapshot).
