@@ -149,3 +149,19 @@ def test_1s_wirp_is_saved_and_a_rerun_replaces_its_window(tmp_path):
     back = read_wirp_1s("2026-09-23 14:00", "2026-09-23 15:00", root=root)
     assert len(back) == len(saved) > 0 and set(back["source"]) == {"bbo-1m"}
 
+
+
+def test_foreign_bond_futures_universe_and_daily_bar_store(tmp_path):
+    """Eurex bonds + Long Gilt quotes, the Long Gilt's daily bars in their OWN store and
+    coverage (added 2026-10-07)."""
+    from types import SimpleNamespace
+    from infra.config import FUTURES_ROOTS, SCHEMA_OHLCV_1D
+    from infra.cycle import intraday as it
+    assert set(it.FOREIGN_BOND_FUTURES) == {"FGBL", "FGBM", "FGBS", "FGBX", "FBTP", "R"} and "FGBX" in FUTURES_ROOTS
+    ip = it.IntradayPaths.under(tmp_path)
+    m = {"R   FMZ0026!": SimpleNamespace(ticker="R   FMZ0026!", first=pd.Timestamp("2026-09-01"),
+                                       last=pd.Timestamp("2026-09-30"), dataset="IFLL.IMPACT")}
+    plan = it.plan_intraday_px(m, pd.Timestamp("2026-09-01"), pd.Timestamp("2026-09-30"), ipaths=ip,
+                               schemas=(SCHEMA_OHLCV_1D,))
+    assert list(plan) == [(SCHEMA_OHLCV_1D, "R   FMZ0026!")]
+    assert "ohlcv-1d" in str(ip.ohlcv_1d_coverage)

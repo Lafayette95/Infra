@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from infra import config
-from infra.config import DAILY_BACKFILL, MAX_COST_USD, SCHEMA_BBO_1M, SCHEMA_OHLCV, DailyBackfillSpec
+from infra.config import DAILY_BACKFILL, MAX_COST_USD, SCHEMA_BBO_1M, SCHEMA_OHLCV, SCHEMA_OHLCV_1D, DailyBackfillSpec
 from infra.cycle.paths import CyclePaths
 from infra.cycle.universe import daily_universe
 from infra.pipeline import bbo, futures
@@ -41,6 +41,13 @@ _ONE_DAY = pd.Timedelta(days=1)
 # WIRP happens to read on a given day).
 INTRADAY_UNIVERSE: dict[str, DailyBackfillSpec] = {"ZQ": DAILY_BACKFILL["ZQ"]}
 INTRADAY_SCHEMAS = (SCHEMA_BBO_1M, SCHEMA_OHLCV)
+# Foreign government-bond futures (added 2026-10-07, user): 1-minute quotes of the nearest two
+# contracts (the daily cycle's point-in-time universe rule) for a 16:15 London / basis snap and
+# hedging, plus the Long Gilt's DAILY BARS (its ICE statistics - settlements - cost ~30x as
+# much; the bar's close is the last trade). Priced 2026-10-07: history ~$17.80 (Eurex since
+# 2025-03-10, the Long Gilt since 2019), ongoing ~$0.80 a month.
+FOREIGN_BOND_FUTURES: dict[str, DailyBackfillSpec] = {r: DailyBackfillSpec(2) for r in ("FGBL", "FGBM", "FGBS", "FGBX", "FBTP", "R")}
+FOREIGN_DAILY_BARS: dict[str, DailyBackfillSpec] = {"R": DailyBackfillSpec(2)}
 WIRP_INTRADAY_KEYS = ["timestamp", "meeting_date", "outcome_step"]
 
 
@@ -52,11 +59,14 @@ class IntradayPaths:
     ohlcv_dir: Path
     ohlcv_coverage: Path
     wirp_intraday_dir: Path
+    ohlcv_1d_dir: Path
+    ohlcv_1d_coverage: Path
 
     @classmethod
     def default(cls) -> IntradayPaths:
         return cls(config.BBO_FUTURES_DIR, config.BBO_FUTURES_COVERAGE_FILE, config.FUTURES_DIR,
-                   config.FUTURES_COVERAGE_FILE, config.WIRP_INTRADAY_DIR)
+                   config.FUTURES_COVERAGE_FILE, config.WIRP_INTRADAY_DIR, config.OHLCV_1D_FUTURES_DIR,
+                   config.OHLCV_1D_FUTURES_COVERAGE_FILE)
 
     @classmethod
     def under(cls, root: Path) -> IntradayPaths:
@@ -76,6 +86,8 @@ def plan_intraday_px(members, start: pd.Timestamp, end: pd.Timestamp, *, ipaths:
         for schema in schemas:
             if schema == SCHEMA_BBO_1M:
                 gaps = bbo.plan_bbo_update(m.ticker, w0, w1, coverage_file=ipaths.bbo_coverage)
+            elif schema == SCHEMA_OHLCV_1D:
+                gaps = futures.plan_futures_update(m.ticker, w0, w1, coverage_file=ipaths.ohlcv_1d_coverage)
             else:
                 gaps = futures.plan_futures_update(m.ticker, w0, w1, coverage_file=ipaths.ohlcv_coverage)
             if gaps:
@@ -110,6 +122,11 @@ def backfill_intraday_px(
                 rows[schema] += bbo.fetch_and_store_bbo(ticker, gaps, dataset=dataset, root=ipaths.bbo_dir,
                                                         coverage_file=ipaths.bbo_coverage,
                                                         max_cost_usd=max_cost_usd, client=client)
+            elif schema == SCHEMA_OHLCV_1D:
+                rows[schema] += futures.fetch_and_store_futures(ticker, gaps, dataset=dataset, root=ipaths.ohlcv_1d_dir,
+                                                                coverage_file=ipaths.ohlcv_1d_coverage,
+                                                                max_cost_usd=max_cost_usd, client=client,
+                                                                schema=SCHEMA_OHLCV_1D)
             else:
                 rows[schema] += futures.fetch_and_store_futures(ticker, gaps, dataset=dataset, root=ipaths.ohlcv_dir,
                                                                 coverage_file=ipaths.ohlcv_coverage,
@@ -226,12 +243,22 @@ def _ipaths(paths: CyclePaths) -> IntradayPaths:
 
 
 def _run(ctx) -> dict:
-    return backfill_hedge_bbo(ctx.start, ctx.end, paths=ctx.paths, ipaths=_ipaths(ctx.paths),
-                              client=ctx.options.get("client"))
+    out = backfill_hedge_bbo(ctx.start, ctx.end, paths=ctx.paths, ipaths=_ipaths(ctx.paths),
+                             client=ctx.options.get("client"))
+    lo = ctx.start - pd.Timedelta(days=HEDGE_GAP_DAYS)
+    ip = _ipaths(ctx.paths)
+    fq = backfill_intraday_px(lo, ctx.end, paths=ctx.paths, ipaths=ip, specs=FOREIGN_BOND_FUTURES,
+                              schemas=(SCHEMA_BBO_1M,), client=ctx.options.get("client"))
+    fd = backfill_intraday_px(lo, ctx.end, paths=ctx.paths, ipaths=ip, specs=FOREIGN_DAILY_BARS,
+                              schemas=(SCHEMA_OHLCV_1D,), client=ctx.options.get("client"))
+    out["foreign"] = {"rows": {**fq["rows"], **fd["rows"]}, "fetch_errors": {**fq["fetch_errors"], **fd["fetch_errors"]},
+                      "universe_errors": {**fq["universe_errors"], **fd["universe_errors"]}}
+    return out
 
 
 def _check_fetch_ok(ctx):
-    errs = ctx.output.get("fetch_errors", {})
+    f = ctx.output.get("foreign", {})
+    errs = {**ctx.output.get("fetch_errors", {}), **f.get("fetch_errors", {}), **f.get("universe_errors", {})}
     if not errs:
         return True, f"{ctx.output.get('rows', 0)} hedge quote rows fetched, no errors", None
     return False, f"{len(errs)} hedge contract fetch error(s)", pd.DataFrame(

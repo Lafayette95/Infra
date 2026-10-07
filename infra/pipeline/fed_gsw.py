@@ -16,6 +16,7 @@ from infra.api import fed_gsw_client
 from infra.config import RAW_DATA_ROOT
 
 FED_GSW_FILE = RAW_DATA_ROOT / "FedGSW" / "feds200628.csv"
+FED_GSW_TIPS_FILE = RAW_DATA_ROOT / "FedGSW" / "feds200805.csv"  # the TIPS (real) curve
 REFRESH_DAYS = 7
 PUBLICATION_LAG = pd.Timedelta(days=7)
 FETCH = fed_gsw_client.fetch_csv  # network hook; tests stub it
@@ -31,14 +32,16 @@ def parse(text: str) -> pd.DataFrame:
     return df.dropna(subset=["BETA0"]).reset_index(drop=True)
 
 
-def update(*, path: Path = FED_GSW_FILE, now=None) -> dict:
-    """Refresh the stored file if missing or ``REFRESH_DAYS`` old. Never raises."""
+def update(*, path: Path = FED_GSW_FILE, now=None, url: str | None = None) -> dict:
+    """Refresh the stored file if missing or ``REFRESH_DAYS`` old. Never raises. ``url``:
+    the file to fetch (default nominal; ``fed_gsw_client.TIPS_URL`` with
+    ``path=FED_GSW_TIPS_FILE`` for the TIPS curve)."""
     now = pd.Timestamp.now() if now is None else pd.Timestamp(now)
     p = Path(path)
     if p.exists() and now - pd.Timestamp(p.stat().st_mtime, unit="s") < pd.Timedelta(days=REFRESH_DAYS):
         return {"status": "fresh", "error": None}
     try:
-        text = FETCH()
+        text = FETCH() if url is None else FETCH(url=url)
         parse(text)  # refuse to store something that doesn't parse
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")

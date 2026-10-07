@@ -69,3 +69,16 @@ def test_tips_curve_metric_after_the_nominal_curve():
     assert names.index("treasury_curve") < names.index("tips_curve")
     checks = {c.name for c in derived.DERIVED_STEP.checks}
     assert {"tips_curve_present", "tips_rv_no_revisions", "tips_curve_sane"} <= checks
+
+
+def test_a_never_published_cpi_month_takes_the_treasury_fallback():
+    """October 2025 (shutdown): CPI(m) = CPI(m-1) x (CPI(m-1)/CPI(m-13))^(1/12), 3 decimals;
+    a month not published YET (after the last) is never filled."""
+    cpi = pd.Series(np.linspace(300.0, 314.0, 16), index=pd.date_range("2024-09-01", periods=16, freq="MS")).round(3)
+    gap = cpi.drop(D("2025-10-01"))
+    filled = tp.fill_missing_months(gap)
+    expect = round(gap[D("2025-09-01")] * (gap[D("2025-09-01")] / gap[D("2024-09-01")]) ** (1 / 12), 3)
+    assert filled[D("2025-10-01")] == pytest.approx(expect)
+    assert filled.index.max() == gap.index.max()  # no extrapolation past the last published month
+    # the reference CPI on a December day now exists (it needs months m-3 and m-2: Sep, Oct)
+    assert not np.isnan(tp.reference_cpi([D("2025-12-15")], gap).iloc[0])

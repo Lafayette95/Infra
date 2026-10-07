@@ -53,9 +53,27 @@ def reference(auctions: pd.DataFrame) -> pd.DataFrame:
     return out.drop_duplicates("cusip", keep="last").reset_index(drop=True)
 
 
+def fill_missing_months(cpi: pd.Series) -> pd.Series:
+    """A month MISSING while a later month exists (never published - October 2025, the
+    government shutdown) takes the Treasury's fallback (31 CFR 356 Appendix B): the last
+    available CPI escalated by its own year-over-year change over one month,
+    CPI(m) = CPI(m-1) x (CPI(m-1) / CPI(m-13))^(1/12). Verified 2026-10-07: reproduces the
+    Treasury's published reference CPI on 2025-12-31 and 2026-01-30 issue dates. Months not
+    published YET (after the last one) are never filled."""
+    s = cpi.sort_index().copy()
+    full = pd.date_range(s.index.min(), s.index.max(), freq="MS")
+    for m in full:
+        if m not in s.index or pd.isna(s.get(m)):
+            prev, base = m - pd.DateOffset(months=1), m - pd.DateOffset(months=13)
+            if prev in s.index and base in s.index:
+                s.loc[m] = round(s[prev] * (s[prev] / s[base]) ** (1.0 / 12.0), 3)  # CPI precision
+    return s.sort_index()
+
+
 def reference_cpi(days, cpi: pd.Series) -> pd.Series:
-    """Reference CPI per day. ``cpi``: CPI-U NSA indexed by month start. NaN where a needed
-    month isn't in ``cpi``."""
+    """Reference CPI per day. ``cpi``: CPI-U NSA indexed by month start (a never-published
+    month filled by ``fill_missing_months``). NaN where a needed month isn't available."""
+    cpi = fill_missing_months(cpi)
     days = pd.DatetimeIndex(pd.to_datetime(days)).normalize()
     month = days.to_period("M").to_timestamp()
     m3 = cpi.reindex(month - pd.DateOffset(months=3)).to_numpy()

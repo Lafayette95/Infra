@@ -12,6 +12,8 @@ import urllib.error
 import urllib.request
 
 URL = "https://www.federalreserve.gov/data/yield-curve-tables/feds200628.csv"
+# the TIPS (real) curve, same methodology and layout family (BETA0-3, TAU1-2, TIPSY.., BKEVEN..)
+TIPS_URL = "https://www.federalreserve.gov/data/yield-curve-tables/feds200805.csv"
 TIMEOUT_S = 120
 RETRIES = 3
 
@@ -20,13 +22,13 @@ class FedGswError(RuntimeError):
     pass
 
 
-def fetch_csv(*, sleep=time.sleep) -> str:
+def fetch_csv(*, url: str = URL, sleep=time.sleep) -> str:
     last = None
     for attempt in range(RETRIES + 1):
         if attempt:
             sleep(2.0 * 2 ** (attempt - 1))
         try:
-            req = urllib.request.Request(URL, headers={"User-Agent": "infra-data-pipeline"})
+            req = urllib.request.Request(url, headers={"User-Agent": "infra-data-pipeline"})
             with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
                 return resp.read().decode("utf-8-sig")
         except urllib.error.HTTPError as exc:

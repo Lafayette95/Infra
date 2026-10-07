@@ -43,6 +43,10 @@ BBO_FUTURES_COVERAGE_FILE = BBO_1M_ROOT / "_coverage" / "futures.parquet"
 OHLCV_1S_ROOT = DATABASE_ROOT / "ohlcv-1s"
 OHLCV_1S_FUTURES_DIR = OHLCV_1S_ROOT / "Futures"
 OHLCV_1S_FUTURES_COVERAGE_FILE = OHLCV_1S_ROOT / "_coverage" / "futures.parquet"
+# daily bars (Long Gilt: ICE's statistics schema is ~30x the price of these - CLAUDE.md 14)
+OHLCV_1D_ROOT = DATABASE_ROOT / "ohlcv-1d"
+OHLCV_1D_FUTURES_DIR = OHLCV_1D_ROOT / "Futures"
+OHLCV_1D_FUTURES_COVERAGE_FILE = OHLCV_1D_ROOT / "_coverage" / "futures.parquet"
 BBO_1S_ROOT = DATABASE_ROOT / "bbo-1s"
 BBO_1S_FUTURES_DIR = BBO_1S_ROOT / "Futures"
 BBO_1S_FUTURES_COVERAGE_FILE = BBO_1S_ROOT / "_coverage" / "futures.parquet"
@@ -383,6 +387,7 @@ PRIMARY_DEALER_RELEASE = ("16:15", "America/New_York", 8)  # local time, zone, d
 # ------------------------------------------------------------------ API settings
 SCHEMA_OHLCV = "ohlcv-1m"
 SCHEMA_OHLCV_1S = "ohlcv-1s"
+SCHEMA_OHLCV_1D = "ohlcv-1d"
 SCHEMA_BBO_1M = "bbo-1m"
 SCHEMA_BBO_1S = "bbo-1s"
 SCHEMA_DEFINITION = "definition"
@@ -492,6 +497,9 @@ FUTURES_ROOTS: dict[str, FuturesRoot] = {
                     volume_extra_candidates=_FRONT_TWO,
                     volume_lookback_days=_BOND_LOOKBACK),
         FuturesRoot("FBTP", _EUREX, "FBTP.FUT", "Euro-BTP", "Bonds", point_value=1000.0, currency="EUR",
+                    volume_extra_candidates=_FRONT_TWO,
+                    volume_lookback_days=_BOND_LOOKBACK),
+        FuturesRoot("FGBX", _EUREX, "FGBX.FUT", "Euro-Buxl", "Bonds", point_value=1000.0, currency="EUR",
                     volume_extra_candidates=_FRONT_TWO,
                     volume_lookback_days=_BOND_LOOKBACK),
         # ---- Bonds: ICE Futures Europe (data from 2018-12-23)
@@ -968,6 +976,7 @@ DAILY_BACKFILL: dict[str, DailyBackfillSpec] = {
     "FGBM": DailyBackfillSpec(2, strict_ranks=1),
     "FGBS": DailyBackfillSpec(2, strict_ranks=1),
     "FBTP": DailyBackfillSpec(2, strict_ranks=1),
+    "FGBX": DailyBackfillSpec(2, strict_ranks=1),  # added 2026-10-07 (settlements ~$0.005 since 2025-03)
     # ICE excluded for now: ~99% of the daily cycle's API cost (2026-09-28 cost check).
     "SO3": DailyBackfillSpec(0, enabled=False),
     "R": DailyBackfillSpec(0, enabled=False),
