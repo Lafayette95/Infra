@@ -412,6 +412,55 @@ INFLATION_CURVE = DerivedMetric(
 )
 
 
+# ------------------------------------------- cross-currency OIS basis (DTCC): closes
+def compute_xccy_basis(start, end, paths: CyclePaths):
+    """Every archived day of the closes' 10-day correction window + the run's window; the
+    suspect flags read the stored closes before it (a window flags as a full build)."""
+    from infra.analytics.sofr_curve import business_days
+    from infra.config import SWAP_CORRECTION_DAYS
+    from infra.pipeline import dtcc, xccy_basis as xb
+    lo = start - pd.Timedelta(days=SWAP_CORRECTION_DAYS)
+    have = dtcc.archived_days(xb.REPORT, root=paths.dtcc_dir)
+    days = [d for d in pd.date_range(lo, end) if d in have]
+    frames, cache = [], {}
+    for d in days:
+        for k in [k for k in cache if k < d]:
+            del cache[k]
+        frames.append(xb.compute_closes(d, dtcc_root=paths.dtcc_dir, cache=cache))
+    df = pd.concat([f for f in frames if len(f)], ignore_index=True) if any(len(f) for f in frames) else pd.DataFrame()
+    if len(df):
+        df = xb.flag_suspect(df, xb.read_closes(lo - pd.Timedelta(days=400), lo, root=paths.xccy_basis_closes_dir))
+    got = set(pd.to_datetime(df["timestamp"]).dt.normalize()) if len(df) else set()
+    bd = set(business_days(lo, end))
+    empty = {d: "no clean cross-currency basis print that day" for d in days if d in bd and d not in got}
+    return df, {"days": [d for d in days if d in bd], "empty_days": empty, "range": (lo, end)}
+
+
+def _replace_xccy(store, df, diag, start, end):
+    from infra.pipeline import xccy_basis as xb
+    lo, hi = diag.get("range", (start, end))
+    xb.store_days(df, lo, hi, root=store)
+
+
+def _check_xccy(ctx: StepContext):
+    from infra.pipeline import xccy_basis as xb
+    c = xb.read_closes(ctx.start, ctx.end + pd.Timedelta(days=1), root=ctx.paths.xccy_basis_closes_dir)
+    if c.empty:
+        return True, "no cross-currency basis closes in the window", None
+    bad = c[c["basis_bp"].abs() > 150]
+    sus = int(c["suspect"].sum()) if "suspect" in c else 0
+    if bad.empty:
+        return True, f"{len(c)} basis closes within +-150bp; {sus} flagged suspect", None
+    return False, f"{len(bad)} basis close(s) beyond +-150bp", bad
+
+
+XCCY_BASIS_CLOSES = DerivedMetric(
+    "xccy_basis_closes", lambda p: p.xccy_basis_closes_dir, ("timestamp", "close", "pair", "tenor", "method"),
+    compute_xccy_basis, checks=(Check("xccy_basis_sane", _check_xccy, Severity.WARN),), replace=_replace_xccy,
+    presence_severity=Severity.WARN,
+)
+
+
 # ------------------------------------------- swaptions (DTCC): records, prints, vols, OI
 SWAPTION_GAP_DAYS = 30  # archived files this far back without records are parsed too (a late archive)
 SWAPTION_LINKED_MIN = 0.5  # lifecycle records linked to an archived NEWT (81-93% a quarter; ~0 if ids change format again)
@@ -609,7 +658,8 @@ VRP_METRIC = DerivedMetric(
 DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE, "tips_curve": TIPS_CURVE,
                                              "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE,
                                              "swap_spreads": SWAP_SPREADS, "inflation_swap_closes": INFLATION_CLOSES,
-                                             "inflation_curve": INFLATION_CURVE, "swaption_records": SWAPTION_RECORDS,
+                                             "inflation_curve": INFLATION_CURVE, "xccy_basis_closes": XCCY_BASIS_CLOSES,
+                                             "swaption_records": SWAPTION_RECORDS,
                                              "swaption_prints": SWAPTION_PRINTS, "swaption_vols": SWAPTION_VOLS,
                                              "swaption_oi": SWAPTION_OI, "vrp": VRP_METRIC}
 

@@ -1334,3 +1334,13 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **The `c_*` runs are scratch** (no spec in a registry; their `feat:` inputs and overrides live in
     their `meta.json`): delete or re-create them as named specs if the work continues.
 
+---
+
+## Cross-currency basis: open items from the first build
+
+**Found:** 2026-10-07. **Where:** `infra.pipeline.xccy_basis`, `infra.processing.dtcc_xccy` (root CLAUDE.md 16). **Status:** open.
+
+*   **The short end is thin:** 3m / 6m closes on 22-45% of days (about one print a day) - the short-end hedge market is FX swaps / forwards. Candidates: DTCC's FOREX report (FX forwards ~120 and FX swaps ~50 a day in EUR/USD; NOT archived yet - DTCC keeps ~2 years, so its history is being lost daily; the backlog is ~1.2GB, 75GB free on 2026-10-07; archiving waits for the user's OK) or CME FX futures (6E / 6J / 6B / 6C via Databento, quarterly, from 2010, cents).
+*   **No external validation:** no free basis series to compare against; levels and daily moves are plausible. A CIP check against FX forwards (FOREX report) would be the first real test.
+*   **CHF (~8 clean prints a day) and AUD (trades against BBSW, not OIS) not built.**
+*   **Hedged yields (the purpose) not built yet:** need EUR / GBP / JPY / CAD OIS curves (EUR, GBP pure closes exist; JPY / CAD OIS products in the same files not extracted), the foreign bond yields (DE, UK stored; JGBs from Japan's MoF CSV; Canada from the Bank of Canada's free API) and the two hedge conventions (rolling 3m FX hedge; term hedge via the cross-currency swap). User: discuss after.

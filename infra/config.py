@@ -94,6 +94,7 @@ OIS_CURVES_DIR = DERIVED_ROOT / "OisCurves"
 SWAP_SPREADS_DIR = DERIVED_ROOT / "SwapSpreads"
 INFLATION_SWAP_CLOSES_DIR = DERIVED_ROOT / "InflationSwapCloses"
 INFLATION_CURVES_DIR = DERIVED_ROOT / "InflationCurves"
+XCCY_BASIS_CLOSES_DIR = DERIVED_ROOT / "XccyBasisCloses"
 SWAPTION_RECORDS_DIR = DERIVED_ROOT / "SwaptionRecords"
 SWAPTION_PRINTS_DIR = DERIVED_ROOT / "SwaptionPrints"
 SWAPTION_VOLS_DIR = DERIVED_ROOT / "SwaptionVols"
@@ -596,6 +597,43 @@ SWAP_CURVES: dict[str, SwapCurveSpec] = {
     "EUR": SwapCurveSpec("NA/Swap OIS EUR", "EuroSTR", 2, (1, 2, 3, 5, 7, 10, 15, 20, 30)),
     "GBP": SwapCurveSpec("NA/Swap OIS GBP", "SONIA", 0, (1, 2, 3, 5, 7, 10, 15, 20, 30)),
 }
+
+@dataclass(frozen=True)
+class XccyBasisSpec:
+    """Cross-currency OIS basis swaps snapped from the DTCC archive (infra.processing.
+    dtcc_xccy, infra.pipeline.xccy_basis): the product (UPI FISN), the floating legs that
+    make it OIS-vs-OIS (``underlier_pattern``, regex on ``UPI Underlier Name``), the tenors
+    in MONTHS, the closes. The basis is the spread on the non-USD leg, in bp (market
+    convention: foreign OIS + basis vs flat SOFR; negative = paying to swap into USD).
+
+    Survey 2026-10-07 (2 years of RATES files): clean spot-starting OIS-vs-OIS prints a
+    day - EUR 1y-10y 2-7 (3m/6m ~1), JPY 1y-10y 1.5-10, GBP 1-4, CAD 0.5-2 (1m-3m ~1)."""
+    fisn: str
+    currency: str  # the non-USD currency
+    underlier_pattern: str
+    tenors_months: tuple[int, ...] = (3, 6, 12, 24, 36, 60, 84, 120, 180, 240, 360)
+    # an END-OF-DAY close from the day's prints: these trade in London (EUR, GBP) and Tokyo +
+    # London (JPY) hours - at NY1530 +-240 min JPY had a close on 5-9% of days, EUR 34%. The
+    # snap at 16:00 New York, the window reaching 18h BACK (to 02:00/03:00 UTC, Tokyo's
+    # morning): nothing after the snap, so a close is known at its own timestamp; later prints
+    # weigh more (the drift term). The basis moves ~1-2bp a day, so a day-wide window is fine.
+    closes: tuple[str, ...] = ("NY1600",)
+    fallback_half_window_min: int = 1080
+    off_market_bp: float = 5.0  # a print further than max(this, 5 MADs) from its tenor's day median is dropped
+    # a close more than ``suspect_bp`` from the median of its previous ``suspect_window``
+    # closes is flagged ``suspect`` (kept; clean reads skip it): lone prints of the right
+    # size but the WRONG sign (JPY 1y +33bp the day after -33bp) pass every same-day filter
+    suspect_bp: float = 15.0
+    suspect_window: int = 10
+
+
+XCCY_BASIS: dict[str, XccyBasisSpec] = {
+    "EURUSD": XccyBasisSpec("NA/Swap Flt Flt EUR USD", "EUR", r"EuroSTR.*SOFR|SOFR.*EuroSTR"),
+    "USDJPY": XccyBasisSpec("NA/Swap Flt Flt JPY USD", "JPY", r"TONA.*SOFR|SOFR.*TONA"),
+    "GBPUSD": XccyBasisSpec("NA/Swap Flt Flt GBP USD", "GBP", r"SONIA.*SOFR|SOFR.*SONIA"),
+    "USDCAD": XccyBasisSpec("NA/Swap Flt Flt CAD USD", "CAD", r"CORRA.*SOFR|SOFR.*CORRA"),
+}
+
 
 INFLATION_SWAPS: dict[str, InflationSwapSpec] = {
     "USD_CPI": InflationSwapSpec(SwapCurveSpec("NA/Swap Infl Idx USD", "USA-CPI-U", 2, (1, 2, 3, 4, 5, 7, 10, 15, 20, 30),
