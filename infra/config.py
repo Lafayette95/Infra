@@ -90,6 +90,8 @@ WIRP_1S_DIR = DERIVED_ROOT / "WIRP_1s"
 SWAP_CLOSES_DIR = DERIVED_ROOT / "SwapCloses"
 OIS_CURVES_DIR = DERIVED_ROOT / "OisCurves"
 SWAP_SPREADS_DIR = DERIVED_ROOT / "SwapSpreads"
+INFLATION_SWAP_CLOSES_DIR = DERIVED_ROOT / "InflationSwapCloses"
+INFLATION_CURVES_DIR = DERIVED_ROOT / "InflationCurves"
 SWAPTION_RECORDS_DIR = DERIVED_ROOT / "SwaptionRecords"
 SWAPTION_PRINTS_DIR = DERIVED_ROOT / "SwaptionPrints"
 SWAPTION_VOLS_DIR = DERIVED_ROOT / "SwaptionVols"
@@ -557,10 +559,40 @@ class SwapCurveSpec:
     fixed_frequencies: tuple[str, ...] = ("YEAR", "EXPI")  # annual; EXPI = one payment (<=1y)
 
 
+@dataclass(frozen=True)
+class InflationSwapSpec:
+    """Zero-coupon inflation swaps snapped from the DTCC archive (infra.pipeline.
+    inflation_swaps): the product, the nominal OIS curve the real rates are taken against,
+    the closes, and whether package legs count (USD: yes - they trade at the market).
+
+    Survey 2026-10-07 (USD CPI-U, 2 years): 169 fresh trades a day; spot-starting, no
+    upfront, whole years, packages included, ~13 a day at 1y, 7 at 2y, 14 at 5y and 10y,
+    7 at 30y. 55% of trades are seasoned (effective in the past), a third carry an upfront
+    (their fixed rate is the ORIGINAL coupon) - both excluded by the par filter. The
+    12-month 1st-to-1st no-upfront trades (~7,500) look like CPI fixings but their CPI-month
+    mapping isn't decoded yet (TOFIX); EUR / UK swaps use standardized 15th-of-month dates
+    (not mapped yet)."""
+    curve: SwapCurveSpec
+    currency: str
+    ois_curve: str  # an OIS_CURVES name, for real rates
+    closes: tuple[str, ...] = ("NY1530",)
+    allow_packages: bool = True
+    # the close's fallback window when fewer than 3 trades sit within +-30 min: inflation
+    # swaps trade all day (9-12 New York busiest), so the OIS closes' +-60 found a print on
+    # only 54-80% of days; +-240 finds one on 85-99% and the day-to-day noise doesn't rise
+    # (10y daily-change sd 2.08bp at +-60, 1.89bp at +-240; 2025-10..2026-09)
+    fallback_half_window_min: int = 240
+
+
 SWAP_CURVES: dict[str, SwapCurveSpec] = {
     "USD": SwapCurveSpec("NA/Swap OIS USD", "SOFR", 2, (1, 2, 3, 5, 7, 10, 15, 20, 30)),
     "EUR": SwapCurveSpec("NA/Swap OIS EUR", "EuroSTR", 2, (1, 2, 3, 5, 7, 10, 15, 20, 30)),
     "GBP": SwapCurveSpec("NA/Swap OIS GBP", "SONIA", 0, (1, 2, 3, 5, 7, 10, 15, 20, 30)),
+}
+
+INFLATION_SWAPS: dict[str, InflationSwapSpec] = {
+    "USD_CPI": InflationSwapSpec(SwapCurveSpec("NA/Swap Infl Idx USD", "USA-CPI-U", 2, (1, 2, 3, 4, 5, 7, 10, 15, 20, 30),
+                                               fixed_frequencies=("YEAR", "EXPI")), "USD", "USD_SOFR"),
 }
 # Spot-start tolerance: the effective date may land up to this many calendar days after
 # trade + spot lag (holidays, which plain business days ignore); maturity may miss

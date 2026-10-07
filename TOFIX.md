@@ -1305,3 +1305,15 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 **Products (parents resolving on GLBX, 2026-09-29):** ZN `OZN.OPT` (monthly/quarterly), weeklies `ZN1` / `ZN2` / `ZN3` (Friday), `WY1` (Wednesday), `VY1` (Monday); SOFR `SR3.OPT` plus mid-curves `S0`, `S2`-`S5` (listed from 2020); `SR1.OPT` exists too. A parent also carries spreads/combos: outrights were 44% (OZN) / 66% (SR3) of the parent's statistics cost in Sep 2026.
 
 **Dry-run prices (free metadata, 2026-10-06; est. = parent x outright share, max = parent):** ZN monthlies 2016-2026 ~$4.1 (max $9.3), all ZN products ~$6.3 (max $14.3); SOFR all products 2020-2026 ~$12 (max $18); definition snapshots ~$0.0102 each - monthly grid ~$8 (ZN) / ~$5 (SOFR); weekly snapshots for ZN weeklies' history (they live < 1 month) ~$28 extra; ongoing ~$0.003 (ZN) + ~$0.009 (SOFR) per trading day, ~$7/yr both with snapshots. Proposed order when resumed: ZN monthlies 2016+, SOFR 2020+, ZN weeklies forward only (~$22 up front). Script: the session's scratch `price_chains.py` (rebuild from this description: `estimate_cost` per parent per year, and per outright id from a cached definition snapshot).
+
+---
+
+## Inflation swaps: open items from the first build
+
+**Found:** 2026-10-07. **Where:** `infra.pipeline.inflation_swaps` (root CLAUDE.md 16). **Status:** open.
+
+*   **USD CPI fixings not decoded:** ~7,500 no-upfront 12-month swaps dated the 1st of a month to the 1st a year later, mostly traded months after their start date (2024-09..2026-10). They look like the CPI fixings market (market-implied YoY CPI for single months - a direct benchmark for the inflation nowcast), but no fixed month offset reproduces realised CPI-U NSA YoY for fixings already fully known: best maturity - 3/4 months, median error 0.16pp, where an exact mapping would give ~0. Next: the convention (CME / ISDA fixing conventions; whether the SDR reports the fixing month in the dates or an index level; interpolation), e.g. by matching prints around CPI release days.
+*   **EUR (HICPx, 126 trades a day) and UK (RPI, 94) not built:** only ~9% start at spot, maturities cluster on the 15th, half carry an upfront - standardized-date conventions to map before a spot-tenor close makes sense.
+*   **No seasonality adjustment:** ZC rates are on CPI-U NSA with the 3-month lag; short tenors and forwards starting mid-year carry CPI seasonality (1y moves ~7bp a day vs 1.9bp at 10y).
+*   **TIPS not built yet:** FedInvest lists TIPS (we filter them out - `TREASURY_TYPES`), index ratios follow from CPI-U NSA (stored); a real curve would give the long history (2008+) and the per-bond TIPS-ZC basis. Planned next (user, 2026-10-07).
+*   **The pure method only:** an adjusted method (moving prints by the futures, as the OIS closes) would need a breakeven-futures hedge ratio - none obvious; the wide window is the trade-off instead.

@@ -317,6 +317,71 @@ SWAP_SPREADS = DerivedMetric(
     replace=_replace_swap_spreads, presence_severity=Severity.WARN,
 )
 
+# ------------------------------------------- zero-coupon inflation swaps (DTCC): closes, curve
+INFLATION_BOUNDS_PCT = (-2.0, 10.0)
+
+
+def compute_inflation_closes(start, end, paths: CyclePaths):
+    """Every archived day in the last ``SWAP_CORRECTION_DAYS`` + window: a day's close
+    reads the corrections disseminated after it, as the OIS closes do."""
+    from infra.config import SWAP_CORRECTION_DAYS
+    from infra.pipeline import dtcc, inflation_swaps as isw
+    lo = start - pd.Timedelta(days=SWAP_CORRECTION_DAYS)
+    have = dtcc.archived_days(isw.REPORT, root=paths.dtcc_dir)
+    days = [d for d in pd.date_range(lo, end) if d in have]
+    frames, cache = [], {}
+    for d in days:
+        for k in [k for k in cache if k < d]:
+            del cache[k]
+        frames.append(isw.compute_closes(d, dtcc_root=paths.dtcc_dir, cache=cache))
+    df = pd.concat([f for f in frames if len(f)], ignore_index=True) if any(len(f) for f in frames) else pd.DataFrame()
+    got = set(pd.to_datetime(df["timestamp"]).dt.normalize()) if len(df) else set()
+    from infra.analytics.sofr_curve import business_days
+    bd = set(business_days(lo, end))
+    empty = {d: "no ZC print in any close window that day" for d in days if d in bd and d not in got}
+    return df, {"days": [d for d in days if d in bd], "empty_days": empty, "range": (lo, end)}
+
+
+def _replace_inflation(keys):
+    def replace(store, df, diag, start, end):
+        from infra.pipeline import inflation_swaps as isw
+        lo, hi = diag.get("range", (start, end))
+        isw.store_days(df, lo, hi, root=store, keys=keys)
+    return replace
+
+
+def compute_inflation_curve(start, end, paths: CyclePaths):
+    from infra.config import SWAP_CORRECTION_DAYS
+    from infra.pipeline import inflation_swaps as isw
+    lo = start - pd.Timedelta(days=SWAP_CORRECTION_DAYS)
+    df, diag = isw.compute_curves(lo, end, closes_root=paths.inflation_swap_closes_dir, ois_root=paths.ois_curves_dir)
+    return df, {**diag, "range": (lo, end)}
+
+
+def _check_inflation(ctx: StepContext):
+    from infra.pipeline import inflation_swaps as isw
+    v = isw.read_curves(ctx.start, ctx.end + pd.Timedelta(days=1), root=ctx.paths.inflation_curves_dir)
+    if v.empty:
+        return True, "no inflation curve in the window", None
+    lo, hi = INFLATION_BOUNDS_PCT
+    bad = v[~v["zc_pct"].between(lo, hi) | ~v["fwd_pct"].between(lo, hi)]
+    if bad.empty:
+        return True, f"{len(v)} ZC points, rates and forwards in [{lo}, {hi}]%", None
+    return False, f"{len(bad)} ZC point(s) outside [{lo}, {hi}]%", bad
+
+
+INFLATION_CLOSES = DerivedMetric(
+    "inflation_swap_closes", lambda p: p.inflation_swap_closes_dir, ("timestamp", "close", "curve", "tenor", "method"),
+    compute_inflation_closes, replace=_replace_inflation(("timestamp", "close", "curve", "tenor", "method")),
+    presence_severity=Severity.WARN,
+)
+INFLATION_CURVE = DerivedMetric(
+    "inflation_curve", lambda p: p.inflation_curves_dir, ("timestamp", "curve", "tenor"), compute_inflation_curve,
+    checks=(Check("inflation_curve_sane", _check_inflation, Severity.WARN),),
+    replace=_replace_inflation(("timestamp", "curve", "tenor")), presence_severity=Severity.WARN,
+)
+
+
 # ------------------------------------------- swaptions (DTCC): records, prints, vols, OI
 SWAPTION_GAP_DAYS = 30  # archived files this far back without records are parsed too (a late archive)
 SWAPTION_LINKED_MIN = 0.5  # lifecycle records linked to an archived NEWT (81-93% a quarter; ~0 if ids change format again)
@@ -513,7 +578,8 @@ VRP_METRIC = DerivedMetric(
 # swaption prints need the records and the OIS curve, vols the prints, OI the records; vrp the vols
 DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TREASURY_CURVE,
                                              "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE,
-                                             "swap_spreads": SWAP_SPREADS, "swaption_records": SWAPTION_RECORDS,
+                                             "swap_spreads": SWAP_SPREADS, "inflation_swap_closes": INFLATION_CLOSES,
+                                             "inflation_curve": INFLATION_CURVE, "swaption_records": SWAPTION_RECORDS,
                                              "swaption_prints": SWAPTION_PRINTS, "swaption_vols": SWAPTION_VOLS,
                                              "swaption_oi": SWAPTION_OI, "vrp": VRP_METRIC}
 

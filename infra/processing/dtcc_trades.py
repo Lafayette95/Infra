@@ -156,8 +156,11 @@ def tenor_years(effective: pd.Series, maturity: pd.Series, tenors, tolerance_day
     return out
 
 
-def par_trades(trades: pd.DataFrame, spec: SwapCurveSpec, currency: str) -> pd.DataFrame:
-    """Plain spot-starting par swaps on a standard tenor: not a package leg, not
+def par_trades(trades: pd.DataFrame, spec: SwapCurveSpec, currency: str, *, allow_packages: bool = False) -> pd.DataFrame:
+    """Plain spot-starting par swaps on a standard tenor: not a package leg (unless
+    ``allow_packages``: USD CPI swap package legs trade at the market - median 0.0 to
+    -0.05bp from plain trades within 30 min, 2026-03..09 - and more than double the
+    5-30y prints), not
     non-standard, no upfront fee, not declared uncleared, not on an excluded platform
     (``SWAP_EXCLUDED_PLATFORMS``), annual fixed leg, a rate, and not off-market
     (``drop_off_market``). Columns TRADE_COLUMNS.
@@ -170,7 +173,9 @@ def par_trades(trades: pd.DataFrame, spec: SwapCurveSpec, currency: str) -> pd.D
     spot = trade_day + pd.offsets.BDay(spec.spot_lag_days) if spec.spot_lag_days else trade_day
     eff = trades["effective"]
     ok = (eff >= spot) & (eff <= spot + pd.Timedelta(days=SWAP_SPOT_TOLERANCE_DAYS))
-    ok &= ~trades["package"] & ~trades["non_standard"] & ~trades["upfront"] & (trades["cleared"].astype(str) != "N")
+    ok &= ~trades["non_standard"] & ~trades["upfront"] & (trades["cleared"].astype(str) != "N")
+    if not allow_packages:
+        ok &= ~trades["package"]
     ok &= ~trades["platform"].isin(SWAP_EXCLUDED_PLATFORMS)
     ok &= trades["fixed_freq"].isin(spec.fixed_frequencies) & trades["rate"].notna()
     out = trades[ok].copy()

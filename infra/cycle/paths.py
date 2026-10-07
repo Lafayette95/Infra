@@ -39,6 +39,8 @@ class CyclePaths:
     swap_closes_dir: Path
     ois_curves_dir: Path
     swap_spreads_dir: Path
+    inflation_swap_closes_dir: Path
+    inflation_curves_dir: Path
     swaption_records_dir: Path
     swaption_prints_dir: Path
     swaption_vols_dir: Path
@@ -90,6 +92,8 @@ class CyclePaths:
             swap_closes_dir=config.SWAP_CLOSES_DIR,
             ois_curves_dir=config.OIS_CURVES_DIR,
             swap_spreads_dir=config.SWAP_SPREADS_DIR,
+            inflation_swap_closes_dir=config.INFLATION_SWAP_CLOSES_DIR,
+            inflation_curves_dir=config.INFLATION_CURVES_DIR,
             swaption_records_dir=config.SWAPTION_RECORDS_DIR,
             swaption_prints_dir=config.SWAPTION_PRINTS_DIR,
             swaption_vols_dir=config.SWAPTION_VOLS_DIR,
