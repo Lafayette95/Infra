@@ -1344,3 +1344,54 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **No external validation:** no free basis series to compare against; levels and daily moves are plausible. A CIP check against FX forwards (FOREX report) would be the first real test.
 *   **CHF (~8 clean prints a day) and AUD (trades against BBSW, not OIS) not built.**
 *   **Hedged yields (the purpose) not built yet:** need EUR / GBP / JPY / CAD OIS curves (EUR, GBP pure closes exist; JPY / CAD OIS products in the same files not extracted), the foreign bond yields (DE, UK stored; JGBs from Japan's MoF CSV; Canada from the Bank of Canada's free API) and the two hedge conventions (rolling 3m FX hedge; term hedge via the cross-currency swap). User: discuss after.
+
+---
+
+## Positioning: roadmap (by player/sector vs aggressor)
+
+**Found:** 2026-10-07 (user brainstorm). **Where:** proposed layout below; data already stored: CFTC TFF and NY Fed primary dealer statistics (CLAUDE.md 24), SR3 / ZN option OI by strike (statistics), sec lending (19), the CTA model (21). **Status:** roadmap, nothing built beyond the CTA model and the two raw stores.
+
+**Two meanings, never blurred (user definition):** (1) **player/sector** - who holds the risk and who is FORCED to trade (slow, levels, crowding); every long has a short, so this only means something per sector, and the sectors must add up to supply outstanding (Treasury MSPD; Fed Z.1 quarterly as the anchor) - a weekly "Treasury flow of funds" nowcast from the fast proxies below, reconciled to the identity, is the unifying target. (2) **aggressor** - who paid up to trade and at what prices (fast, flows, pain levels, who is trapped). Rules-based player models sit between them: they forecast FUTURE aggressor flow (the CTA's expected flows), and aggressor data tests whether they traded.
+
+**Where it lives (proposal, user question 2026-10-07):** these are mostly deterministic measures, not models, so NOT `infra/models`. Same rule as the rest of the repo: (a) raw sources in `api` / `processing` / `pipeline` / `RawData` (TFF, FR 2004 already there); (b) a measure with no fit (signed volume, entry-price distribution, index extension, convexity need, dealer gamma, residual specialness) = pure code in `infra/analytics/positioning/` + read/store in `infra/pipeline/positioning.py`, persisted to `~/Database/Derived/Positioning/<measure>` through the cycle's `DERIVED_METRICS` (BELOW the models, so the daily cycle can run it - the cycle may not import `infra/models`); (c) anything with fitted parameters and a predict step stays in `infra/models` (CTA; the top-down scale filter; risk-parity / pension player models); (d) every measure is exposed to strategies and frameworks as a feature-maker input (a `pos:<measure>:<column>` input kind; model outputs already arrive via `model:<run>:<column>`). Name `Derived` is the storage area, not a code package.
+
+**(1) Player / sector - sources and critique**
+* **CFTC TFF** (stored): leveraged funds' Treasury futures short is mostly the futures leg of the cash-futures BASIS trade, asset managers' long the other side - so use LF short as basis-trade SIZE, and dealers' net / AM net vs benchmark duration for direction. Sum across contracts in DV01 (futures DV01 from `infra/analytics/futures_basis.py`). Also SR3 in TFF. First real use (2026-10-03, UB basis residual): correlation 0.00 - positioning didn't explain it.
+* **Primary dealers FR 2004** (stored): weekly net positions by maturity bucket = the mirror of customers in aggregate; plus financing and fails. Mind series breaks (TOFIX "Primary dealer statistics").
+* **Repo / specialness**: use the RESIDUAL vs our lifecycle profile (`infra/analytics/specialness.py`) as short demand; NY Fed lending bids vs accepted; when-issued bids before settlement; fails (FR 2004); sponsored repo growth (FICC, verify frequency) as basis-trade proxy. Confounders: reopenings, SOMA, quarter-ends.
+* **Custody / holdings, free**: Fed H.4.1 foreign official custody (weekly), TIC SLT (monthly), H.8 bank holdings (weekly), Z.1 (quarterly, sector identity), SEC N-PORT (fund holdings by CUSIP, quarterly, lagged), N-MFP (MMFs), Treasury investor-class auction allotments (monthly; we hold the auctions store). Paid: State Street's flow indicators.
+* **Surveys**: JPM Treasury client survey and BofA FMS are proprietary (no legitimate free history); free: NY Fed SPD/SMP (expectations vs market pricing = a mispositioning gauge), SCOOS (leverage terms). Low priority, contrarian only.
+* **Top-down regressions**: bond fund / ETF daily returns on key-rate factors -> active duration of core / core-plus managers (the "real-money duration" proxy), VALIDATED against N-PORT holdings; ETF shares outstanding (TLT, IEF...) for flow-implied demand; HF index style analysis (regularised, time-varying). Best use: keep bottom-up SHAPE, estimate a few SCALE factors (see "CTA: top-down positioning").
+* **Rules-based player models**, priority order: (i) **index month-end extension** - passive trackers add duration at month end; computable from our securities table + OTR map + FedInvest prices, all on disk; (ii) **pension / balanced rebalancing** at month/quarter end (needs equity index data); (iii) **mortgage convexity hedging** - iShares MBB's published daily effective duration change x agency MBS outstanding; (iv) **basis traders** - size from implied repo vs funding (the basis models) and CME margins, validated against TFF LF shorts; (v) **risk parity / vol targeting** (needs equity futures); (vi) **dealer option gamma** on SR3 / ZN from OI by strike (sign assumption to test: customers long puts / short calls); (vii) **hedged foreign buyers** (Japanese lifers: hedged yield pickup vs JGBs; MoF weekly/monthly flows to validate).
+
+**(2) Aggressor - design**
+* **Signed volume from the exchange flag**: Databento `trades` carries the aggressor side - no Lee-Ready. Cumulative signed volume per contract in DV01, summed by root (rolls cancel). Cost: front 1-2 contracts per root, windows or a small daily universe, under the same coverage/cost guards as the 1-second stores; never a chain.
+* **Entry-price distribution by side**: book each day's OI change at the day's VWAP, split by the dominant aggressor (OI up + aggressive buying = new longs; OI down + aggressive selling = longs liquidated), run off proportionally as OI falls -> share of aggressor longs/shorts underwater, stop / pain levels. Improves the classic price+OI quadrant, which says positions opened, not who is net.
+* **Size / urgency**: blocks and outsized prints (cleared volume minus regular-trade volume ~ block activity per day, already in the daily store).
+* **Absorption**: persistent aggressive buying with no price progress = a large passive seller (links back to (1)).
+* **Rates-specific cuts**: aggressor flow along the SR3 strip (where on the policy path people pay up); front vs back contract in the roll window (longs vs shorts rolling); signed flow around releases (calendar + 1-second data).
+* **Not available**: swaps - DTCC public reports carry no direction (activity only).
+
+**New ideas from the brainstorm**
+* **Asymmetric reaction function as a crowding signal** (user: was going to suggest it): markets react more to surprises AGAINST a crowded position. Per release, the yield response to the surprise (feature `surprise:` + intraday / 1-second moves, the event-study machinery) split by surprise SIGN, rolling; a widening asymmetry = crowding inferred from prices alone, testable against TFF / CTA positioning. A trailing estimate with no predict step -> analytics/feature layer (like `beta(...)`), not a model.
+* Swap spreads (basis / receiver activity) and SR3 options skew (hedging demand) as cross-checks.
+* **Validation discipline** (as UBS did for the CTA): judge every proxy by what it PREDICTS - forward returns, reversals at extremes - not by plausibility.
+
+**Suggested order:** TFF basis decomposition (data stored) -> index month-end extension -> MBS convexity (MBB) -> option-OI dealer gamma -> residual specialness -> aggressor signed volume (needs `trades` fetch) -> asymmetric reaction -> custody / allotments into the sector-balance-sheet nowcast.
+
+**Progress:** asymmetric reaction BUILT 2026-10-07 (user moved it first; `infra/analytics/positioning`, root CLAUDE.md 33); open items in "Positioning: asymmetric reaction - open items".
+
+---
+
+## Positioning: asymmetric reaction - open items
+
+**Found:** 2026-10-07 (first build and validation, `infra/analytics/positioning/CLAUDE.md` 3). **Where:** `infra/analytics/positioning/asymmetry.py`, `infra/pipeline/positioning.py`. **Status:** open.
+
+* **No predictive evidence yet.** Only the relative measure shows anything (2y, +0.15 with the next month's yield change, ~2 standard errors, one of ~20 tests). Next tests: known episodes (2020-03, 2022, 2023-03, 2023-10); forward SKEW and reversal size instead of forward direction; conditioning a strategy on the measure through the feature maker (`pos:` ids) with the frameworks' evaluation.
+* **The surprise measure's sign puzzle:** negative correlation with CTA positions (-0.25..-0.40): after rallies dovish news moves yields more. Candidates: attention regimes (easing phases), the expected move's own fit (a 5-year impact fit lags importance shifts), consensus quality (MarketWatch median, no dispersion). Test by regime (hiking / holding / cutting) and by release.
+* **Today's daily surprise slopes can be negative** (2026-09: dovish news moved yields UP, `b_down` -2, `surprise_asym` pinned at 1): the bounded ratio reads a sign flip as maximal asymmetry. Read it with `b_all`; consider NaN when `b_all` is below a floor, or a separate "inverted reaction" flag.
+* **CPI is missing from the surprises** (5 consensus prints - the calendar pattern, TOFIX "Forecast"), and PCE has 29: the biggest rates releases of 2021-2024 aren't in family 1.
+* **Thresholds and windows are untuned** (k, windows, the 5-year impact lookback, 40-event windows): chosen a priori, not optimised; tune only out of sample against a stated target.
+* **Intraday release windows** drop releases at the grid's first point (06:00 NFIB) and use one window length for every release; a 1-second version for the big releases is possible (on-demand 1-second stores).
+* **Not in the daily cycle:** a `derived` entry (`DERIVED_METRICS`) rebuilding the daily spec each run (~6 s) and the intraday weekly (~45 s); checks: counts present, values in range.
+

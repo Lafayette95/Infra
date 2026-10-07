@@ -320,6 +320,18 @@ def _bmk(keys, start, end, as_of):
     return df.reindex(columns=list(keys))
 
 
+def _pos(keys, start, end, as_of):
+    """Stored positioning measures (``infra.pipeline.positioning``): key
+    ``<spec>:<measure>:<instrument>``, e.g. ``ust_daily:rel_asym:otr:US_BOND_2y``."""
+    from infra.pipeline.positioning import read_asymmetry
+    out = {}
+    for k in keys:
+        spec, measure, instrument = k.split(":", 2)
+        rows = read_asymmetry(spec, measure, instrument, start, end)
+        out[k] = pd.Series(rows["value"].to_numpy(dtype="float64"), index=pd.DatetimeIndex(rows["timestamp"]))
+    return pd.DataFrame(out).reindex(columns=list(keys))
+
+
 SERIES_SOURCES: dict[str, SeriesSource] = {
     "fut": SeriesSource(_fut, "back-adjusted continuous futures settlement",
                         ("fut:ZN.v.0", "fut:ZF.v.0", "fut:ZT.v.0", "fut:TN.v.0", "fut:ZB.v.0", "fut:UB.v.0"),
@@ -364,6 +376,13 @@ SERIES_SOURCES: dict[str, SeriesSource] = {
                                                     note="row D is computed from inputs known by D+1 10:00 New York "
                                                          "(the bmk yield P&L); the late one of the usual inputs"),
                           kind="moves"),
+    "pos": SeriesSource(_pos, "positioning measure (spec:measure:instrument), e.g. asymmetric reaction",
+                        ("pos:ust_daily:rel_asym:otr:US_BOND_2y", "pos:ust_daily:semivar_asym:factor"),
+                        availability=Availability("day", 1, "10:00", "America/New_York", calendar="market",
+                                                  verified=False,
+                                                  note="day D's value uses moves through D: the late one of its "
+                                                       "inputs (FedInvest END OF DAY, D+1 ~10:00 New York)"),
+                        kind="level"),
     "bar": SeriesSource(_bar, "1-minute trade-bar close (UTC)", ("bar:ZN.v.0",),
                         availability=Availability("instant", offset=pd.Timedelta(minutes=1),
                                                   note="a bar is stamped at its START: known one minute later")),
