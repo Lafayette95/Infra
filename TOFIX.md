@@ -1427,3 +1427,7 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **Done:** the synchronized family uses our curve instead (CLAUDE.md 12); `yield_sources_agree` (warn) lists such days in the unsynced P&L.
 *   **Open:** treat them in `yield_bundesbank` itself (e.g. an outlier test against our curve / the OTR, then NA) - not done, since that bmk is the raw official series by design.
 
+## Hedged yields: v2 on FX forwards (2026-10-07)
+*   **Where:** `infra.pipeline.hedged_yields` (CLAUDE.md 16).
+*   **The issue:** the rolling 3-month hedge cost comes from OIS curves + the 3-month cross-currency basis. The 3m basis has a same-day close on only 35% of rows (61% carried up to 10 business days, the rest the 6m / 1y), and the JPY / CAD OIS curves have no short end (flat to the 1y). CAD's curve exists on only 62% of days, which caps every CAD pair at ~56-61%.
+*   **Planned (user, "soon"):** the hedge cost from actual FX forward points - DTCC FOREX archive (forwards / FX swaps, from 2024-09-30), a forward-points close per pair and tenor at a fixed snap, then hedged = y_F + (forward-implied B-F rate differential) directly. Keep the OIS + basis version alongside for comparison (CIP deviation = their difference).

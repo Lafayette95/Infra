@@ -139,6 +139,20 @@ TREASURY_RV_DIR = DERIVED_ROOT / "TreasuryRV"
 # one on the Bundesbank's per-ISIN DIRTY prices (an 11:15 Frankfurt snapshot), settlement T+2,
 # from BUND_CURVES_START - the first day with dirty prices AND the complete universe.
 BUND_CURVES_DIR = DERIVED_ROOT / "BundCurves"
+# FX-HEDGED bond yields (infra.pipeline.hedged_yields; maths infra.analytics.hedged_yields;
+# user decisions 2026-10-07): every bond (country) hedged into every base currency, 5 x 5, at
+# 2 / 5 / 10 / 30y, two hedges - rolling 3-month (DEFAULT) and maturity-matched - from the OIS
+# curves and the cross-currency basis vs USD (v1; v2 will take the short end from FX forwards
+# in the DTCC FOREX archive). country -> (currency, bond-yield source)
+HEDGED_YIELDS_DIR = DERIVED_ROOT / "HedgedYields"
+HEDGED_YIELD_COUNTRIES = {"US": ("USD", "cmt"), "DE": ("EUR", "curve"), "UK": ("GBP", "boe"),
+                          "JP": ("JPY", "mof"), "CA": ("CAD", "boc")}
+HEDGED_YIELD_TENORS = (2, 5, 10, 30)
+HEDGED_YIELD_DEFAULT_METHOD = "rolling_3m"
+HEDGED_YIELD_OIS = {"USD": "USD_SOFR", "EUR": "EUR_ESTR", "GBP": "GBP_SONIA", "JPY": "JPY_TONA", "CAD": "CAD_CORRA"}
+HEDGED_YIELD_BASIS_PAIR = {"EUR": "EURUSD", "GBP": "GBPUSD", "JPY": "USDJPY", "CAD": "USDCAD"}
+HEDGED_YIELD_BASIS_CARRY_DAYS = 10
+HEDGED_YIELDS_START = "2024-09-30"   # the DTCC archive's first day: OIS curves and basis start here
 # Eurex German bond futures (infra.pipeline.eurex_basis): delivery baskets with conversion
 # factors per day and listed contract, and the daily basis table (gross basis, implied repo,
 # cheapest-to-deliver, futures DV01) at the Bundesbank's 11:15 Frankfurt price time

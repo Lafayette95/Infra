@@ -54,6 +54,7 @@ class CyclePaths:
     inflation_swap_closes_dir: Path
     inflation_curves_dir: Path
     xccy_basis_closes_dir: Path
+    hedged_yields_dir: Path
     swaption_records_dir: Path
     swaption_prints_dir: Path
     swaption_vols_dir: Path
@@ -124,6 +125,7 @@ class CyclePaths:
             inflation_swap_closes_dir=config.INFLATION_SWAP_CLOSES_DIR,
             inflation_curves_dir=config.INFLATION_CURVES_DIR,
             xccy_basis_closes_dir=config.XCCY_BASIS_CLOSES_DIR,
+            hedged_yields_dir=config.HEDGED_YIELDS_DIR,
             swaption_records_dir=config.SWAPTION_RECORDS_DIR,
             swaption_prints_dir=config.SWAPTION_PRINTS_DIR,
             swaption_vols_dir=config.SWAPTION_VOLS_DIR,

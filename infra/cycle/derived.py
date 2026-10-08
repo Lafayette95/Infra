@@ -532,6 +532,54 @@ XCCY_BASIS_CLOSES = DerivedMetric(
 )
 
 
+# ------------------------------------------------------- FX-hedged bond yields, 5 x 5
+def compute_hedged_yields(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> tuple[pd.DataFrame, dict]:
+    """Every bond hedged into every base currency (``infra.pipeline.hedged_yields``) over the
+    xccy closes' recomputed range (a corrected basis or close moves its hedged yields too).
+    Runs after ``ois_curve``, ``bund_curve`` and ``xccy_basis_closes`` (registry order)."""
+    from infra.config import SWAP_CORRECTION_DAYS
+    from infra.pipeline.hedged_yields import compute_hedged_yields as compute
+    lo = start - pd.Timedelta(days=SWAP_CORRECTION_DAYS)
+    df = compute(lo, end, bonds_root=paths.daily_bonds_dir, bund_root=paths.bund_curves_dir, ois_root=paths.ois_curves_dir,
+                 basis_root=paths.xccy_basis_closes_dir)
+    days = sorted(pd.to_datetime(df["timestamp"]).unique()) if len(df) else []
+    return df, {"days": days, "empty_days": {}, "range": (lo, end)}
+
+
+def _replace_hedged(store, df: pd.DataFrame, diag: dict, start, end) -> None:
+    from infra.pipeline.hedged_yields import store_hedged_yields
+    lo, hi = diag.get("range", (start, end))
+    store_hedged_yields(df, lo, hi, root=store)
+
+
+def _check_hedged(ctx: StepContext):
+    """(c) hedged yields in [-5, 20]%, and the matched hedge's two directions mirror each other
+    exactly (pickup F->B = -pickup B->F: the formula is one identity both ways)."""
+    from infra.pipeline.hedged_yields import read_hedged_yields
+    df = read_hedged_yields(ctx.start, ctx.end, root=ctx.paths.hedged_yields_dir)
+    if df.empty:
+        return True, "no hedged yields in the window", None
+    bad = df[~df["hedged_yield"].between(-5, 20)]
+    m = df[df["method"] == "matched"].assign(pair=lambda d: d["currency"] + ">" + d["base"])
+    w = m.pivot_table(index=["timestamp", "tenor"], columns="pair", values="pickup_bp")
+    asym = []
+    for c in w.columns:
+        f, b = c.split(">")
+        if f < b and f"{b}>{f}" in w:
+            gap = (w[c] + w[f"{b}>{f}"]).abs()
+            asym += [{"pair": c, "worst_bp": float(gap.max())}] if gap.max() > 1e-6 else []
+    if bad.empty and not asym:
+        return True, f"{len(df)} hedged yields in bounds; matched directions mirror exactly", None
+    return False, f"{len(bad)} out of bounds, {len(asym)} asymmetric pair(s)", pd.concat([bad.head(20), pd.DataFrame(asym)])
+
+
+HEDGED_YIELDS = DerivedMetric(
+    "hedged_yields", lambda p: p.hedged_yields_dir, ("timestamp", "bond", "base", "method"), compute_hedged_yields,
+    checks=(Check("hedged_yields_sane", _check_hedged, Severity.WARN),), replace=_replace_hedged,
+    presence_severity=Severity.WARN,
+)
+
+
 # ------------------------------------------- swaptions (DTCC): records, prints, vols, OI
 SWAPTION_GAP_DAYS = 30  # archived files this far back without records are parsed too (a late archive)
 SWAPTION_LINKED_MIN = 0.5  # lifecycle records linked to an archived NEWT (81-93% a quarter; ~0 if ids change format again)
@@ -731,6 +779,7 @@ DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TRE
                                              "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE,
                                              "swap_spreads": SWAP_SPREADS, "inflation_swap_closes": INFLATION_CLOSES,
                                              "inflation_curve": INFLATION_CURVE, "xccy_basis_closes": XCCY_BASIS_CLOSES,
+                                             "hedged_yields": HEDGED_YIELDS,
                                              "swaption_records": SWAPTION_RECORDS,
                                              "swaption_prints": SWAPTION_PRINTS, "swaption_vols": SWAPTION_VOLS,
                                              "swaption_oi": SWAPTION_OI, "vrp": VRP_METRIC}
