@@ -152,7 +152,25 @@ _MACRO = AsymmetrySpec(
 # jump (found 2026-10-07: it wrecked the whole panel's factors, ES's median R^2 0.62 -> 0.10).
 _STIR = ("fut:SR1.c.3",)
 
+# Curve structures (2026-10-08): the bmk OTR yield P&L of a LONG structure (bp; CURVE__a__b
+# = long a, short b - a steepener; FLY__a__b__c = long the belly b vs 50/50 wings), x -1 so
+# "+ = a loss for a long holder"; the level factor is the 10y itself.
+_CURVES = tuple(f"bmk:otr:{s}" for s in (
+    "CURVE__US_BOND_2y__US_BOND_10y", "CURVE__US_BOND_5y__US_BOND_30y", "CURVE__US_BOND_2y__US_BOND_5y",
+    "CURVE__US_BOND_10y__US_BOND_30y", "FLY__US_BOND_2y__US_BOND_5y__US_BOND_10y",
+    "FLY__US_BOND_5y__US_BOND_10y__US_BOND_30y"))
+_LEVEL = "bmk:otr:US_BOND_10y"
+_CURVE_SPEC = AsymmetrySpec(
+    name="ust_curves_daily",
+    description="US curve structures (2s10s, 5s30s, 2s5s, 10s30s, 2/5/10 and 5/10/30 flies; OTR, daily from "
+                "2008-09) relative to the 10y level; + = a loss for a long structure.",
+    instruments=_CURVES + (_LEVEL,),
+    instrument_moves=tuple((c, "as_is", -1.0) for c in _CURVES + (_LEVEL,)),
+    factor=f"series:{_LEVEL}",
+)
+
 ASYMMETRY_SPECS: dict[str, AsymmetrySpec] = {s.name: s for s in (
+    _CURVE_SPEC,
     _MACRO,
     replace(_MACRO, name="macro_daily_named",
             factor="series:otr:US_BOND_10y,fret:ES.v.0,fret:6E.v.0,fret:CL.v.0,fret:GC.v.0",
