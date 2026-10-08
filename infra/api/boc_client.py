@@ -87,3 +87,21 @@ def fetch_zero_curve(start: pd.Timestamp, end_inclusive: pd.Timestamp) -> pd.Dat
     long["maturity"] = long["col"].str[2:-2].astype(int) / 100.0
     long["zero"] = pd.to_numeric(long["zero"], errors="coerce")
     return long.dropna(subset=["zero"])[["timestamp", "maturity", "zero"]].reset_index(drop=True)
+
+
+# ---------------------------------------------------------------- Government of Canada auctions
+# Valet groups (verified 2026-10-08): AUC_BOND_RESULTS (nominal bonds, 1998-10 on, with ISIN and
+# each auction's bidding deadline), AUC_BOND_RR_RESULTS (real return), AUC_BOND_U_RESULTS (ultra
+# long), AUC_TBILL_RESULTS (T-bills), AUC_SCHED (the CURRENT quarterly bond auction schedule),
+# GOC_OUTSTANDING / GOC_OUTSTANDING_2025 (every outstanding bill and bond by ISIN, daily, 2025 on;
+# the 2025 group's fields carry a "_2025" suffix).
+VALET_GROUP = "https://www.bankofcanada.ca/valet/observations/group/{group}/json"
+SCHEDULE_PAGE = ("https://www.bankofcanada.ca/markets/government-securities-auctions/calls-for-tenders-and-results/"
+                 "bond-auction-schedule/")
+
+
+def fetch_valet_group(group: str) -> dict:
+    import json
+    req = urllib.request.Request(VALET_GROUP.format(group=group), headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+        return json.loads(resp.read().decode("utf-8"))

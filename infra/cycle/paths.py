@@ -28,6 +28,11 @@ class CyclePaths:
     bund_prices_coverage: Path
     de_auctions_dir: Path
     de_issuance_plan_dir: Path
+    jp_auction_files_dir: Path
+    jp_auctions_dir: Path
+    ca_auctions_dir: Path
+    ca_outstanding_dir: Path
+    ca_auction_plan_dir: Path
     boe_ois_coverage: Path
     contracts_file: Path
     defs_coverage: Path
@@ -101,6 +106,11 @@ class CyclePaths:
             bund_prices_coverage=config.DAILY_BUND_PRICES_COVERAGE_FILE,
             de_auctions_dir=config.DE_AUCTIONS_DIR,
             de_issuance_plan_dir=config.DE_ISSUANCE_PLAN_DIR,
+            jp_auction_files_dir=config.JP_AUCTION_FILES_DIR,
+            jp_auctions_dir=config.JP_AUCTIONS_DIR,
+            ca_auctions_dir=config.CA_AUCTIONS_DIR,
+            ca_outstanding_dir=config.CA_OUTSTANDING_DIR,
+            ca_auction_plan_dir=config.CA_AUCTION_PLAN_DIR,
             boe_ois_coverage=config.DAILY_BOE_OIS_COVERAGE_FILE,
             contracts_file=config.FUTURES_CONTRACTS_FILE,
             defs_coverage=config.FUTURES_DEFS_COVERAGE_FILE,

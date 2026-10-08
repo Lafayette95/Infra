@@ -455,6 +455,19 @@ DE_AUCTIONS_DIR = RAW_DATA_ROOT / "DE_Auctions"  # the Finanzagentur issuance hi
 # quarterly updates) and live/<UTC time>__<site|wayback>.html (the "Upcoming Issues" table) -
 # a file on disk is its own coverage (infra.pipeline.de_issuance)
 DE_ISSUANCE_PLAN_DIR = RAW_DATA_ROOT / "DE_IssuancePlan"
+# Japanese Government Bond auctions (infra.pipeline.jgb_auctions): the MoF's results workbooks
+# and auction-calendar pages archived raw by version (results/<file>__<Last-Modified>.xls,
+# calendar/<yymm>[a]e__<Last-Modified>.html - a file on disk is its own coverage), and the
+# parsed auctions (keys timestamp = auction day, security_id), rebuilt from the latest files
+JP_AUCTION_FILES_DIR = RAW_DATA_ROOT / "JP_AuctionFiles"
+JP_AUCTIONS_DIR = RAW_DATA_ROOT / "JP_Auctions"
+# Government of Canada auctions and outstanding securities (infra.pipeline.goc_auctions): the
+# Bank of Canada's Valet results (keys timestamp = auction day, isin, kind), the daily
+# outstanding snapshots by ISIN (2025 on; keys timestamp = as-of day, isin) and the bond auction
+# SCHEDULE archived raw whenever it changes (<UTC time>__<valet|wayback>.<json|html>)
+CA_AUCTIONS_DIR = RAW_DATA_ROOT / "CA_Auctions"
+CA_OUTSTANDING_DIR = RAW_DATA_ROOT / "CA_Outstanding"
+CA_AUCTION_PLAN_DIR = RAW_DATA_ROOT / "CA_AuctionPlan"
 RELEASES_DIR = RAW_DATA_ROOT / "Releases"
 RELEASES_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "releases.parquet"
 # Economic-calendar rows (actual / consensus / previous per release, as the calendar page

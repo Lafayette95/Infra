@@ -59,7 +59,12 @@ def backfill_daily_release_calendar(start, end, *, paths: CyclePaths | None = No
                                          treasury_fetch=TREASURY_SCHEDULE_FETCH, with_fred=have_key,
                                          auctions_root=paths.tsy_auctions_dir, contracts_file=paths.contracts_file,
                                          daily_root=paths.daily_futures_dir, de_plan_root=paths.de_issuance_plan_dir,
-                                         de_auctions_root=paths.de_auctions_dir, errors=errors)
+                                         de_auctions_root=paths.de_auctions_dir,
+                                         jp_files_root=paths.jp_auction_files_dir, jp_auctions_root=paths.jp_auctions_dir,
+                                         ca_roots={"auctions_root": paths.ca_auctions_dir,
+                                                   "outstanding_root": paths.ca_outstanding_dir,
+                                                   "plan_root": paths.ca_auction_plan_dir},
+                                         errors=errors)
     except Exception as exc:
         n, errors["calendar"] = 0, f"{type(exc).__name__}: {exc}"
     if not have_key:
@@ -169,10 +174,44 @@ def _check_de_plan(ctx: StepContext):
     return False, f"no German auction planned in the next {DE_PLAN_HORIZON_DAYS} days (plan stale?)", None
 
 
+JP_PLAN_HORIZON_DAYS = 14   # JGB / T-bill auctions run every week, year-end included
+
+
+def _check_jp_plan(ctx: StepContext):
+    """The archived JGB auction calendar, as known now, has an auction in the next
+    ``JP_PLAN_HORIZON_DAYS`` - else the calendar pages stopped updating."""
+    from infra.pipeline.jgb_auctions import plan_state
+    now = pd.Timestamp.now().normalize()
+    plan = plan_state(now, root=ctx.paths.jp_auction_files_dir)
+    soon = plan[plan["auction_date"] <= now + pd.Timedelta(days=JP_PLAN_HORIZON_DAYS)]
+    if len(soon):
+        return True, f"{len(soon)} JGB auction(s) planned in the next {JP_PLAN_HORIZON_DAYS} days", None
+    return False, f"no JGB auction planned in the next {JP_PLAN_HORIZON_DAYS} days (calendar stale?)", None
+
+
+CA_PLAN_HORIZON_DAYS = 21   # Canadian bond auctions run about weekly; the schedule covers the quarter
+
+
+def _check_ca_plan(ctx: StepContext):
+    """The archived Canadian bond schedule, as known now, has an auction in the next
+    ``CA_PLAN_HORIZON_DAYS`` - else the schedule stopped updating (except late December)."""
+    from infra.pipeline.goc_auctions import plan_state
+    now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    if (now.month, now.day) >= (12, 15):
+        return True, "year-end: few Canadian bond auctions expected", None
+    plan = plan_state(now, root=ctx.paths.ca_auction_plan_dir)
+    soon = plan[plan["auction_date"] <= now.normalize() + pd.Timedelta(days=CA_PLAN_HORIZON_DAYS)]
+    if len(soon):
+        return True, f"{len(soon)} Canadian bond auction(s) scheduled in the next {CA_PLAN_HORIZON_DAYS} days", None
+    return False, f"no Canadian bond auction scheduled in the next {CA_PLAN_HORIZON_DAYS} days (schedule stale?)", None
+
+
 CALENDAR_CHECKS = (
     Check("calendar_refreshed", _errors_check("release_calendar", "release calendar"), severity=Severity.WARN),
     Check("calendar_rules_valid", _check_rules, severity=Severity.WARN),
     Check("de_auction_plan", _check_de_plan, severity=Severity.WARN),
+    Check("jp_auction_plan", _check_jp_plan, severity=Severity.WARN),
+    Check("ca_auction_plan", _check_ca_plan, severity=Severity.WARN),
 )
 AUCTION_CHECKS = (
     Check("auctions_fetch_ok", _errors_check("tsy_auctions", "treasury auctions"), severity=Severity.WARN),

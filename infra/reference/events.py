@@ -223,6 +223,38 @@ EVENTS: dict[str, EconEvent] = {e.id: e for e in (
        "11:30", schedule="agency_schedule", timezone="Europe/Berlin"),
     _E("DE_AUCTION_BUBILL", "German Treasury discount paper (Bubill) auction", "DE", "Finanzagentur", "auction", "W",
        "11:30", schedule="agency_schedule", timezone="Europe/Berlin"),
+    # ---------------------------------------------------------------- Japanese Government Bond auctions
+    # The MoF's auctions (2026-10-08): day-level (time None) - the bidding deadline isn't on the
+    # MoF's English pages, so it isn't verified. Dates from the results workbooks (coupon JGBs
+    # 1979 on, T-bills FY2008 on, Liquidity Enhancement 2006 on) and the monthly auction
+    # calendars (2023 on, infra.pipeline.jgb_auctions). Stage = new_issue / reopening (held).
+    *(_E(f"JP_AUCTION_{t}Y", f"Japan {t}-year JGB auction", "JP", "Ministry of Finance", "auction", "M", None,
+         schedule="agency_schedule", timezone="Asia/Tokyo") for t in (2, 5, 10, 20, 30, 40)),
+    _E("JP_AUCTION_TBILL", "Japan Treasury Discount Bill auction", "JP", "Ministry of Finance", "auction", "W", None,
+       schedule="agency_schedule", timezone="Asia/Tokyo"),
+    _E("JP_AUCTION_LIQ", "Japan Liquidity Enhancement Auction (off-the-run reopenings)", "JP", "Ministry of Finance",
+       "auction", "M", None, schedule="agency_schedule", timezone="Asia/Tokyo"),
+    _E("JP_AUCTION_ILB", "Japan 10-year inflation-indexed JGB auction", "JP", "Ministry of Finance", "auction",
+       "irregular", None, schedule="agency_schedule", timezone="Asia/Tokyo"),
+    _E("JP_AUCTION_GX", "Japan Climate Transition (GX) bond auction", "JP", "Ministry of Finance", "auction",
+       "irregular", None, schedule="agency_schedule", timezone="Asia/Tokyo"),
+    _E("JP_AUCTION_OTHER", "Japan other JGB auction (4/6-year, 15-year floating, 3-year discount; discontinued)",
+       "JP", "Ministry of Finance", "auction", "irregular", None, schedule="agency_schedule", timezone="Asia/Tokyo"),
+    # ---------------------------------------------------------------- Government of Canada auctions
+    # The Bank of Canada's auctions (2026-10-08). Bidding deadline 12:00 Ottawa for bonds and
+    # 10:30 for T-bills, from the results data itself (each auction's own deadline - 12:30 /
+    # 10:30 for bonds in early years - is used for held auctions). Dates from the Valet results
+    # (1998 on) and the quarterly bond auction schedule (infra.pipeline.goc_auctions).
+    *(_E(f"CA_AUCTION_{t}Y", f"Government of Canada {t}-year bond auction", "CA", "Bank of Canada", "auction", "M",
+         "12:00", schedule="agency_schedule", timezone="America/Toronto") for t in (2, 3, 5, 7, 10, 30)),
+    _E("CA_AUCTION_RRB", "Government of Canada Real Return Bond auction (none since 2022)", "CA", "Bank of Canada",
+       "auction", "Q", "12:00", schedule="agency_schedule", timezone="America/Toronto"),
+    _E("CA_AUCTION_ULTRA", "Government of Canada ultra-long bond auction (2014-2022)", "CA", "Bank of Canada",
+       "auction", "irregular", "12:00", schedule="agency_schedule", timezone="America/Toronto"),
+    _E("CA_AUCTION_TBILL", "Government of Canada Treasury bill auction", "CA", "Bank of Canada", "auction", "W",
+       "10:30", schedule="agency_schedule", timezone="America/Toronto"),
+    _E("CA_AUCTION_OTHER", "Government of Canada bond auction, other term", "CA", "Bank of Canada", "auction",
+       "irregular", "12:00", schedule="agency_schedule", timezone="America/Toronto"),
     # ---------------------------------------------------------------- US Treasury lifecycle
     # Day-level events (no time), derived from the auctions store: each auction's issue
     # (settlement) date - stage "new_issue" / "reopening" - and the day a new issue becomes

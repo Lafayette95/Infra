@@ -1440,3 +1440,11 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **Before 2024 the plans exist only as PDFs** (press releases and presentations from 2006, scattered over the old site's paths; listed by the Wayback CDX index), and 2022-2023 rests on sparse Wayback captures of the live table (45 held 2023 auctions not in the plan the day before). Option: parse the PDFs (the quarterly press releases have one table each) if a pre-2024 point-in-time calendar is needed; held auction DATES since 1999 are complete either way (`de_auctions`).
 *   **The 11:30 Frankfurt bidding deadline** is the current rule (auction-process page, 2026-10-07); older years are not verified.
 *   **A dropped line is only detected per event:** `as_of` judges a drop by a later observation of the same (event, source), so a version that removes the only planned 7y auction (and lists no other 7y line) leaves it looking scheduled. Same limitation as every release-calendar source.
+
+## JGB / Canadian auctions: open items (2026-10-08)
+*   **Where:** `infra.pipeline.jgb_auctions`, `infra.pipeline.goc_auctions` (CLAUDE.md 17).
+*   **JGB auction time unverified:** the MoF's English pages don't state the bidding deadline, so `JP_AUCTION_*` are day-level. Options: the Japanese auction announcements (入札公告) or the BoJ's JGB auction rules.
+*   **JGB plan only from 2023** (the monthly calendar pages start there); earlier auctions are known only from their own day. Older calendars may sit on the Wayback Machine (it was offline when this was built).
+*   **Liquidity Enhancement Auctions name no issues** in the results file (the reopened issues are on each result page); no amounts per reopened JGB yet.
+*   **Canadian schedule history is sparse before 2026-10** (Wayback captures every few months; 30-83% a year of 2022-2026 auctions not in the plan the day before). Options: Finance Canada's quarterly schedule press releases (dated) or the Valet `AUC_SCHED` CSV captures (5).
+*   **Canadian universe before 2025:** bonds auctioned before 1998 and matured before 2025 are missing (no auction row, no daily snapshot). The BoC's monthly "unmatured outstanding issues" CSVs (2018-01..2022-01, series codes, no ISIN) could fill part of it.

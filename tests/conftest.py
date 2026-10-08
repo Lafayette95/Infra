@@ -39,6 +39,13 @@ def _no_bond_network(monkeypatch):
     monkeypatch.setattr("infra.pipeline.de_issuance.FETCH_PAGE", lambda: "")
     monkeypatch.setattr("infra.pipeline.de_issuance.LAST_MODIFIED", no_outlook)
     monkeypatch.setattr("infra.pipeline.de_issuance.FETCH_OUTLOOK", no_outlook)
+    monkeypatch.setattr("infra.pipeline.jgb_auctions.FETCH", no_outlook)
+    monkeypatch.setattr("infra.pipeline.jgb_auctions.LAST_MODIFIED", no_outlook)
+    monkeypatch.setattr("infra.pipeline.goc_auctions.FETCH_GROUP", no_outlook)
+    # the JGB / Canadian refreshes are all network: a test run fetches nothing (a test of a
+    # refresh itself must restore ``update`` and stub FETCH / FETCH_GROUP)
+    monkeypatch.setattr("infra.pipeline.jgb_auctions.update", lambda **kw: {})
+    monkeypatch.setattr("infra.pipeline.goc_auctions.update", lambda **kw: {})
 
 
 @pytest.fixture(autouse=True)

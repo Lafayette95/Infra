@@ -142,6 +142,57 @@ def german_auctions(*, observed=None, plan_root: Path | None = None, auctions_ro
         return rc.empty()
 
 
+def japanese_auctions(*, observed=None, files_root: Path | None = None, auctions_root: Path | None = None,
+                      errors: dict | None = None) -> pd.DataFrame:
+    """JGB auctions (``infra.pipeline.jgb_auctions``): refresh the archived workbooks and
+    calendar pages (NETWORK), then rows from the archive - the plan replayed point in time and
+    the held auctions. A fetch failure still yields the rows already archived."""
+    from infra.config import JP_AUCTION_FILES_DIR, JP_AUCTIONS_DIR
+    from infra.pipeline import jgb_auctions
+
+    errors = {} if errors is None else errors
+    files_root, auctions_root = files_root or JP_AUCTION_FILES_DIR, auctions_root or JP_AUCTIONS_DIR
+    try:
+        fetch_errors: dict = {}
+        jgb_auctions.update(root=files_root, auctions_root=auctions_root, errors=fetch_errors)
+        errors.update(fetch_errors)
+    except Exception as exc:
+        errors["jp_auctions_fetch"] = f"{type(exc).__name__}: {exc}"
+        log.warning("JGB auction refresh failed: %s", exc)
+    try:
+        return jgb_auctions.release_rows(observed=observed, root=files_root, auctions_root=auctions_root)
+    except Exception as exc:
+        errors["jp_auctions"] = f"{type(exc).__name__}: {exc}"
+        log.warning("JGB auction rows failed: %s", exc)
+        return rc.empty()
+
+
+def canadian_auctions(*, observed=None, roots: dict | None = None, errors: dict | None = None) -> pd.DataFrame:
+    """Government of Canada auctions (``infra.pipeline.goc_auctions``): refresh the Valet
+    results, outstanding securities and the bond schedule (NETWORK), then rows from disk.
+    ``roots``: ``auctions_root`` / ``outstanding_root`` / ``plan_root`` (default config)."""
+    from infra.pipeline import goc_auctions
+
+    errors = {} if errors is None else errors
+    roots = roots or {}
+    try:
+        fetch_errors: dict = {}
+        goc_auctions.update(**roots, errors=fetch_errors)
+        errors.update(fetch_errors)
+    except Exception as exc:
+        errors["ca_auctions_fetch"] = f"{type(exc).__name__}: {exc}"
+        log.warning("Canadian auction refresh failed: %s", exc)
+    try:
+        kw = {k: v for k, v in roots.items() if k in ("auctions_root",)}
+        if "plan_root" in roots:
+            kw["root"] = roots["plan_root"]
+        return goc_auctions.release_rows(observed=observed, **kw)
+    except Exception as exc:
+        errors["ca_auctions"] = f"{type(exc).__name__}: {exc}"
+        log.warning("Canadian auction rows failed: %s", exc)
+        return rc.empty()
+
+
 def derived_schedules(*, observed=None, auctions_root: Path | None = None, contracts_file: Path | None = None,
                       daily_root: Path | None = None, roll_start="2015-01-01", with_rolls: bool = True,
                       errors: dict | None = None) -> pd.DataFrame:
@@ -291,7 +342,8 @@ def refresh_release_calendar(*, root: Path = RELEASE_CALENDAR_DIR, observed=None
                              treasury_fetch=None, with_derived: bool = True, auctions_root: Path | None = None,
                              contracts_file: Path | None = None, daily_root: Path | None = None,
                              de_plan_root: Path | None = None, de_auctions_root: Path | None = None,
-                             errors: dict | None = None) -> int:
+                             jp_files_root: Path | None = None, jp_auctions_root: Path | None = None,
+                             ca_roots: dict | None = None, errors: dict | None = None) -> int:
     """Parent: observe every source's schedule now (FRED's release dates; the harvested
     economic calendar, local; the validated rules' projections) and fold it in."""
     errors = {} if errors is None else errors
@@ -324,6 +376,9 @@ def refresh_release_calendar(*, root: Path = RELEASE_CALENDAR_DIR, observed=None
             log.warning("Treasury tentative auction schedule failed: %s", exc)
         rows = pd.concat([rows, german_auctions(observed=observed, plan_root=de_plan_root,
                                                 auctions_root=de_auctions_root, errors=errors)], ignore_index=True)
+        rows = pd.concat([rows, japanese_auctions(observed=observed, files_root=jp_files_root,
+                                                  auctions_root=jp_auctions_root, errors=errors)], ignore_index=True)
+        rows = pd.concat([rows, canadian_auctions(observed=observed, roots=ca_roots, errors=errors)], ignore_index=True)
     if with_derived:
         derived_errors: dict = {}
         rows = pd.concat([rows, derived_schedules(observed=observed, auctions_root=auctions_root,

@@ -54,3 +54,41 @@ def fetch_curve(start: pd.Timestamp, end: pd.Timestamp, *, fetch=fetch_csv, now:
     df = df[(df["timestamp"] >= start) & (df["timestamp"] < end)].reset_index(drop=True)
     covered = [] if df.empty else [(start, min(end, df["timestamp"].max() + pd.Timedelta(days=1)))]
     return df, covered
+
+
+# ---------------------------------------------------------------- JGB auctions
+# Verified 2026-10-08 (https://www.mof.go.jp/english/policy/jgbs/auction/): results workbooks
+# per security type (coupon JGBs 1979 on, T-bills FY2008 on, Liquidity Enhancement Auctions
+# 2006 on; updated about monthly, so the latest weeks are on the calendar pages), one auction
+# CALENDAR page per month from 2023 (``calendar/<yymm>e.htm``, its month announced at the end
+# of the month three months before) and dated ALTERATION notices (``<yymm>ae.htm``: the
+# calendar before and after the change).
+AUCTION_BASE = "https://www.mof.go.jp/english/policy/jgbs/auction/"
+RESULT_FILES = {"jgb": "past_auction_results/Auction_Results_for_JGBs.xls",
+                "tbill": "past_auction_results/Auction_Results_for_T-bills.xls",
+                "liquidity": "past_auction_results/e-ryudousei_historical_data.xls"}
+CALENDAR_INDEX = AUCTION_BASE + "calendar/index.htm"
+# the JAPANESE calendar publishes each month ahead (December 2026 on 2026-09-29, the end of the
+# month three months before); the English pages only appear once the month has started
+AUCTION_BASE_JA = "https://www.mof.go.jp/jgbs/auction/"
+CALENDAR_INDEX_JA = AUCTION_BASE_JA + "calendar/index.htm"
+
+
+def fetch_url(url: str) -> tuple[bytes, str | None]:
+    """The body and its ``Last-Modified`` header; raises on an HTTP error (a 404 month)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+        return resp.read(), resp.headers.get("Last-Modified")
+
+
+def last_modified(url: str) -> str | None:
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+        return resp.headers.get("Last-Modified")
+
+
+def calendar_links(index_html: str) -> list[str]:
+    """Page codes linked from a calendar index: ``<yymm>`` / ``<yymm>a`` (Japanese),
+    ``<yymm>e`` / ``<yymm>ae`` (English)."""
+    import re
+    return sorted(set(re.findall(r"calendar/(\d{4}a?e?)\.htm", index_html)))
