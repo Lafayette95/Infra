@@ -221,10 +221,10 @@ def compute_eurex_basis(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePath
     """Eurex German bond-futures basis (``infra.pipeline.eurex_basis``): per day, front-two
     contract and deliverable, gross basis, implied repo, CTD and futures DV01 - at the
     Bundesbank's 11:15 Frankfurt price time, futures from the intraday step's bbo-1m."""
-    from infra.cycle.intraday import IntradayPaths
+    from infra.cycle.intraday import _ipaths
     from infra.pipeline.eurex_basis import compute_basis
     df = compute_basis(start, end, baskets_root=paths.eurex_baskets_dir, prices_root=paths.bund_prices_dir,
-                       auctions_root=paths.de_auctions_dir, bbo_root=IntradayPaths.default().bbo_dir,
+                       auctions_root=paths.de_auctions_dir, bbo_root=_ipaths(paths).bbo_dir,
                        daily_root=paths.daily_futures_dir)
     days = sorted(pd.to_datetime(df["timestamp"]).unique()) if len(df) else []
     return df, {"days": days, "empty_days": {}}
@@ -279,10 +279,10 @@ def compute_swap_closes(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePath
     days = [d for d in pd.date_range(lo, end) if d in have]
     from infra.analytics.sofr_curve import business_days
     bdays = set(business_days(lo, end))  # federal holidays out: a holiday file has few or no prints
-    from infra.cycle.intraday import IntradayPaths
+    from infra.cycle.intraday import _ipaths
     from infra.pipeline.swap_hedge import build_hedge_book
     book = build_hedge_book(lo, end, daily_root=paths.daily_futures_dir, bonds_root=paths.daily_bonds_dir,
-                            bbo_root=IntradayPaths.default().bbo_dir, contracts_file=paths.contracts_file) if days else None
+                            bbo_root=_ipaths(paths).bbo_dir, contracts_file=paths.contracts_file) if days else None
     frames, empty, cache = [], {}, {}
     for d in days:
         for k in [k for k in cache if k < d]:

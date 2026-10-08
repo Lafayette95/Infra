@@ -1421,3 +1421,9 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **The BoC fitted zero curve** (0.25-30y, from 1986) is published weekly with a two-week lag: usable as a history / validation source, not daily.
 *   **No per-bond prices found yet; no futures:** Montreal Exchange (CGB) isn't on Databento.
 
+## Bundesbank official curve: occasional curve-wide jumps (2026-10-07)
+*   **Where:** `yield_bundesbank` (`DE_BOND_<t>y` from the Bundesbank's Svensson parameters, CLAUDE.md 13).
+*   **What:** on 6 of 1,108 days 2022-2026 (2 in 2022, 4 in late Aug 2026: 08-27, 08-31, 09-01, 09-02) the curve moves +-10-13bp at every tenor while the on-the-run Bund, our own Bund curve and the Bund future agree within a few bp. The peer bad-print rule can't see a curve-wide move.
+*   **Done:** the synchronized family uses our curve instead (CLAUDE.md 12); `yield_sources_agree` (warn) lists such days in the unsynced P&L.
+*   **Open:** treat them in `yield_bundesbank` itself (e.g. an outlier test against our curve / the OTR, then NA) - not done, since that bmk is the raw official series by design.
+

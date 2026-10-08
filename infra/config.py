@@ -224,6 +224,22 @@ BMK_YIELD_AGREE_BP = 5.0            # sources disagreeing on a day's move by mor
 # central bank's fitted curve, not the US Treasury's CMT: country -> source key.
 BMK_YIELD_OFFICIAL = {"UK": "boe", "DE": "bundesbank", "JP": "mof", "CA": "boc"}
 BMK_YIELD_OFFICIAL_TENORS = (2, 3, 5, 7, 10, 20, 30)
+# SYNCHRONIZED benchmark P&L (infra.cycle.bmk_sync, 2026-10-07): every series marked at ONE
+# instant, the SWAP_CLOSES snap BMK_SYNC_SNAP, so day D is the same 24 hours for every issuer.
+# 16:15 London = the Eurex settlement minute (17:14-17:15 Frankfurt, VWAP), ICE's Long Gilt
+# settlement and the Tradeweb/FTSE gilt close. bmk names end "@LDN1615".
+BMK_SYNC_SNAP = "LDN1615"
+BMK_SYNC_FUTURES = ("ZT", "ZF", "ZN", "TN", "ZB", "UB", "FGBS", "FGBM", "FGBL", "FGBX", "R")
+BMK_SYNC_SWAP_TENORS = (2, 5, 10, 30)
+# cash yields moved to the snap: country -> (bmk source, the source's own price time or None
+# if already at the snap, swap-hedge currency whose SWAP_HEDGES map gives each tenor's future)
+BMK_SYNC_CASH = {"US": ("cmt", ("15:30", "America/New_York"), "USD"),
+                 # DE from OUR Bund curve (Svensson, the same 11:15 Bundesbank prices), not the
+                 # Bundesbank's own curve: that one jumped +-10-13bp curve-wide on 6 of 1,108 days
+                 # 2022-2026 where the on-the-run Bund, our curve and the Bund future agreed (4 in
+                 # late Aug 2026); vs the on-the-run its daily difference has sd 0.91bp, ours 0.35
+                 "DE": ("curve", ("11:15", "Europe/Berlin"), "EUR"),
+                 "UK": ("boe", None, None)}
 
 # Repo rates and the NY Fed's Treasury securities lending (CLAUDE.md 19), both fetched by
 # the px step. Free sources, verified 2026-10-02 (source facts in each infra/api client).

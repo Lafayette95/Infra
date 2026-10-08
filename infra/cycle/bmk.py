@@ -317,7 +317,14 @@ def _run_pnl(ctx: StepContext) -> dict:
     out["yields"] = backfill_daily_yield_pnl(ctx.start, ctx.end, paths=ctx.paths)
     from infra.cycle.bmk_swap_spreads import backfill_daily_swap_spread_pnl
     out["swap_spreads"] = backfill_daily_swap_spread_pnl(ctx.start, ctx.end, paths=ctx.paths)
+    from infra.cycle.bmk_sync import backfill_daily_sync_pnl
+    out["sync"] = backfill_daily_sync_pnl(ctx.start, ctx.end, paths=ctx.paths)
     return out
+
+
+def _sync_check(name: str, ctx: StepContext):
+    from infra.cycle import bmk_sync
+    return getattr(bmk_sync, name)(ctx)
 
 
 def _swsp_check(name: str, ctx: StepContext):
@@ -340,6 +347,8 @@ PNL_STEP = Step("bmk_pnl", _run_pnl, depends_on=("px", "bmk_risk"), checks=(
     Check("yield_pnl_sane", lambda ctx: _yields_check("check_yield_sane", ctx), severity=Severity.WARN),
     Check("yield_sources_agree", lambda ctx: _yields_check("check_yield_sources_agree", ctx), severity=Severity.WARN),
     Check("swap_spread_pnl_present", lambda ctx: _swsp_check("check_present", ctx), severity=Severity.WARN),
+    Check("sync_pnl_present", lambda ctx: _sync_check("check_present", ctx), severity=Severity.WARN),
+    Check("sync_pnl_sane", lambda ctx: _sync_check("check_sane", ctx), severity=Severity.WARN),
     Check("swap_spread_pnl_sane", lambda ctx: _swsp_check("check_sane", ctx), severity=Severity.WARN),
     Check("swap_spread_sources_agree", lambda ctx: _swsp_check("check_sources_agree", ctx), severity=Severity.WARN),
 ))

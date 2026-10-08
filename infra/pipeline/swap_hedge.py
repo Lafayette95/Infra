@@ -61,7 +61,7 @@ def hedge_roots(currencies=None) -> list[str]:
 
 
 def hedge_contracts(start, end, *, roots=None, daily_root: Path = DAILY_FUTURES_DIR,
-                    contracts_file: Path = FUTURES_CONTRACTS_FILE) -> dict[str, pd.Series]:
+                    contracts_file: Path = FUTURES_CONTRACTS_FILE, bbo_root: Path = BBO_FUTURES_DIR) -> dict[str, pd.Series]:
     """Per hedge root, the contract hedged with each day of ``[start, end]`` - its
     ``.v.0`` (CLAUDE.md 5), the one the book reads quotes for. Shared by the book and by
     the cycle's quote fetch (``infra.cycle.intraday``), so the two never disagree."""
@@ -72,7 +72,7 @@ def hedge_contracts(start, end, *, roots=None, daily_root: Path = DAILY_FUTURES_
         if contracts.empty:
             continue
         if root in SWAP_HEDGE_QUOTE_RATIO:
-            front = quoted_front(list(contracts["ticker"].astype(str)), start, end)
+            front = quoted_front(list(contracts["ticker"].astype(str)), start, end, bbo_root=bbo_root)
             if len(front):
                 out[root] = front
             continue
@@ -118,9 +118,10 @@ def build_hedge_book(start, end, *, currencies=None, daily_root: Path = DAILY_FU
     history = start - _RATIO_HISTORY
     yields = read_bonds_from_disk(sorted({SWAP_HEDGE_CMT[r] for r in roots}), history, end, root=bonds_root)
     yields = yields.pivot(index="timestamp", columns="ticker", values="par_yield") if len(yields) else pd.DataFrame()
-    mapped = hedge_contracts(history, end - _ONE_DAY, roots=roots, daily_root=daily_root, contracts_file=contracts_file)
+    mapped = hedge_contracts(history, end - _ONE_DAY, roots=roots, daily_root=daily_root, contracts_file=contracts_file,
+                             bbo_root=bbo_root)
     for root in roots:
-        if root not in mapped:
+        if root not in mapped or mapped[root].dropna().empty:   # nothing mapped (no data that far back)
             continue
         contract = mapped[root]
         book.contract[root] = contract

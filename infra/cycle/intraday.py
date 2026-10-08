@@ -183,10 +183,13 @@ HEDGE_GAP_DAYS = 30  # never-fetched hedge days this far back are picked up too 
 def hedge_members(start, end, *, paths: CyclePaths) -> dict[str, tuple[pd.Timestamp, pd.Timestamp, str]]:
     """``{ticker: (first day, last day, dataset)}`` - every hedge contract over ``[start,
     end]`` per ``infra.pipeline.swap_hedge.hedge_contracts`` (the book's own choice)."""
-    from infra.config import FUTURES_ROOTS
-    from infra.pipeline.swap_hedge import hedge_contracts
+    from infra.config import FUTURES_ROOTS, SWAP_HEDGE_QUOTE_RATIO
+    from infra.pipeline.swap_hedge import hedge_contracts, hedge_roots
     out = {}
-    for root, s in hedge_contracts(start, end, daily_root=paths.daily_futures_dir,
+    # quote-based hedge roots (Eurex, the Long Gilt) are chosen FROM stored quotes, which the
+    # foreign-futures fetch (FOREIGN_BOND_FUTURES) already brings in - nothing to fetch here
+    roots = [r for r in hedge_roots() if r not in SWAP_HEDGE_QUOTE_RATIO]
+    for root, s in hedge_contracts(start, end, roots=roots, daily_root=paths.daily_futures_dir,
                                    contracts_file=paths.contracts_file).items():
         s = s[(s.index >= pd.Timestamp(start)) & (s.index <= pd.Timestamp(end))]
         for ticker, days in s.groupby(s.astype(str)).groups.items():
