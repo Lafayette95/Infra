@@ -32,6 +32,7 @@ from infra.cycle.checks import revision_check
 from infra.cycle.core import Check, Severity, Step, StepContext
 from infra.cycle.paths import CyclePaths
 from infra.cycle.px_boc import BOC_CHECKS, backfill_daily_boc
+from infra.cycle.px_tradeweb import TRADEWEB_CHECKS, backfill_daily_tradeweb
 from infra.cycle.px_boe_ois import BOE_OIS_CHECKS, backfill_daily_boe_ois
 from infra.cycle.px_bunds import BUND_CHECKS, backfill_daily_bund_px
 from infra.cycle.px_bonds import BOND_CHECKS, backfill_daily_bond_px
@@ -169,6 +170,8 @@ def backfill_daily_px_data(
         # German Federal securities per ISIN (Bundesbank BBSSY + the Finanzagentur's reference)
         out["bunds"] = backfill_daily_bund_px(start, end, paths=paths, force_refetch=force_refetch,
                                               fetch_missing=fetch_missing)
+        # FTSE-Tradeweb gilt + EuroGov closing prices per ISIN (16:15 London; the user's InSite login)
+        out["tradeweb"] = backfill_daily_tradeweb(start, end, paths=paths, fetch_missing=fetch_missing)
     if treasuries:
         out["treasuries"] = backfill_daily_treasury_px(start, end, paths=paths, force_refetch=force_refetch,
                                                        fetch_missing=fetch_missing, fetch=treasury_fetch)
@@ -398,6 +401,7 @@ PX_CHECKS = (
     *BOE_OIS_CHECKS,
     *BOC_CHECKS,
     *BUND_CHECKS,
+    *TRADEWEB_CHECKS,
     *TREASURY_CHECKS,
     *REPO_CHECKS,
 )

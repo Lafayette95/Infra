@@ -43,6 +43,15 @@ def _no_bond_network(monkeypatch):
     monkeypatch.setattr("infra.pipeline.jgb_auctions.LAST_MODIFIED", no_outlook)
     monkeypatch.setattr("infra.pipeline.goc_auctions.FETCH_GROUP", no_outlook)
     monkeypatch.setattr("infra.pipeline.goc_auctions.FETCH_DMB", no_outlook)
+
+    class NoInSite:   # the Tradeweb InSite session: a test run never logs in
+        def export(self, *a, **k):
+            return ""
+
+        def grid_rows(self, *a, **k):
+            return []
+
+    monkeypatch.setattr("infra.pipeline.tradeweb_prices.SESSION", NoInSite())
     # the JGB / Canadian refreshes are all network: a test run fetches nothing (a test of a
     # refresh itself must restore ``update`` and stub FETCH / FETCH_GROUP)
     monkeypatch.setattr("infra.pipeline.jgb_auctions.update", lambda **kw: {})

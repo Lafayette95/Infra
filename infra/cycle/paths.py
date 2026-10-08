@@ -33,6 +33,8 @@ class CyclePaths:
     ca_auctions_dir: Path
     ca_outstanding_dir: Path
     ca_auction_plan_dir: Path
+    tradeweb_raw_dir: Path
+    tradeweb_prices_dir: Path
     boe_ois_coverage: Path
     contracts_file: Path
     defs_coverage: Path
@@ -111,6 +113,8 @@ class CyclePaths:
             ca_auctions_dir=config.CA_AUCTIONS_DIR,
             ca_outstanding_dir=config.CA_OUTSTANDING_DIR,
             ca_auction_plan_dir=config.CA_AUCTION_PLAN_DIR,
+            tradeweb_raw_dir=config.TRADEWEB_RAW_DIR,
+            tradeweb_prices_dir=config.TRADEWEB_PRICES_DIR,
             boe_ois_coverage=config.DAILY_BOE_OIS_COVERAGE_FILE,
             contracts_file=config.FUTURES_CONTRACTS_FILE,
             defs_coverage=config.FUTURES_DEFS_COVERAGE_FILE,

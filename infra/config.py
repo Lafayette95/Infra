@@ -471,6 +471,18 @@ CA_AUCTION_PLAN_DIR = RAW_DATA_ROOT / "CA_AuctionPlan"
 # the Bank of Canada's monthly "unmatured domestic marketable bonds" CSVs (2018-01..2022-01, a fixed
 # history), archived raw (<yyyy-mm>.csv) and loaded into CA_OUTSTANDING_DIR
 CA_DMB_FILES_DIR = RAW_DATA_ROOT / "CA_OutstandingFiles"
+# FTSE-Tradeweb gilt + EuroGov closing prices (infra.pipeline.tradeweb_prices; the user's InSite
+# login): raw CSV exports archived (daily/<export day>.csv, history/<isin>__<from>_<to>.csv - a
+# file on disk is its own coverage), prices per (day, ISIN) x10000 nullable Int32, and the
+# universe discovered through the site's search (every ISIN seen, with first / last day)
+TRADEWEB_RAW_DIR = RAW_DATA_ROOT / "Tradeweb"
+TRADEWEB_PRICES_DIR = DAILY_ROOT / "TradewebPrices"
+# When FTSE-Tradeweb marks them (measured 2026-10-08 against futures mids minute by minute: the
+# bond's daily yield change vs the future's mid change has its smallest residual EXACTLY at 16:15
+# London - gilts vs the Long Gilt 1.05bp (1.4-1.6bp ten minutes either side, 2019-2026, both halves),
+# Bunds vs FGBL 0.41bp, BTPs vs FBTP 0.40bp (2025-03..2026-10)): the 16:15 London close, Eurex's
+# settlement minute, the BoE curves' and the Long Gilt settlement's time
+TRADEWEB_PRICES_LOCAL_TIME = ("16:15", "Europe/London")
 RELEASES_DIR = RAW_DATA_ROOT / "Releases"
 RELEASES_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "releases.parquet"
 # Economic-calendar rows (actual / consensus / previous per release, as the calendar page
