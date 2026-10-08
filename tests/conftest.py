@@ -52,6 +52,7 @@ def _no_bond_network(monkeypatch):
             return []
 
     monkeypatch.setattr("infra.pipeline.tradeweb_prices.SESSION", NoInSite())
+    monkeypatch.setattr("infra.pipeline.mx_futures.FETCH", lambda symbol, start, end: "")
     # the JGB / Canadian refreshes are all network: a test run fetches nothing (a test of a
     # refresh itself must restore ``update`` and stub FETCH / FETCH_GROUP)
     monkeypatch.setattr("infra.pipeline.jgb_auctions.update", lambda **kw: {})

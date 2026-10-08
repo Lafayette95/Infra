@@ -489,6 +489,19 @@ TRADEWEB_PRICES_DIR = DAILY_ROOT / "TradewebPrices"
 # Bunds vs FGBL 0.41bp, BTPs vs FBTP 0.40bp (2025-03..2026-10)): the 16:15 London close, Eurex's
 # settlement minute, the BoE curves' and the Long Gilt settlement's time
 TRADEWEB_PRICES_LOCAL_TIME = ("16:15", "Europe/London")
+# Montreal Exchange futures (infra.pipeline.mx_futures; Canada's bond futures aren't on Databento):
+# daily settlement / OHLC / close bid-ask / volume / open interest per contract from MX's free
+# historical-data CSV, 2009 on; raw files in MX_RAW_DIR (<root>/<year>.csv for complete years - a
+# file is its coverage - and <root>/daily/<run day>.csv), store keys timestamp = trading day, ticker
+MX_FUTURES_DIR = DAILY_ROOT / "MXFutures"
+MX_RAW_DIR = RAW_DATA_ROOT / "MX"
+MX_FUTURES_ROOTS = ("CGB",)          # 10y; CGF (5y), CGZ (2y), LGB (30y) are one word away
+MX_HISTORY_START = "2009-01-02"      # the site's first day
+# When the CGB settles (measured 2026-10-08: its daily settlement change against ZN's mid change at
+# each minute fits best over 14:53-15:00 Toronto - residual 0.282-0.283pt, worse from 15:01 and
+# away from it; 2016-2020 and 2021-2026 alike): just before 15:00 New York / Toronto - an hour
+# before the BoC benchmark yields' 16:00 mark. Cross-market, so not resolved to the minute.
+MX_SETTLEMENT_LOCAL_TIME = ("15:00", "America/Toronto")
 RELEASES_DIR = RAW_DATA_ROOT / "Releases"
 RELEASES_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "releases.parquet"
 # Economic-calendar rows (actual / consensus / previous per release, as the calendar page

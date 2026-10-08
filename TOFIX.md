@@ -1493,3 +1493,6 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **Not done:** costs in the evaluation (turnover 15-35% of gross a day), a real-data placebo, the
     off-the-run CUSIP universe (the curve fit's residuals per CUSIP - a wider cross-section).
 
+## Canada futures: daily only (2026-10-08)
+*   **Where:** `infra.pipeline.mx_futures` (CLAUDE.md 8).
+*   MX's free data is daily (settlement, OHLC, close bid / ask, volume, OI). No intraday CGB quotes: no synchronized-instant (16:15 London) CGB P&L, no futures-adjusted CAD swap closes, and the settlement time is only bracketed (14:53-15:00 Toronto, cross-market). Options: a paid intraday source (none chosen yet). No CGB DV01 / CTD either (needs Canadian per-bond prices); no bmk P&L wired yet.
