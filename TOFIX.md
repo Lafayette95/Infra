@@ -1429,7 +1429,7 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 
 ## Hedged yields / FX-implied rates: open items (2026-10-07)
 *   **Where:** `infra.pipeline.hedged_yields`, `infra.pipeline.fx_implied` (CLAUDE.md 16). v2 (`rolling_3m_fx`, FX swaps) is done and the default; v1 (`rolling_3m`, OIS + basis) stays alongside.
-*   **The OIS short ends behind v1 are wrong where the FX swaps disagree:** EUR before 2025-07-01 (no ESR settlements stored: the curve is flat to its 1y; ~70bp too low in 2024Q4). Fix: backfill ESR settlements 2024-08..2025-06 (priced 2026-10-07 at ~$0.006 for statistics; needs the user's go), then rebuild the EUR curve and everything after it in `derived`. JPY / CAD have no short end at all: a TONA / CORRA fixing source, or the FX-implied rate minus the basis.
+*   **The JPY / CAD OIS curves have no short end** (flat to the 1y), so v1's 3m is off there (JPY 40-55bp too high, CAD drifting with the BoC path); v2 doesn't depend on it. Options: a TONA / CORRA fixing source, or the FX-implied rate minus the basis. (EUR's same flaw before 2025-07, no ESR history, was fixed 2026-10-07 by backfilling ESR.)
 *   **Only 3m from FX swaps.** The matched hedge still uses OIS + basis; longer FX forwards (1y+) are thin in the archive. Revisit when the cross-currency basis is checked against them.
 *   **Thin days:** GBP has FX swaps on ~42% of days (often one swap), so the carried spread does much of the work there.
 *   **`scripts/run_daily_cycle.py --dry-run` fails before 2025-03-10** (Eurex's `definition` cost estimate starts before XEUR.EOBI's available start, 422). The estimate should be clamped like the real fetch. Not fixed: `infra/api/databento_client.py` was being edited by another session.
