@@ -13,14 +13,19 @@ bmks, names ending ``@LDN1615``; pure maths ``infra.processing.sync_pnl``. Local
 * ``yield_<src>@LDN1615`` - US CMT (15:30 New York) and our German curve (11:15 Frankfurt,
   ``yield_curve@LDN1615`` on ``DE_BOND_<t>y``) yields moved to the snap by the hedge future's move x the swap-hedge ratio; UK's BoE curve
   is already at 16:15 London (copied as is, for a complete family).
+* Canada (no intraday Canadian futures): ``yield_boc@LDN1615`` on ``CA_BOND_<t>y`` (the BoC's
+  16:00 Toronto yields) and ``fut@LDN1615`` on ``FUT_CGB`` (the MX settlement, ~15:00 Toronto),
+  each moved by its US hedge future's quote move x a point-in-time ratio (``_canada``); the
+  CGB's ``pnl_per_dv01`` uses an empirical DV01 (its settlement change on the BoC 10y change).
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from infra.config import (BMK_SYNC_CASH, BMK_SYNC_FUTURES, BMK_SYNC_SNAP, BMK_SYNC_SWAP_TENORS, BMK_YIELD_MAX_GAP_DAYS,
-                          BMK_YIELD_OFFICIAL_TENORS, FUTURES_ROOTS, SWAP_CLOSES, SWAP_HEDGES)
+from infra.config import (BMK_SYNC_CA_CASH, BMK_SYNC_CA_FUTURE, BMK_SYNC_CA_WINDOW, BMK_SYNC_CASH, BMK_SYNC_FUTURES,
+                          BMK_SYNC_SNAP, BMK_SYNC_SWAP_TENORS, BMK_YIELD_MAX_GAP_DAYS, BMK_YIELD_OFFICIAL_TENORS,
+                          FUTURES_ROOTS, MX_POINT_VALUE, SWAP_CLOSES, SWAP_HEDGES)
 from infra.cycle.core import StepContext
 from infra.cycle.paths import CyclePaths
 from infra.processing import sync_pnl as sp
@@ -138,6 +143,78 @@ def _cash(lo, hi, paths: CyclePaths, book) -> list[pd.DataFrame]:
     return out
 
 
+def _held_mids(root: str, lo, hi, local_time: str, tz: str, paths: CyclePaths, held: pd.Series) -> pd.Series:
+    """Day -> the held contract's mid at ``local_time`` (``tz``) that day."""
+    from infra.pipeline.swap_hedge import snap_mids
+    m = snap_mids(sorted(set(held.dropna())), lo, hi + _ONE_DAY, local_time, tz, bbo_root=_bbo_root(paths))
+    return pd.Series({d: m.at[d, c] for d, c in held.items() if d in m.index and c in m.columns}, dtype=float)
+
+
+def _same_contract_change(mids: pd.Series, held: pd.Series) -> pd.Series:
+    h = held.reindex(mids.index)
+    return mids.diff().where(h.eq(h.shift()))
+
+
+def _canada(lo, hi, paths: CyclePaths) -> list[pd.DataFrame]:
+    """Canada at the snap (``BMK_SYNC_CA_*``): the BoC benchmark yields (16:00 Toronto) and the
+    CGB settlement (~15:00 Toronto), each moved by its US hedge future's quote move between its
+    own time and the snap x a point-in-time ratio (``sync_pnl.rolling_beta`` of the Canadian
+    daily change on the future's mid change at the Canadian series' own time)."""
+    from infra.config import MX_SETTLEMENT_LOCAL_TIME
+    from infra.pipeline import mx_futures as mx
+    from infra.pipeline.bonds import read_bonds_from_disk
+    from infra.pipeline.swap_hedge import hedge_contracts
+    from infra.processing import mx_futures as mf
+    warm = lo - pd.offsets.BDay(BMK_SYNC_CA_WINDOW + 20)
+    src, (src_time, src_tz) = BMK_SYNC_CA_CASH
+    fut_root, fut_hedge = BMK_SYNC_CA_FUTURE
+    usd = SWAP_HEDGES["USD"]
+    tenors = [t for t in BMK_YIELD_OFFICIAL_TENORS if t in usd]
+    roots = sorted({usd[t] for t in tenors} | {fut_hedge})
+    held = hedge_contracts(warm, hi, roots=roots, daily_root=paths.daily_futures_dir, contracts_file=paths.contracts_file,
+                           bbo_root=_bbo_root(paths))
+    out = []
+    # --- the BoC benchmark yields
+    b = read_bonds_from_disk([f"CA_BOND_{t}y" for t in tenors], warm, hi + _ONE_DAY, root=paths.daily_bonds_dir)
+    if len(b):
+        b = b.assign(ticker=b["ticker"].astype(str))
+        moved = []
+        for t in tenors:
+            h = held.get(usd[t])
+            y = b[b["ticker"] == f"CA_BOND_{t}y"].set_index("timestamp")["par_yield"].astype(float).sort_index()
+            if h is None or h.empty or y.empty:
+                continue
+            at_src = _held_mids(usd[t], warm, hi, src_time, src_tz, paths, h)
+            at_snap = _held_mids(usd[t], warm, hi, *_snap(), paths, h)
+            beta = sp.rolling_beta(y.diff() * 100, _same_contract_change(at_src, h), BMK_SYNC_CA_WINDOW)  # bp per point
+            for day, v in y.items():
+                moved.append((day, f"CA_BOND_{t}y", sp.moved_yield(v, beta.get(day), at_snap.get(day), at_src.get(day))))
+        m = pd.DataFrame(moved, columns=["timestamp", "ticker", "yield"]).dropna(subset=["yield"])
+        if len(m):
+            out.append(yp.level_change_pnl(m, f"yield_{src}@{BMK_SYNC_SNAP}", max_gap_days=BMK_YIELD_MAX_GAP_DAYS,
+                                           currency="CAD"))
+    # --- the CGB future
+    f = mx.read_mx_futures(warm, hi, roots=[fut_root], root=paths.mx_futures_dir)
+    h = held.get(fut_hedge)
+    if len(f) and h is not None and not h.empty:
+        front = mf.front(f)
+        settle = f.pivot_table(index="timestamp", columns="ticker", values="settlement").sort_index()
+        fs = mx.front_series(fut_root, warm, hi, root=paths.mx_futures_dir).set_index("timestamp")
+        at_src = _held_mids(fut_hedge, warm, hi, *MX_SETTLEMENT_LOCAL_TIME, paths, h)
+        at_snap = _held_mids(fut_hedge, warm, hi, *_snap(), paths, h)
+        beta = sp.rolling_beta(fs["change"], _same_contract_change(at_src, h), BMK_SYNC_CA_WINDOW)   # points per point
+        gap = (at_snap - at_src).reindex(settle.index)
+        marks = settle.add(beta.reindex(settle.index) * gap, axis=0)
+        # empirical DV01 (points per bp): the CGB settlement change on the BoC 10y change, prior days
+        y10 = b[b["ticker"] == "CA_BOND_10y"].set_index("timestamp")["par_yield"].astype(float).sort_index() if len(b) else pd.Series(dtype=float)
+        dv = sp.rolling_beta(fs["change"], y10.diff() * 100, BMK_SYNC_CA_WINDOW).abs()
+        dv01 = pd.DataFrame({c: dv.reindex(marks.index) for c in marks.columns})
+        out.append(sp.held_futures_pnl(marks, front, dv01, ticker=f"FUT_{fut_root}", bmk=f"fut@{BMK_SYNC_SNAP}",
+                                       currency="CAD", point_value=MX_POINT_VALUE[fut_root],
+                                       max_gap_days=BMK_YIELD_MAX_GAP_DAYS))
+    return out
+
+
 def compute_sync_pnl(start, end, *, paths: CyclePaths | None = None) -> pd.DataFrame:
     from infra.pipeline.swap_hedge import build_hedge_book
     paths = paths or CyclePaths.default()
@@ -145,7 +222,8 @@ def compute_sync_pnl(start, end, *, paths: CyclePaths | None = None) -> pd.DataF
     lo, hi = start - _LOOKBACK, end
     book = build_hedge_book(lo, hi, currencies=["USD", "EUR", "GBP"], daily_root=paths.daily_futures_dir,
                             bonds_root=paths.daily_bonds_dir, bbo_root=_bbo_root(paths), contracts_file=paths.contracts_file)
-    parts = [p for p in (_futures(lo, hi, paths, book) + _swaps(lo, hi, paths) + _cash(lo, hi, paths, book)) if len(p)]
+    parts = [p for p in (_futures(lo, hi, paths, book) + _swaps(lo, hi, paths) + _cash(lo, hi, paths, book)
+                         + _canada(lo, hi, paths)) if len(p)]
     if not parts:
         return pd.DataFrame(columns=sp.PNL_COLUMNS)
     df = pd.concat(parts, ignore_index=True)

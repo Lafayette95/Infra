@@ -46,3 +46,23 @@ def moved_yield(y_pct: float, ratio_bp_per_point: float, mid_sync: float, mid_so
     if any(pd.isna(v) for v in (y_pct, ratio_bp_per_point, mid_sync, mid_source)):
         return float("nan")
     return float(y_pct + ratio_bp_per_point * (mid_sync - mid_source) / 100.0)
+
+
+def rolling_beta(y: pd.Series, x: pd.Series, window: int = 60, min_obs: int = 40) -> pd.Series:
+    """Day -> the OLS slope of ``y`` on ``x`` over the ``window`` observations BEFORE that day
+    (point in time: day t's own move is never in its ratio); NaN with fewer than ``min_obs``."""
+    df = pd.DataFrame({"y": y.astype(float), "x": x.astype(float)}).dropna().sort_index()
+    out = {}
+    for i in range(len(df)):
+        w = df.iloc[max(0, i - window):i]
+        if len(w) >= min_obs and w["x"].var() > 0:
+            out[df.index[i]] = float(np.polyfit(w["x"], w["y"], 1)[0])
+    return pd.Series(out, dtype=float)
+
+
+def moved_price(price: float, beta: float, mid_sync: float, mid_source: float) -> float:
+    """A price observed at the source's time moved to the sync instant: ``price + beta x (hedge
+    mid at the instant - hedge mid at the source's time)`` (same units as the price)."""
+    if any(pd.isna(v) for v in (price, beta, mid_sync, mid_source)):
+        return float("nan")
+    return float(price + beta * (mid_sync - mid_source))

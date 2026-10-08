@@ -280,6 +280,16 @@ SETTLEMENT_MARK_TIMES = {"GLBX.MDP3": ("14:00", "America/Chicago"), "XEUR.EOBI":
                          "IFLL.IMPACT": ("16:15", "Europe/London")}
 BMK_SYNC_FUTURES = ("ZT", "ZF", "ZN", "TN", "ZB", "UB", "FGBS", "FGBM", "FGBL", "FGBX", "R")
 BMK_SYNC_SWAP_TENORS = (2, 5, 10, 30)
+# Canada at the snap (2026-10-08): no intraday Canadian futures (the CGB isn't on Databento), so the
+# BoC benchmark yields (16:00 Toronto) and the CGB settlement (~15:00 Toronto, MX_SETTLEMENT_LOCAL_TIME)
+# are MOVED to the snap by a US future's quote move x a point-in-time ratio (the Canadian series'
+# daily change on the US future's mid change at the Canadian series' own time, prior 60 business
+# days). Checked: moving the CGB 15:00 -> 16:00 this way cut its error against the BoC 10y's 16:00
+# change from 1.42 to 1.23bp (2016-2026). Hedge per tenor: the USD swap hedges (SWAP_HEDGES["USD"]).
+BMK_SYNC_CA_CASH = ("boc", ("16:00", "America/Toronto"))
+BMK_SYNC_CA_FUTURE = ("CGB", "ZN")       # MX root, the US future that moves it
+BMK_SYNC_CA_WINDOW = 60
+MX_POINT_VALUE = {"CGB": 1000.0}      # CAD per point: CAD 100,000 nominal, 0.01 = C$10 (MX contract specs)
 # cash yields moved to the snap: country -> (bmk source, the source's own price time or None
 # if already at the snap, swap-hedge currency whose SWAP_HEDGES map gives each tenor's future)
 BMK_SYNC_CASH = {"US": ("cmt", ("15:30", "America/New_York"), "USD"),

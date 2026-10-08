@@ -38,3 +38,16 @@ def test_moved_yield_uses_the_futures_move_between_the_two_instants():
 def test_every_sync_family_is_registered_in_bmk_pnl():
     from infra.cycle.bmk import PNL_STEP
     assert {"sync_pnl_present", "sync_pnl_sane"} <= {c.name for c in PNL_STEP.checks}
+
+
+def test_rolling_beta_is_point_in_time_and_moved_price():
+    from infra.processing import sync_pnl as sp
+    days = pd.bdate_range("2026-01-01", periods=80)
+    x = pd.Series(np.sin(np.arange(80)), index=days)
+    y = 2.0 * x
+    y.iloc[-1] = 1000.0                                   # a shock on the last day ...
+    b = sp.rolling_beta(y, x, window=60, min_obs=40)
+    assert b.iloc[-1] == pytest.approx(2.0)               # ... never in that day's own ratio
+    assert days[39] not in b.index and days[40] in b.index
+    assert sp.moved_price(115.0, 1.1, 112.5, 112.0) == pytest.approx(115.55)
+    assert np.isnan(sp.moved_price(115.0, np.nan, 112.5, 112.0))

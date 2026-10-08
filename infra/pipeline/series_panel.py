@@ -255,6 +255,12 @@ def _bmk_avail(key: str) -> Availability:
                                  "calendar - on the day after one the rule is a day early")
     if src.endswith("@LDN1615"):
         if src.startswith("fut"):
+            from infra.config import MX_FUTURES_ROOTS
+            if ticker.removeprefix("FUT_") in MX_FUTURES_ROOTS:
+                return Availability("day", 1, "10:00", "America/Toronto", calendar="weekday", verified=False,
+                                    note="the CGB at the snap is its MX settlement (~15:00 Toronto, AFTER the snap) "
+                                         "moved by a US future: known once MX publishes it - its historical data "
+                                         "runs to the day before (conservative)")
             return Availability("day", 0, "16:16", "Europe/London", calendar="weekday",
                                 note="futures mids at the 16:15 London snap: known then")
         if src.startswith("ois"):
