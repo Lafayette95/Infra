@@ -523,6 +523,13 @@ specification). Use case (a) of 0a, run live.
     fixed, size fitted), swappable gates and evaluations, families with a per-fit-date FDR gate; run
     kind `forecast`. Read that file before touching it.
 
+## 15. Mean reversion of factor residuals (framework C's trading part)
+*   **Its own sub-project, `infra/models/meanrev/`, with its own `CLAUDE.md`**: wraps a factor model
+    (PCA / similarity / regime PCA), re-applies each fit to a trailing window to get the residual
+    LEVELS, OU per residual or pooled with gates, the three fit modes (reversion stated), positions
+    netted into the instruments, and the OU trade metrics (`infra/analytics/ou.py`: s-score, horizon
+    Sharpe, first-passage times, target-before-stop, optimal entry); run kind `meanrev`.
+
 ## 13. Conditional autocorrelation (framework B1)
 *   **Its own sub-project, `infra/models/autocorr/`, with its own `CLAUDE.md`**: does a third
     variable decide whether an instrument chases or fades? Buckets plus an interaction regression,

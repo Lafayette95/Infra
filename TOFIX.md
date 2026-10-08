@@ -1472,3 +1472,24 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **History pulls are slow and one ISIN at a time:** ~1-10 minutes per security when the site errors (retries, splits). Gilts (conventional + index-linked, ~150 since 2017) first; EuroGov limited to France and Italy at first (~250 ISINs from 2024); strips, bills and the other EuroGov issuers not pulled.
 *   **Nothing consumes the prices yet:** the UK structure (on/off-the-run map, our fitted gilt curve, Long Gilt basket / CTD / DV01 replacing the regression DV01) and the French / Italian ones are to be built on them; the Eurex CF formula for FOAT / FBTP is still unverified.
 *   **EuroGov's early days are patchy** (2024: days with no EuroGov lines, one day doubled); judge coverage per day before fitting curves on them.
+
+## Meanrev: open items from the first build
+
+**Found:** 2026-10-08. **Where:** `infra/models/meanrev`, `infra/models/stats/regime_pca.py`. **Status:** open.
+
+*   **A regime PCA rebuilt from its params does not reproduce its IN-SAMPLE residuals** (only the
+    out-of-sample ones): `RegimePCA.from_params` + `restore_path` re-derives the regime model's
+    in-sample path, which differs from the live fit's. Every model run so far only predicts rows after
+    its fit, so it never showed; the mean-reversion model needed in-sample residuals (the level over
+    the window) and broke incremental == rebuild until it stored the level at the fit date
+    (`level_end`) instead. Anything else that re-applies a stored regime-PCA fit to past rows must do
+    the same, or `restore_path` must reproduce the live fit's path exactly (store it, or recompute it
+    the way the fit does).
+*   **The gates prefer the wrong residuals:** the ADF / half-life gates keep ~1/3 of residual-fits with
+    a 4.5-day median half-life and do worse than trading every reverting residual (`prior`). Options:
+    a minimum half-life well above the mark noise's, a gate on the expected move net of costs
+    (`sharpe_h` above a threshold) instead of significance, or estimating the OU on a smoother
+    (e.g. weekly) sampling.
+*   **Not done:** costs in the evaluation (turnover 15-35% of gross a day), a real-data placebo, the
+    off-the-run CUSIP universe (the curve fit's residuals per CUSIP - a wider cross-section).
+

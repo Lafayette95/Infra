@@ -34,7 +34,7 @@ from infra.models.walk_forward import WalkForwardResult, refit_dates, walk_forwa
 
 log = logging.getLogger(__name__)
 
-KINDS = ("regression", "pca", "regime_pca", "event_study", "autocorr", "forecast")
+KINDS = ("regression", "pca", "regime_pca", "event_study", "autocorr", "forecast", "meanrev")
 
 
 def _tuplify(x):
@@ -94,6 +94,9 @@ class RunConfig:
         if self.kind == "forecast":
             kw.update(target=self.series[0])          # regressors come from the named spec (not JSON-serialisable)
             return kw
+        if self.kind == "meanrev":                    # series = the K instruments; regime_series = the N / states
+            kw.update(columns=tuple(self.series), regime_columns=tuple(self.regime_series))
+            return kw
         if self.kind == "regression":
             kw.update(y=self.series[0], x=tuple(self.series[1:]))
         else:
@@ -109,16 +112,19 @@ class RunConfig:
         from infra.models.autocorr.model import make_autocorr
         from infra.models.event_study.model import make_event_study
         from infra.models.forecast.model import make_forecast
+        from infra.models.meanrev.model import make_meanrev
         maker = {"regression": make_regression, "pca": make_pca, "regime_pca": make_regime_pca,
-                 "event_study": make_event_study, "autocorr": make_autocorr, "forecast": make_forecast}[self.kind]
+                 "event_study": make_event_study, "autocorr": make_autocorr, "forecast": make_forecast,
+                 "meanrev": make_meanrev}[self.kind]
         return maker(self.spec, **self.model_kwargs())
 
     def from_params(self, params: pd.DataFrame):
         from infra.models.autocorr.model import ConditionalAutocorr
         from infra.models.event_study.model import EventStudy
         from infra.models.forecast.model import ForecastModel
+        from infra.models.meanrev.model import MeanRevModel
         cls = {"regression": Regression, "pca": PCA, "regime_pca": RegimePCA, "event_study": EventStudy,
-               "autocorr": ConditionalAutocorr, "forecast": ForecastModel}[self.kind]
+               "autocorr": ConditionalAutocorr, "forecast": ForecastModel, "meanrev": MeanRevModel}[self.kind]
         return cls.from_params(params, self.spec, **self.model_kwargs())
 
 
