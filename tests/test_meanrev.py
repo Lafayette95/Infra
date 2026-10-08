@@ -108,3 +108,14 @@ def test_pooled_point_in_time_and_round_trip():
     pd.testing.assert_frame_equal(a.fitted_.ou, b.fitted_.ou)
     r = MeanRevModel.from_params(a.params(), _spec())
     pd.testing.assert_frame_equal(r.predict(data, start=cut), a.predict(data, start=cut))
+
+
+def test_rank_signal_fades_the_cross_sectional_rank():
+    panel, _ = _panel(b=0.9)
+    m, data = _fit(panel, fit_mode="exante", gates=(), cross_section="rank")
+    out = m.predict(data, start="2019-12-31")
+    z = out[[f"z:{c}" for c in COLS]]
+    sig = out[[f"signal:{c}" for c in COLS]]
+    assert np.allclose(sig.sum(axis=1), 0.0) and sig.abs().max().max() == pytest.approx(1.0)
+    hi = z.to_numpy().argmax(axis=1)
+    assert (sig.to_numpy()[np.arange(len(sig)), hi] == -1.0).all()         # the richest is shorted fully

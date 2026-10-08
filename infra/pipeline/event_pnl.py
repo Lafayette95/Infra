@@ -30,7 +30,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from infra.config import (BBO_FUTURES_DIR, BMK_ROOT, DAILY_FUTURES_DIR, FUTURES_CONTRACTS_FILE, FUTURES_ROOTS,
+from infra.config import (BBO_FUTURES_DIR, BMK_ROOT, BMK_YIELD_MAX_GAP_DAYS, DAILY_FUTURES_DIR, FUTURES_CONTRACTS_FILE, FUTURES_ROOTS,
                           TRADING_HOURS)
 from infra.pipeline.bbo import read_bbo_from_disk
 from infra.relative.symbology import parse_relative
@@ -213,14 +213,24 @@ def _structures_bbo(structures, grid, *, structure_set: str = "ust_layers", stat
     return pd.DataFrame(out, index=points)
 
 
-def _on_daily_grid(by_day: pd.DataFrame, grid) -> pd.DataFrame:
+def _on_daily_grid(by_day: pd.DataFrame, grid, *, carried_days: int | None = None) -> pd.DataFrame:
     """A trading-day x instrument frame -> the grid's points (one per day): day D's move at D's
-    point. A grid day without a row is NaN."""
+    point. A grid day without a row is NaN - unless ``carried_days``: a source whose next row carries
+    a skipped day's move (the yield bmks diff against the last PRICED day, so a bond-market holiday
+    the market calendar trades - Columbus, Veterans Day - has no row and its move lands on the next
+    one) gets 0 there when its next row is at most that many calendar days later (a longer gap is
+    a real hole: the bmk stores no change across more than ``BMK_YIELD_MAX_GAP_DAYS``)."""
     points = grid.instants()
     days = pd.DatetimeIndex(grid.days)
     out = by_day.copy()
     out.index = pd.DatetimeIndex(out.index).normalize()
     out = out[~out.index.duplicated(keep="last")].reindex(days)
+    if carried_days is not None:
+        for c in out.columns:
+            have = out[c].notna()
+            nxt = pd.Series(np.where(have, days, pd.NaT), index=days, dtype="datetime64[ns]").bfill()
+            fill = ~have & ((nxt - days.to_series(index=days)) <= pd.Timedelta(days=carried_days))
+            out.loc[fill, c] = 0.0
     out.index = points
     return out
 
@@ -241,7 +251,23 @@ def _yield_settle(instruments, grid, *, source: str, bmk_root: Path | None = Non
     legs = raw.pivot_table(index="timestamp", columns="ticker", values="pnl_per_dv01").reindex(columns=tickers)
     # a structure = its legs' bp x DV01 weights; NaN if any leg is missing that day
     wide = pd.DataFrame({i: legs[list(w)].mul(pd.Series(w)).sum(axis=1, min_count=len(w)) for i, w in weights.items()})
-    return _on_daily_grid(wide, grid)
+    return _on_daily_grid(wide, grid, carried_days=BMK_YIELD_MAX_GAP_DAYS)
+
+
+def _series(instruments, grid, **kw) -> pd.DataFrame:
+    """Daily P&L of ANY stored daily-MOVES series, by its ``infra.pipeline.series_panel`` id - e.g.
+    ``bmk:yield_cmt@LDN1615:US_BOND_10y``, ``bmk:yield_boe@LDN1615:CURVE__UK_BOND_5y__UK_BOND_30y``,
+    ``bmk:swsp_cmt:US_SWSP_10y``, ``bmk:fut@LDN1615:FUT_ZN``: one reader for every series the other
+    models use, so a study names exactly where each instrument comes from. Level series are refused
+    (an event window sums daily moves). A missing grid day counts 0 when the next row carries its
+    move (the bmk P&L diffs against the last priced day), as for the yield sources."""
+    from infra.pipeline.series_panel import kind_of, read_panel
+    bad = [i for i in instruments if kind_of(i) != "moves"]
+    if bad:
+        raise ValueError(f"SERIES_BPS needs daily-moves series (bp P&L), not levels: {bad}")
+    days = pd.DatetimeIndex(grid.days)
+    wide = read_panel(list(instruments), days.min(), days.max())
+    return _on_daily_grid(wide.reindex(columns=list(instruments)), grid, carried_days=BMK_YIELD_MAX_GAP_DAYS)
 
 
 def _futures_settle(instruments, grid, **kw) -> pd.DataFrame:
@@ -275,6 +301,9 @@ PNL_SOURCES: dict[str, PnlSource] = {
                                "daily -dy of the on-the-run bond held the previous day (bmk yield_otr)", "daily"),
     "YIELD_BPS_CURVE": PnlSource(lambda inst, grid, **kw: _yield_settle(inst, grid, source="curve", **kw), "bp",
                                  "daily -dy of our fitted curve's par yield (bmk yield_curve)", "daily"),
+    "SERIES_BPS": PnlSource(lambda inst, grid, **kw: _series(inst, grid, **kw), "bp",
+                            "any stored daily-moves series by its series_panel id (bmk P&L of any bmk, incl. the "
+                            "synchronized 16:15 London ones)", "daily"),
     "FUTURE_BPS_SETTLE": PnlSource(lambda inst, grid, **kw: _futures_settle(inst, grid, **kw), "bp",
                                    "settlement-to-settlement bp of the mapped futures contract", "daily"),
     "STRUCT_BPS_SETTLE": PnlSource(lambda inst, grid, **kw: _structures_settle(inst, grid, **kw), "bp",

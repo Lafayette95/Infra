@@ -124,6 +124,11 @@ class EventStudy(Model):
         grid = ew.make_grid(self.cycle, business_days(days.min(), last + pd.Timedelta(days=45),
                                                       self.cycle.calendar))
         windows = ew.resolve(self.code, occurrences, grid, max_gap=self.spec.max_pair_gap)
+        if self.spec.months:          # seasonality: only windows ENDING in these calendar months are events
+            end_month = pd.DatetimeIndex(windows["end"]).month
+            off = windows["legal"].astype(bool).to_numpy() & ~np.isin(end_month, list(self.spec.months))
+            windows.loc[off, "legal"] = False
+            windows.loc[off, "reason"] = "outside_months"
         windows["pattern"] = ew.pattern_of(windows).where(windows["legal"], "")
         windows["kind"] = "event"
         plac = ew.placebo(windows, grid)

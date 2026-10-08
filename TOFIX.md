@@ -1490,6 +1490,12 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
     a minimum half-life well above the mark noise's, a gate on the expected move net of costs
     (`sharpe_h` above a threshold) instead of significance, or estimating the OU on a smoother
     (e.g. weekly) sampling.
+*   **No synchronized history for DE before 2025-06 or for CA at all**, so a cross-country residual
+    test at one instant covers US + UK only. The mixed-time version (Bundesbank 11:15 Frankfurt, BoC
+    16:00 Toronto) shows next-day lead-lags of 0.2-0.45 and its mean reversion is largely timing
+    (infra/models/meanrev/CLAUDE.md 3). Options: per-bond Bund prices at a London instant before 2025
+    (none free found so far), Canadian bond futures (CGB on Montreal - not in our data) to move the BoC
+    yields to 16:15 London the way US / DE cash is moved by futures.
 *   **Not done:** costs in the evaluation (turnover 15-35% of gross a day), a real-data placebo, the
     off-the-run CUSIP universe (the curve fit's residuals per CUSIP - a wider cross-section).
 

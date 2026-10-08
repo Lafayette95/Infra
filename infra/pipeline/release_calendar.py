@@ -193,6 +193,10 @@ def canadian_auctions(*, observed=None, roots: dict | None = None, errors: dict 
         return rc.empty()
 
 
+CALENDAR_FROM = "2000-01-01"        # calendar anchors: generated from here ...
+CALENDAR_YEARS_AHEAD = 2            # ... to this far past the observation day
+
+
 def derived_schedules(*, observed=None, auctions_root: Path | None = None, contracts_file: Path | None = None,
                       daily_root: Path | None = None, roll_start="2015-01-01", with_rolls: bool = True,
                       errors: dict | None = None) -> pd.DataFrame:
@@ -217,6 +221,9 @@ def derived_schedules(*, observed=None, auctions_root: Path | None = None, contr
             log.warning("derived event dates %s failed: %s", name, exc)
 
     part("fomc", lambda: ed.fomc_rows(EVENTS["US_FOMC_DECISION"], FOMC_MEETINGS, observed))
+    from infra.reference.events import CALENDAR_RULES
+    part("calendar", lambda: ed.calendar_rows(EVENTS, CALENDAR_RULES, CALENDAR_FROM,
+                                              observed + pd.DateOffset(years=CALENDAR_YEARS_AHEAD), observed))
     for event_id, meetings in CENTRAL_BANK_MEETINGS.items():
         part(event_id, lambda e=event_id, m=meetings: ed.central_bank_rows(EVENTS[e], m, observed))
 

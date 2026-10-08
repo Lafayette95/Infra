@@ -302,13 +302,20 @@ class MeanRevModel(Model):
                 ok = np.isfinite(r["kappa"]) and r["kappa"] > 0
                 S[c] = (lev[c] - r["m"]) / r["sd_eq"] if ok else lev[c] * np.nan
         S = pd.DataFrame(S, index=lev.index)
+        live = T["tradable"].reindex(self.residuals).fillna(0.0)
+        live = list(live[live > 0].index)
         if sp.cross_section == "demean":
-            live = T["tradable"].reindex(self.residuals).fillna(0.0)
-            S = S.sub(S.loc[:, live[live > 0].index].mean(axis=1), axis=0)
+            S = S.sub(S.loc[:, live].mean(axis=1), axis=0)
+        elif sp.cross_section == "rank":
+            R = S.loc[:, live].rank(axis=1)                       # 1 = lowest score
+            n = R.notna().sum(axis=1)
+            S = ((R.sub((n + 1) / 2, axis=0)).div(((n - 1) / 2).where(n > 1), axis=0)).reindex(columns=S.columns)
         return S
 
     def _signals(self, S: pd.DataFrame, state0: np.ndarray | None = None) -> pd.DataFrame:
         sp = self.spec
+        if sp.cross_section == "rank":                            # the rank IS the size: fade it as is
+            return -S
         if sp.signal_rule == "linear":
             return (-S / sp.entry).clip(-1.0, 1.0)
         out = np.zeros(S.shape)                    # threshold: a path from state0 (flat at the window start)

@@ -69,6 +69,41 @@ fixed-income RV mean-reversion chapter).
 *   **2021-10..2026-09 (the similarity sample):** everything ~0 or negative (best prior +0.18); the
     similarity- and regime-weighted factors add nothing (as with the simple fades, stats CLAUDE.md 7a).
 *   **Window 60 trades nothing** under the gated specs: 59 transitions fall short of `min_obs` 60.
+*   **Cross-country (2026-10-08; per country the 10y, 5s30s curve and 5s10s30s fly, bmk P&L; eval
+    2017-07..2026-10, gross):**
+    *   **Synced US + UK** (`yield_cmt@LDN1615`, `yield_boe@LDN1615`, one 16:15 London instant): best
+        with a CORRELATION PCA and `prior`, Sharpe 0.62-0.67 (2-3 factors, window 250), ~0.8-1.2 in
+        2015-22 and ~0 / negative since 2023; covariance PCA 0.1-0.3; the strict gates ~0. Fragile
+        across settings.
+    *   **Mixed-time 4 countries** (+ DE Bundesbank 11:15 Frankfurt, CA BoC 16:00 Toronto): higher
+        and steadier (0.5-0.85, positive in every sub-period) - but about HALF the P&L is DE, and the
+        markets' marks are hours apart: US(t) and UK(t) predict DE(t+1) at correlation 0.38, CA(t)
+        predicts US(t+1) at 0.18 and DE(t+1) at 0.45 (a market marked earlier catches up the next day;
+        one marked later leads). Correction (2026-10-08): the evaluation already skips a day (decided on
+        data through t, first earns t+2), and the lead-lags are ~0 at 2 days (|corr| <= 0.08 for the
+        curves), so the catch-up itself is not monetised; the test is to lengthen the gap - a result
+        that survives 2-3 skipped days is not timing (below).
+    *   **Synced US + UK + DE** (DE's synced history only from 2025-06): 185 evaluation days - noise.
+*   **Separate cross-sections, PC1-only residuals (user, 2026-10-08):** each set its own PCA and book
+    - duration (the 10ys), curves (5s30s), flies (5s10s30s) - and everything together; new signal
+    `cross_section="rank"` (spec `exante_rank`: fade the cross-sectional RANK of the levels' z, scaled
+    to [-1, 1]; with two instruments it is the sign of the spread). Synced US + UK (one residual per
+    set = a beta-weighted box), Sharpe 2017-07..2026-10, gross:
+    *   **Curves (US vs UK 5s30s box): the one that works** - ex ante z-fade 0.71-1.08, rank 0.61-1.21,
+        positive in every sub-period incl. 2023-26 (rank, correlation PCA, window 250: 1.14 / 1.42 /
+        1.08); half-life ~20 days.
+    *   Flies: 0.3-0.7, fading in 2023-26. Duration (the 10y spread): none (half-life 110+ days - it
+        trends). Everything together: 0.6-0.7 only with `prior`. The strict gates are again the worst.
+    *   The mixed-time 4-country sets: curves 0.1-0.95, flies 0.4-0.8, duration ~0 - timing caveat above.
+    *   ~130 configurations were run, so any single best number is selected; the curve box is the
+        result that holds across signals, windows and PCA types.
+*   **Curves across all four, asynchronous (DE Bundesbank, CA BoC), PC1, correlation PCA, gaps of 1 / 2 / 3
+    skipped days (2026-10-08):** the curves' lead-lags are 0.15-0.26 at one day (into DE; from CA) and
+    ~0 at two. US vs UK stays the best and survives the longer gaps (ex-ante z-fade 0.88-1.03 -> 0.66-0.69
+    -> 0.48-0.69; rank 1.17 -> 0.48-0.87 -> 0.35-0.53; positive in every sub-period). The 4-country book
+    0.75 -> 0.58 -> 0.44 (z-fade): DE and CA DILUTE it. Pairs: UK vs DE 0.73-0.84 at one day but 0.21-0.40
+    at two (partly timing), US vs DE ~0 or negative, CA pairs 0.2-0.5, DE vs CA negative; half-lives
+    25-80 days against US vs UK's 20.
 *   Not yet: costs (the book's turnover is 15-35% of gross a day), the off-the-run CUSIP universe
     (a wider cross-section, the natural next test), a placebo on real data.
 

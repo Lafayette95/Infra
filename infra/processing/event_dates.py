@@ -29,6 +29,7 @@ FOMC_SOURCE = "fomc_calendar"
 TREASURY_SOURCE = "auctions_derived"
 CONTRACTS_SOURCE = "contracts"
 ROLL_SOURCE = "relative_v0"
+CALENDAR_SOURCE = "calendar"
 REFUNDING_MONTHS = (2, 5, 8, 11)
 # The Monday 15:00 estimates / Wednesday 08:30 statement pattern is verified for 2016 (May:
 # estimates Mon 2 May, statement Wed 4 May 08:30) and 2026 (Feb: Mon 2 Feb 15:00, Wed 4 Feb
@@ -169,4 +170,18 @@ def roll_rows(relative: pd.DataFrame, events: dict, observed) -> pd.DataFrame:
         days = pd.to_datetime(switch["timestamp"]).dt.normalize()
         frames.append(rc.event_rows(ev, days, source=ROLL_SOURCE, observed=observed, known_from=list(days),
                                     stage=switch["contract"].astype(str).tolist()))
+    return pd.concat(frames, ignore_index=True) if frames else rc.empty()
+
+
+def calendar_rows(events: dict, rules: dict[str, str], start, end, observed) -> pd.DataFrame:
+    """Calendar anchors (``infra.reference.events.CALENDAR_RULES``) on every date their rule gives in
+    ``[start, end]``, day-level, source ``calendar``. Known from 31 December of the year before
+    (deterministic, but market holidays are fixed about a year ahead: conservative)."""
+    from infra.processing.schedule_rules import rule_dates
+    frames = []
+    for event_id, rule in rules.items():
+        days = rule_dates(rule, start, end)
+        if len(days):
+            frames.append(rc.event_rows(events[event_id], days, source=CALENDAR_SOURCE, observed=observed,
+                                        known_from=[f"{d.year - 1}-12-31" for d in days]))
     return pd.concat(frames, ignore_index=True) if frames else rc.empty()

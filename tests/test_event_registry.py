@@ -11,7 +11,7 @@ from infra.reference.events import EVENTS, SERIES, event_of, series_by_bbg
 def test_ids_and_links():
     assert all(e.id == k for k, e in EVENTS.items()) and all(s.id == k for k, s in SERIES.items())
     assert all(s.event in EVENTS for s in SERIES.values())
-    assert all(e.kind in {"release", "auction", "policy", "treasury", "futures"} for e in EVENTS.values())
+    assert all(e.kind in {"release", "auction", "policy", "treasury", "futures", "calendar"} for e in EVENTS.values())
     assert all(e.time_local is None or re.fullmatch(r"\d{2}:\d{2}", e.time_local) for e in EVENTS.values())
     from zoneinfo import ZoneInfo
     assert all(ZoneInfo(e.timezone) for e in EVENTS.values())

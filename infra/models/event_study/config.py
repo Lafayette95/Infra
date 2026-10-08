@@ -53,6 +53,9 @@ class EventStudySpec:
     # pass; exante = the STATED sign, no tests; prior = the fitted sign, 0 where it isn't the stated one
     fit_mode: str = "fitted"
     expected_sign: tuple[tuple[str, float], ...] = ()   # (instrument | "instrument|+1" bucket | "*", +1 / -1)
+    # seasonality: only windows whose END falls in these calendar months are event windows (the others
+    # are kept illegal, reason "outside_months"; the placebo baseline still spans every month)
+    months: tuple[int, ...] = ()
 
     def __post_init__(self):
         from infra.models.fit_modes import check_fit_mode
@@ -219,6 +222,23 @@ EVENT_FAMILIES_INTRADAY: dict[str, FamilySpec] = registry("intraday", (
                            "test: a fly moving 0.8bp a day can't clear a 2bp floor set for single futures)"),
 ))
 
+def _cc(c: str) -> tuple[str, ...]:
+    b = f"{c}_BOND"
+    return (f"{b}_10y", f"CURVE__{b}_5y__{b}_30y", f"FLY__{b}_5y__{b}_10y__{b}_30y")
+
+
+# calendar-seasonality instrument sets: (tag, daily P&L source, instruments, label)
+_CAL_SETS = (
+    ("otr", "YIELD_BPS_OTR",
+     ("US_BOND_2y", "US_BOND_5y", "US_BOND_10y", "US_BOND_30y", "CURVE__US_BOND_2y__US_BOND_10y",
+      "CURVE__US_BOND_5y__US_BOND_30y", "FLY__US_BOND_2y__US_BOND_5y__US_BOND_10y",
+      "FLY__US_BOND_5y__US_BOND_10y__US_BOND_30y"),
+     "US on-the-run yields, curves, flies (from 2008)"),
+    ("ldn", "SERIES_BPS", tuple(f"bmk:{b}@LDN1615:{i}" for b, c in (("yield_cmt", "US"), ("yield_boe", "UK"))
+                                for i in _cc(c)),
+     "US and UK at 16:15 London (synchronized, from 2016): 10y, 5s30s, 5s10s30s"),
+)
+
 EVENT_FAMILIES_DAILY: dict[str, FamilySpec] = registry("daily", (
     FamilySpec("nfp_days", ("US_EMPLOYMENT_SITUATION",), ("GRID_START",),
                start=LegRule(day_lags=(-3, -2, -1), times=("%0",)), end=LegRule(day_lags=(0, 1, 2), times=("%0",)),
@@ -233,6 +253,24 @@ EVENT_FAMILIES_DAILY: dict[str, FamilySpec] = registry("daily", (
                                                  "MICRO__TY__FV__H", "MICRO__US__WN__H"),
                                     source="STRUCT_BPS_SETTLE", ev_abs_min=None, **DAILY),
                description="the same day windows on the curve structures (settlement bp), tradeable via layers"),
+    # ------------------------------------------------ calendar seasonality (half-months, turn of the month)
+    *(FamilySpec(f"cal_{half}_{tag}", refs, ("GRID_START",),
+                 start=LegRule(refs=(0,), day_lags=(-1, 0, 1), times=("%0",)),
+                 end=LegRule(refs=(1,), day_lags=(-1, 0, 1), times=("%0",)),
+                 cycle="DAILY_SETTLE", frequency="daily",
+                 study=EventStudySpec(instruments=insts, source=src, ev_abs_min=None, **DAILY),
+                 description=f"{what}, +-1 business day at each end; {label}")
+      for half, refs, what in (("half1", ("CAL_MONTH_END", "CAL_MID_MONTH"), "month end -> mid-month (15th)"),
+                               ("half2", ("CAL_MID_MONTH", "CAL_MONTH_END"), "mid-month -> month end"))
+      for tag, src, insts, label in _CAL_SETS),
+    *(FamilySpec(f"cal_turn_{tag}", ("CAL_MONTH_END",), ("GRID_START",),
+                 start=LegRule(day_lags=(-5, -3, -1, 0), times=("%0",)),
+                 end=LegRule(day_lags=(0, 1, 2, 3), times=("%0",)),
+                 cycle="DAILY_SETTLE", frequency="daily",
+                 study=EventStudySpec(instruments=insts, source=src, ev_abs_min=None, **DAILY),
+                 description=f"the turn of the month: from 5 / 3 / 1 / 0 business days before month end to 0-3 "
+                             f"after (index extension, coupon reinvestment); {label}")
+      for tag, src, insts, label in _CAL_SETS),
 ))
 
 EVENT_FAMILIES: dict[str, FamilySpec] = {**EVENT_FAMILIES_INTRADAY, **EVENT_FAMILIES_DAILY}

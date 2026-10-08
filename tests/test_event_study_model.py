@@ -368,3 +368,49 @@ def test_fit_modes_exante_fitted_prior():
     old = old[~((old["section"] == "event_stat") & (old["col"] == "signal"))]          # a pre-fit-mode fit
     pd.testing.assert_series_equal(EventStudy.from_params(old, _study().spec).predict(data, start="2023-12-31")["signal:X"],
                                    m.predict(data, start="2023-12-31")["signal:X"])
+
+
+def test_calendar_anchors_and_seasonality_families():
+    """Calendar anchors follow the market calendar (holidays, weekends); the families pair month end
+    with the next mid-month; the synced families read the stored synchronized series by their series ids."""
+    from infra.models.event_study.config import EVENT_FAMILIES
+    from infra.processing import event_dates as ed
+    from infra.reference.events import CALENDAR_RULES, EVENTS
+    rows = ed.calendar_rows(EVENTS, CALENDAR_RULES, "2026-01-01", "2026-03-31", pd.Timestamp("2026-10-08"))
+    day = lambda e: [str(t.date()) for t in rows.loc[rows["event"] == e, "timestamp"]]  # noqa: E731
+    assert day("CAL_MONTH_END") == ["2026-01-30", "2026-02-27", "2026-03-31"]
+    assert day("CAL_MID_MONTH") == ["2026-01-15", "2026-02-17", "2026-03-16"]        # 15 Feb Sun, 16 Feb holiday
+    assert day("CAL_MONTH_START") == ["2026-01-02", "2026-02-02", "2026-03-02"]
+    assert (rows["known_from"] == pd.Timestamp("2025-12-31")).all()
+    codes = EVENT_FAMILIES["cal_half1_otr"].codes()
+    assert len(codes) == 9 and codes[4] == "CAL_MONTH_END__CAL_MID_MONTH;GRID_START;;&0_0_%0_0__&1_0_%0_0;;DAILY_SETTLE"
+    ldn = EVENT_FAMILIES["cal_turn_ldn"].study
+    assert ldn.source == "SERIES_BPS" and "bmk:yield_boe@LDN1615:UK_BOND_10y" in ldn.instruments
+
+
+def test_months_filter_and_carried_holiday_steps():
+    """``months`` keeps only windows ending in those months (the placebo still spans all); a yield
+    source's missing grid day counts 0 when its next row carries the move, NaN across a long gap; the
+    calendar anchors sit on their own day in the daily grid's zone (Chicago)."""
+    from dataclasses import replace
+    from infra.pipeline.event_pnl import _on_daily_grid
+    from infra.processing import event_dates as ed
+    from infra.processing.release_calendar import KEYS  # noqa: F401  (store layout unchanged)
+    from infra.reference.events import CALENDAR_RULES, EVENTS
+    panel, occ = _synthetic(effect=1.0)
+    st = _study(months=(3,))
+    data = st.prepare(panel, occurrences=occ)
+    ev = data[data["kind"] == "event"]
+    legal = ev[ev["legal"]]
+    assert len(legal) and (pd.DatetimeIndex(legal["end"]).month == 3).all()
+    assert (ev.loc[~ev["legal"], "reason"] == "outside_months").sum() > 0
+    assert (data["kind"] == "placebo").sum() > len(legal) * 10                    # baseline: every other day
+    days = pd.DatetimeIndex(["2024-10-11", "2024-10-14", "2024-10-15", "2024-10-16", "2024-11-01", "2024-11-15"])
+    grid = type("G", (), {"days": days, "instants": lambda self: days + pd.Timedelta(hours=19)})()
+    by_day = pd.DataFrame({"x": [1.0, np.nan, 2.0, 3.0, np.nan, 4.0]}, index=days)
+    out = _on_daily_grid(by_day, grid, carried_days=7)["x"].to_numpy()
+    assert out[1] == 0.0 and np.isnan(out[4])                                     # Columbus Day vs a 2-week hole
+    rows = ed.calendar_rows(EVENTS, CALENDAR_RULES, "2026-01-01", "2026-01-31", pd.Timestamp("2026-10-08"))
+    me = rows.loc[rows["event"] == "CAL_MONTH_END", "timestamp"].iloc[0]
+    assert me.tz_localize("UTC").tz_convert("America/Chicago").date() == pd.Timestamp("2026-01-30").date()
+    assert replace(st.spec, months=()).months == ()

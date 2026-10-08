@@ -42,7 +42,7 @@ class EconEvent:
     name: str
     country: str  # ISO-2
     agency: str
-    kind: str  # "release" | "auction" | "policy" | "treasury" | "futures"
+    kind: str  # "release" | "auction" | "policy" | "treasury" | "futures" | "calendar"
     frequency: str  # "W" | "M" | "Q" | "8/yr" | "irregular"
     time_local: str | None  # "HH:MM" wall clock in ``timezone``; None = not verified / day-level
     stages: tuple[str, ...] = ("first",)  # scheduled estimates in publication order
@@ -285,7 +285,29 @@ EVENTS: dict[str, EconEvent] = {e.id: e for e in (
          note="derived: stored daily relative series; the ranking uses prior days' volume, so it is known "
               "before the day")
       for r in _CME_TREASURY_ROOTS),
+    # ---------------------------------------------------------------- calendar anchors
+    # Day-level, deterministic (CALENDAR_RULES below, on the MARKET calendar), stamped at midnight CHICAGO
+    # like the futures calendars - midnight New York is the PREVIOUS evening in Chicago, the daily grid's
+    # zone, which moved every anchor a day back (found 2026-10-08) - for calendar-seasonality
+    # studies: an event-study code puts windows between them (month end -> mid-month), and day lags
+    # give the days around them (the turn of the month).
+    _E("CAL_MONTH_END", "Last market business day of the month", "US", "calendar", "calendar", "M", None,
+       schedule="calendar", timezone="America/Chicago",
+       note="derived: CALENDAR_RULES; month-end index extension, coupon reinvestment"),
+    _E("CAL_MONTH_START", "First market business day of the month", "US", "calendar", "calendar", "M", None,
+       schedule="calendar", timezone="America/Chicago", note="derived: CALENDAR_RULES"),
+    _E("CAL_MID_MONTH", "The 15th, or the next market business day", "US", "calendar", "calendar", "M", None,
+       schedule="calendar", timezone="America/Chicago",
+       note="derived: CALENDAR_RULES; Treasury coupons are paid and mid-month refunding issues settle on the "
+            "15th, so the half-month split follows real cash flows"),
 )}
+
+# Calendar anchors' date rules (infra.processing.schedule_rules syntax, market calendar). Not
+# `EconEvent.rule`: those are validated against observed release days and projected as source
+# "rule"; a calendar anchor IS its rule, so it is generated directly (source "calendar").
+CALENDAR_RULES = {"CAL_MONTH_END": "market:last_business_day",
+                  "CAL_MONTH_START": "market:nth_business_day:1",
+                  "CAL_MID_MONTH": "market:day_or_next_business_day:15"}
 
 # Validated date rules (2026-10-01, against the harvested MarketWatch CONFIRMED release
 # days - unconfirmed schedule rows excluded -, months since 2018; misses inspected,

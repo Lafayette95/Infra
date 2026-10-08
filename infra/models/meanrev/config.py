@@ -40,7 +40,9 @@ class MeanRevSpec:
     signal_rule: str = "linear"
     entry: float = 1.5
     exit: float = 0.5
-    cross_section: str = "none"                   # none | demean (s minus its mean over the tradable residuals)
+    cross_section: str = "none"                   # none | demean (s minus its mean over the tradable residuals) |
+                                                  # rank: each row's scores ranked across the tradable residuals,
+                                                  # centred to [-1, 1]; the signal fades the RANK, not the size
     risk_scale: bool = True                       # size each residual by 1 / its daily innovation sd
     # trade metrics (per row, per residual)
     horizon_days: int = 5                         # expected move / sd / Sharpe horizon
@@ -55,7 +57,7 @@ class MeanRevSpec:
         if self.factor not in ("pca", "regime_pca"):
             raise ValueError(f"meanrev {self.name!r}: factor {self.factor!r} (pca | regime_pca)")
         if self.pooling not in ("none", "pooled") or self.signal_rule not in ("linear", "threshold") \
-                or self.cross_section not in ("none", "demean"):
+                or self.cross_section not in ("none", "demean", "rank"):
             raise ValueError(f"meanrev {self.name!r}: pooling / signal_rule / cross_section")
         bad = [g for g in self.gates if g not in GATES]
         if bad:
@@ -71,6 +73,8 @@ MEANREV_MODELS: dict[str, MeanRevSpec] = {s.name: s for s in (
     MeanRevSpec("prior", "reversion stated: trade every residual whose b < 1, sized by the OU s-score",
                 fit_mode="prior", gates=("min_obs", "reverting")),
     MeanRevSpec("exante", "no OU: fade the level's z over the window", fit_mode="exante", gates=()),
+    MeanRevSpec("exante_rank", "no OU: fade the cross-sectional RANK of the levels' z (short the richest)",
+                fit_mode="exante", gates=(), cross_section="rank"),
     MeanRevSpec("threshold", "Avellaneda-Lee style: open at |s| >= 1.25, close at |s| <= 0.5",
                 signal_rule="threshold", entry=1.25, exit=0.5),
 )}
