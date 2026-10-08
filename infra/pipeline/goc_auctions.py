@@ -5,8 +5,10 @@ fetch / store / point-in-time plan (root CLAUDE.md 17; pure parsing
 * Auctions ``CA_AUCTIONS_DIR`` (keys ``timestamp``, ``isin``, ``kind``): the Bank of Canada's
   Valet results groups, re-read whole each run (free, small) and upserted.
 * Outstanding ``CA_OUTSTANDING_DIR`` (keys ``timestamp`` = as-of day, ``isin``): every bill
-  and bond outstanding, daily from 2025 - with the auctions, ``read_securities(as_of)`` is the
-  universe point in time.
+  and bond outstanding, daily from 2025, plus the monthly bond CSVs of 2018-01..2022-01
+  (``backfill_dmb``; ISINs by maturity + coupon, ``SERIES:<code>`` for 5 bonds issued before
+  1998 with no ISIN anywhere) - with the auctions, ``read_securities(as_of)`` is the universe
+  point in time.
 * Plan ``CA_AUCTION_PLAN_DIR``: the quarterly bond auction schedule, archived whenever it
   changes (Valet, daily) plus the Wayback Machine's captures of its page (2022 on). Replayed
   like the German plan: each snapshot replaces the schedule from its own day on. T-bills
@@ -22,17 +24,18 @@ from pathlib import Path
 import pandas as pd
 
 from infra.api import boc_client as bc
-from infra.config import CA_AUCTION_PLAN_DIR, CA_AUCTIONS_DIR, CA_OUTSTANDING_DIR
+from infra.config import CA_AUCTION_PLAN_DIR, CA_AUCTIONS_DIR, CA_DMB_FILES_DIR, CA_OUTSTANDING_DIR
 from infra.processing import goc_auctions as ga
 from infra.storage import parquet_store
 
 log = logging.getLogger(__name__)
-PLAN_SOURCE, HELD_SOURCE = "ca_plan", "ca_auctions"
+PLAN_SOURCE, HELD_SOURCE, CFT_SOURCE = "ca_plan", "ca_auctions", "ca_cft"
 KEYS = ["timestamp", "isin", "kind"]
 OUT_KEYS = ["timestamp", "isin"]
 STAMP = "%Y%m%dT%H%M%SZ"
 VINTAGE_COLUMNS = ga.PLAN_COLUMNS + ["vintage", "known_from"]
-FETCH_GROUP = bc.fetch_valet_group   # network hook; tests stub it
+FETCH_GROUP = bc.fetch_valet_group   # network hooks; tests stub them
+FETCH_DMB = bc.fetch_dmb_csv
 _ONE_DAY = pd.Timedelta(days=1)
 
 
@@ -104,7 +107,7 @@ def store_outstanding(df: pd.DataFrame, *, root: Path = CA_OUTSTANDING_DIR) -> i
         return 0
     out = df.drop_duplicates(OUT_KEYS, keep="last")
     out = out.assign(**{c: pd.to_datetime(out[c]).astype("datetime64[ms]") for c in ("timestamp", "issue_date", "maturity_date")},
-                     **{c: out[c].astype("string") for c in ("isin", "security_type", "instrument_type")})
+                     **{c: out[c].astype("string") for c in ("isin", "security_type", "instrument_type", "series")})
     parquet_store.write_partitioned(out, root, OUT_KEYS)
     return len(out)
 
@@ -126,9 +129,43 @@ def read_outstanding(start=None, end=None, *, root: Path = CA_OUTSTANDING_DIR) -
         if parquet_store.has_data(root) else None
     if df is None or df.empty:
         return pd.DataFrame(columns=ga.OUTSTANDING_COLUMNS)
+    if "series" not in df:                      # files written before the column existed
+        df["series"] = None
     for c in ("isin", "security_type", "instrument_type"):
         df[c] = df[c].astype(str)
     return df[ga.OUTSTANDING_COLUMNS].sort_values(OUT_KEYS).reset_index(drop=True)
+
+
+def isin_lookup(*, auctions_root: Path = CA_AUCTIONS_DIR, outstanding_root: Path = CA_OUTSTANDING_DIR) -> dict:
+    """(maturity, coupon) -> ISIN over the auctions and the daily snapshots; raises if a key is
+    ambiguous (two ISINs), which would mislabel a monthly-CSV bond."""
+    a = read_auctions(root=auctions_root)
+    o = read_outstanding(root=outstanding_root)
+    o = o[~o["isin"].str.startswith("SERIES:")]
+    both = pd.concat([a[["maturity_date", "coupon", "isin"]], o[["maturity_date", "coupon", "isin"]]]).dropna()
+    both = both.assign(coupon=both["coupon"].round(4)).drop_duplicates()
+    dup = both.duplicated(["maturity_date", "coupon"], keep=False)
+    if dup.any():
+        raise ValueError(f"ambiguous (maturity, coupon) -> ISIN: {both[dup].head(4).to_dict('records')}")
+    return {(pd.Timestamp(m), c): i for m, c, i in zip(both["maturity_date"], both["coupon"], both["isin"])}
+
+
+def backfill_dmb(*, files_root: Path = CA_DMB_FILES_DIR, auctions_root: Path = CA_AUCTIONS_DIR,
+                 outstanding_root: Path = CA_OUTSTANDING_DIR) -> int:
+    """One-off: the monthly outstanding CSVs (2018-01..2022-01), each fetched once (a file on
+    disk is its coverage), loaded into the outstanding store with ISINs where known."""
+    files_root = Path(files_root)
+    files_root.mkdir(parents=True, exist_ok=True)
+    for ym in bc.DMB_MONTHS.strftime("%Y-%m"):
+        path = files_root / f"{ym}.csv"
+        if not path.exists():
+            text = FETCH_DMB(ym)
+            if "Period End Date" in text:
+                path.write_text(text, "utf-8")
+    lookup = isin_lookup(auctions_root=auctions_root, outstanding_root=outstanding_root)
+    frames = [ga.parse_dmb_csv(p.read_text("utf-8"), lookup) for p in sorted(files_root.glob("*.csv"))]
+    frames = [f for f in frames if len(f)]
+    return store_outstanding(pd.concat(frames, ignore_index=True), root=outstanding_root) if frames else 0
 
 
 def read_securities(as_of=None, *, auctions_root: Path = CA_AUCTIONS_DIR,
@@ -203,8 +240,10 @@ def plan_state(as_of=None, *, root: Path = CA_AUCTION_PLAN_DIR) -> pd.DataFrame:
 
 def release_rows(*, observed=None, root: Path = CA_AUCTION_PLAN_DIR, auctions_root: Path = CA_AUCTIONS_DIR) -> pd.DataFrame:
     """Release-calendar rows: the schedule replayed (``ca_plan``, at the registry's 12:00
-    Ottawa) and the held auctions (``ca_auctions``, at each auction's own bidding deadline;
-    stage new_issue / reopening by the ISIN's first auction)."""
+    Ottawa), the held auctions (``ca_auctions``, at each auction's own bidding deadline; stage
+    new_issue / reopening by the ISIN's first auction, known from their own day) and the same
+    bond auctions known from their call for tenders (``ca_cft``: 2 business days before, the
+    shortest lead observed - so every auction since 1998 is known ahead, if only just)."""
     from infra.processing import release_calendar as rc
     from infra.reference.events import EVENTS
     observed = _now().normalize() if observed is None else pd.Timestamp(observed)
@@ -224,6 +263,9 @@ def release_rows(*, observed=None, root: Path = CA_AUCTION_PLAN_DIR, auctions_ro
             g = g.drop_duplicates("day")
             frames.append(rc.event_rows(EVENTS[e], g["day"], source=HELD_SOURCE, known_from=g["day"], observed=observed,
                                         stage=st, times=list(g["bid_deadline"])))
+            if e != "CA_AUCTION_TBILL":           # bonds: known by their call for tenders (ga.cft_known_from)
+                frames.append(rc.event_rows(EVENTS[e], g["day"], source=CFT_SOURCE, known_from=ga.cft_known_from(g["day"]),
+                                            observed=observed, stage=st, times=list(g["bid_deadline"])))
     frames = [f for f in frames if not f.empty]
     if not frames:
         return rc.empty()

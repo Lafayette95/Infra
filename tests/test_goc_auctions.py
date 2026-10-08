@@ -67,3 +67,26 @@ def test_held_auctions_sit_at_their_own_deadline(tmp_path):
     assert list(plan["timestamp"]) == [D("2026-10-14 16:00")] and plan["known_from"].iloc[0] == D("2026-10-08")
     universe = pg.read_securities(auctions_root=tmp_path / "auc", outstanding_root=tmp_path / "out")
     assert list(universe["isin"]) == ["CA135087M920", "CA135087WN09"]
+
+
+DMB = """Unmatured Debt Details: Domestic Marketable Bonds
+Period End Date, Jan 31 2022
+Maturity Date, Coupon Rate, Issue Date(s), Series, Outstanding, Inflation Adjustment, Outstanding (Inflation Adjusted)
+Feb 01 2022,1.5,Nov 04 2019; Nov 22 2019,K601,12000000000,0,12000000000
+Dec 01 2021,4.25,Dec 10 1991; Oct 14 1992,L25,5175000000,3600000000,8775000000
+Jun 01 2022,9.25,Dec 16 1991; Jan 03 1992,A49,206022000,0,206022000
+"""
+
+
+def test_monthly_csv_gets_isins_by_maturity_and_coupon():
+    df = ga.parse_dmb_csv(DMB, {(D("2022-02-01"), 1.5): "CA135087K601"})
+    assert list(df["isin"]) == ["CA135087K601", "SERIES:L25", "SERIES:A49"]
+    assert list(df["instrument_type"]) == ["BD-FIX", "BD-REAL", "BD-FIX"]       # an inflation adjustment = RRB
+    assert df["timestamp"].iloc[0] == D("2022-01-31") and df["issue_date"].iloc[0] == D("2019-11-04")
+
+
+def test_call_for_tenders_rule_is_never_early():
+    # Thursday auction: call for tenders at least 2 business days before -> known from Tuesday
+    assert list(ga.cft_known_from([D("2026-10-15")])) == [D("2026-10-13")]
+    # Monday auction -> the Thursday before
+    assert list(ga.cft_known_from([D("2026-11-09")])) == [D("2026-11-05")]

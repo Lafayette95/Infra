@@ -468,6 +468,9 @@ JP_AUCTIONS_DIR = RAW_DATA_ROOT / "JP_Auctions"
 CA_AUCTIONS_DIR = RAW_DATA_ROOT / "CA_Auctions"
 CA_OUTSTANDING_DIR = RAW_DATA_ROOT / "CA_Outstanding"
 CA_AUCTION_PLAN_DIR = RAW_DATA_ROOT / "CA_AuctionPlan"
+# the Bank of Canada's monthly "unmatured domestic marketable bonds" CSVs (2018-01..2022-01, a fixed
+# history), archived raw (<yyyy-mm>.csv) and loaded into CA_OUTSTANDING_DIR
+CA_DMB_FILES_DIR = RAW_DATA_ROOT / "CA_OutstandingFiles"
 RELEASES_DIR = RAW_DATA_ROOT / "Releases"
 RELEASES_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "releases.parquet"
 # Economic-calendar rows (actual / consensus / previous per release, as the calendar page

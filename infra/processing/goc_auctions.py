@@ -20,7 +20,7 @@ AUCTION_COLUMNS = ["timestamp", "isin", "kind", "term_years", "coupon", "issue_d
                    "avg_yield", "high_yield", "low_yield", "coverage", "tail", "bid_deadline", "off_the_run",
                    "outstanding_after_m", "boc_purchase_m"]
 OUTSTANDING_COLUMNS = ["timestamp", "isin", "security_type", "instrument_type", "coupon", "issue_date",
-                       "maturity_date", "outstanding", "outstanding_inf_adj"]
+                       "maturity_date", "outstanding", "outstanding_inf_adj", "series"]
 PLAN_COLUMNS = ["auction_date", "kind", "term_years", "maturity_date", "call_date", "delivery_date"]
 SECURITY_COLUMNS = ["isin", "kind", "term_years", "coupon", "maturity_date", "first_auction", "issue_date"]
 GROUPS = {"BOND": ("AUC_BOND_RESULTS", "AUC_BOND_"), "RRB": ("AUC_BOND_RR_RESULTS", "AUC_BOND_RR_"),
@@ -92,8 +92,37 @@ def parse_outstanding(payload: dict, suffix: str = "") -> pd.DataFrame:
         "security_type": _col(df, "security_type"), "instrument_type": _col(df, "instrument_type"),
         "coupon": _num(_col(df, "coupon_rate")), "issue_date": pd.to_datetime(_col(df, "issue_date"), errors="coerce"),
         "maturity_date": pd.to_datetime(_col(df, "maturity_date"), errors="coerce"),
-        "outstanding": _num(_col(df, "outstanding_amount")), "outstanding_inf_adj": _num(_col(df, "outstanding_amount_inf_adj"))})
+        "outstanding": _num(_col(df, "outstanding_amount")), "outstanding_inf_adj": _num(_col(df, "outstanding_amount_inf_adj")),
+        "series": None})
     return out.dropna(subset=["timestamp"])[OUTSTANDING_COLUMNS].reset_index(drop=True)
+
+
+def parse_dmb_csv(text: str, isin_of: dict) -> pd.DataFrame:
+    """One of the Bank of Canada's monthly "Unmatured Debt Details: Domestic Marketable Bonds"
+    CSVs (2018-01..2022-01; series codes, no ISIN): outstanding bonds at the month end. A bond
+    gets its ISIN by (maturity, coupon) from ``isin_of`` (built from the auctions and the daily
+    snapshots - unique on both, checked); one never seen there (issued before 1998) keeps the
+    id ``SERIES:<code>``. ``issue_date`` = its first issue date; real return bonds (an inflation
+    adjustment column) are ``BD-REAL``."""
+    m = re.search(r"Period End Date, ([A-Za-z]+ \d+ \d{4})", text)
+    if not m:
+        return pd.DataFrame(columns=OUTSTANDING_COLUMNS)
+    day = pd.to_datetime(m.group(1))
+    rows = []
+    for line in text.splitlines():
+        if not re.match(r"[A-Z][a-z]{2} \d{2} \d{4},", line):
+            continue
+        p = [x.strip() for x in line.split(",")]
+        mat, cpn = pd.to_datetime(p[0]), float(p[1])
+        issues = pd.to_datetime([x.strip() for x in p[2].split(";") if x.strip()], errors="coerce")
+        infl = float(p[5]) if len(p) > 5 and p[5] else 0.0
+        isin = isin_of.get((mat, round(cpn, 4)))
+        rows.append({"timestamp": day, "isin": isin or f"SERIES:{p[3]}", "security_type": "BOND",
+                     "instrument_type": "BD-REAL" if infl else "BD-FIX", "coupon": cpn,
+                     "issue_date": issues.min() if len(issues) else pd.NaT, "maturity_date": mat,
+                     "outstanding": float(p[4]), "outstanding_inf_adj": float(p[6]) if len(p) > 6 and p[6] else np.nan,
+                     "series": p[3]})
+    return pd.DataFrame(rows, columns=OUTSTANDING_COLUMNS)
 
 
 def _kind(auction_type: str) -> str:
@@ -156,6 +185,16 @@ def securities(auctions: pd.DataFrame, outstanding: pd.DataFrame | None = None) 
                               "maturity_date": o["maturity_date"], "first_auction": pd.NaT, "issue_date": o["issue_date"]})
         out = pd.concat([out, extra[SECURITY_COLUMNS]], ignore_index=True)
     return out.reset_index(drop=True)
+
+
+CFT_MIN_BUSINESS_DAYS = 2   # the call for tenders comes 2-5 business days before a bond auction
+
+
+def cft_known_from(auction_days) -> pd.DatetimeIndex:
+    """When a bond auction is certainly known, from its CALL FOR TENDERS: 2 business days
+    before (the SHORTEST lead in every schedule snapshot, 2022-2026: 153 auctions, 2-5 business
+    days, median 5) - never earlier than the real call, often days later."""
+    return pd.DatetimeIndex(auction_days) - pd.offsets.BDay(CFT_MIN_BUSINESS_DAYS)
 
 
 def event_id(kind: str, term_years) -> str:

@@ -105,3 +105,13 @@ def fetch_valet_group(group: str) -> dict:
     req = urllib.request.Request(VALET_GROUP.format(group=group), headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+# monthly outstanding-bonds CSVs (series codes, no ISIN): only 2018-01..2022-01 exist (probed 2026-10-08)
+DMB_CSV = "https://www.bankofcanada.ca/stats/assets/csv/en-GOC_DMB_{ym}.csv"
+DMB_MONTHS = pd.period_range("2018-01", "2022-01", freq="M")
+
+
+def fetch_dmb_csv(ym: str) -> str:
+    req = urllib.request.Request(DMB_CSV.format(ym=ym), headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+        return resp.read().decode("utf-8", "replace")
