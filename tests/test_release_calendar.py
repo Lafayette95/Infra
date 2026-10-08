@@ -36,6 +36,15 @@ def test_a_moved_release_point_in_time():
     assert on("2025-09-15") == [D("2025-10-03").date()]
     assert on("2025-10-02") == [D("2025-10-24").date()]  # Oct 3 no longer listed: not expected any more
     assert rc.as_of(stored, "2025-09-15")["known_from"].iloc[0] == D("2025-09-01")  # earliest sighting kept
+    # once both dates have passed, only the one held is there: Oct 3 was dropped BEFORE its day
+    assert on("2025-11-01") == [D("2025-10-24").date()]
+    # a date that only left the source's forward window after it happened stays
+    past = rc.merge_observation(rc.schedule_rows(NFP, pd.DatetimeIndex(["2025-10-03", "2025-11-07"]), source="u",
+                                                  observed=D("2025-09-01")),
+                                rc.schedule_rows(NFP, pd.DatetimeIndex(["2025-11-07"]), source="u",
+                                                 observed=D("2025-10-06")))
+    assert [t.date() for t in rc.as_of(past, "2025-10-10")["timestamp"]] == [D("2025-10-03").date(),
+                                                                              D("2025-11-07").date()]
 
 
 def test_fetch_store_read(tmp_path):

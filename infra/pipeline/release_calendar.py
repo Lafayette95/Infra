@@ -118,6 +118,30 @@ def treasury_schedule(*, observed=None, fetch=None) -> pd.DataFrame:
     return out
 
 
+def german_auctions(*, observed=None, plan_root: Path | None = None, auctions_root: Path | None = None,
+                    errors: dict | None = None) -> pd.DataFrame:
+    """German Federal auctions (``infra.pipeline.de_issuance``): refresh the archived plan
+    (NETWORK: the calendar page and its outlook workbooks), then rows from the archive - the
+    plan replayed point in time and the held auctions. A fetch failure still yields the rows
+    already archived."""
+    from infra.config import DE_AUCTIONS_DIR, DE_ISSUANCE_PLAN_DIR
+    from infra.pipeline import de_issuance
+
+    errors = {} if errors is None else errors
+    plan_root, auctions_root = plan_root or DE_ISSUANCE_PLAN_DIR, auctions_root or DE_AUCTIONS_DIR
+    try:
+        de_issuance.update(root=plan_root)
+    except Exception as exc:
+        errors["de_plan_fetch"] = f"{type(exc).__name__}: {exc}"
+        log.warning("German issuance plan refresh failed: %s", exc)
+    try:
+        return de_issuance.release_rows(observed=observed, root=plan_root, auctions_root=auctions_root)
+    except Exception as exc:
+        errors["de_auctions"] = f"{type(exc).__name__}: {exc}"
+        log.warning("German auction rows failed: %s", exc)
+        return rc.empty()
+
+
 def derived_schedules(*, observed=None, auctions_root: Path | None = None, contracts_file: Path | None = None,
                       daily_root: Path | None = None, roll_start="2015-01-01", with_rolls: bool = True,
                       errors: dict | None = None) -> pd.DataFrame:
@@ -266,6 +290,7 @@ def refresh_release_calendar(*, root: Path = RELEASE_CALENDAR_DIR, observed=None
                              with_agencies: bool = True, with_fred: bool = True, nar_fetch=None,
                              treasury_fetch=None, with_derived: bool = True, auctions_root: Path | None = None,
                              contracts_file: Path | None = None, daily_root: Path | None = None,
+                             de_plan_root: Path | None = None, de_auctions_root: Path | None = None,
                              errors: dict | None = None) -> int:
     """Parent: observe every source's schedule now (FRED's release dates; the harvested
     economic calendar, local; the validated rules' projections) and fold it in."""
@@ -297,6 +322,8 @@ def refresh_release_calendar(*, root: Path = RELEASE_CALENDAR_DIR, observed=None
         except Exception as exc:
             errors["treasury_schedule"] = f"{type(exc).__name__}: {exc}"
             log.warning("Treasury tentative auction schedule failed: %s", exc)
+        rows = pd.concat([rows, german_auctions(observed=observed, plan_root=de_plan_root,
+                                                auctions_root=de_auctions_root, errors=errors)], ignore_index=True)
     if with_derived:
         derived_errors: dict = {}
         rows = pd.concat([rows, derived_schedules(observed=observed, auctions_root=auctions_root,

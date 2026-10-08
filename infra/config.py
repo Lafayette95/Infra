@@ -451,6 +451,10 @@ EUREX_CF_DIR = RAW_DATA_ROOT / "EUREX_CF"   # Eurex's deliverable-bonds CSV, arc
 CA_BENCHMARKS_DIR = REFERENCE_ROOT / "Canada" / "Benchmarks"
 BOC_ZERO_DIR = RAW_DATA_ROOT / "BoC" / "ZeroCurve"
 DE_AUCTIONS_DIR = RAW_DATA_ROOT / "DE_Auctions"  # the Finanzagentur issuance history, one row per (day, ISIN)
+# the Finanzagentur's issuance PLANS, archived raw: outlook/<name>__<Last-Modified>.xlsx (annual +
+# quarterly updates) and live/<UTC time>__<site|wayback>.html (the "Upcoming Issues" table) -
+# a file on disk is its own coverage (infra.pipeline.de_issuance)
+DE_ISSUANCE_PLAN_DIR = RAW_DATA_ROOT / "DE_IssuancePlan"
 RELEASES_DIR = RAW_DATA_ROOT / "Releases"
 RELEASES_COVERAGE_FILE = RAW_DATA_ROOT / "_coverage" / "releases.parquet"
 # Economic-calendar rows (actual / consensus / previous per release, as the calendar page

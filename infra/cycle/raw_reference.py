@@ -58,7 +58,8 @@ def backfill_daily_release_calendar(start, end, *, paths: CyclePaths | None = No
                                          fetch=FRED_DATES_FETCH, nar_fetch=NAR_FETCH,
                                          treasury_fetch=TREASURY_SCHEDULE_FETCH, with_fred=have_key,
                                          auctions_root=paths.tsy_auctions_dir, contracts_file=paths.contracts_file,
-                                         daily_root=paths.daily_futures_dir, errors=errors)
+                                         daily_root=paths.daily_futures_dir, de_plan_root=paths.de_issuance_plan_dir,
+                                         de_auctions_root=paths.de_auctions_dir, errors=errors)
     except Exception as exc:
         n, errors["calendar"] = 0, f"{type(exc).__name__}: {exc}"
     if not have_key:
@@ -148,9 +149,30 @@ def _check_tails(ctx: StepContext):
     return True, f"{n} recap(s) processed this run, {passed} passed both checks", None
 
 
+DE_PLAN_HORIZON_DAYS = 14   # German Federal auctions run nearly every week ...
+DE_PLAN_QUIET = ((12, 10), (1, 4))   # ... except mid-December to early January
+
+
+def _check_de_plan(ctx: StepContext):
+    """The archived German issuance plan, as known now, has an auction in the next
+    ``DE_PLAN_HORIZON_DAYS`` - else the plan stopped updating (a renamed file, a changed
+    page)."""
+    from infra.pipeline.de_issuance import plan_state
+    now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    (m0, d0), (m1, d1) = DE_PLAN_QUIET
+    if (now.month, now.day) >= (m0, d0) or (now.month, now.day) <= (m1, d1):
+        return True, "year-end: no German auctions expected", None
+    plan = plan_state(now, root=ctx.paths.de_issuance_plan_dir)
+    soon = plan[plan["auction_date"] <= now.normalize() + pd.Timedelta(days=DE_PLAN_HORIZON_DAYS)]
+    if len(soon):
+        return True, f"{len(soon)} German auction(s) planned in the next {DE_PLAN_HORIZON_DAYS} days", None
+    return False, f"no German auction planned in the next {DE_PLAN_HORIZON_DAYS} days (plan stale?)", None
+
+
 CALENDAR_CHECKS = (
     Check("calendar_refreshed", _errors_check("release_calendar", "release calendar"), severity=Severity.WARN),
     Check("calendar_rules_valid", _check_rules, severity=Severity.WARN),
+    Check("de_auction_plan", _check_de_plan, severity=Severity.WARN),
 )
 AUCTION_CHECKS = (
     Check("auctions_fetch_ok", _errors_check("tsy_auctions", "treasury auctions"), severity=Severity.WARN),

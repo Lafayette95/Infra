@@ -33,6 +33,13 @@ def _no_bond_network(monkeypatch):
     monkeypatch.setattr("infra.pipeline.bunds.FETCH_PRICES", lambda start, end, isin="": "")
     monkeypatch.setattr("infra.pipeline.bunds.FETCH_ISSUANCE", lambda: None)
 
+    def no_outlook(name):
+        raise FileNotFoundError(name)
+
+    monkeypatch.setattr("infra.pipeline.de_issuance.FETCH_PAGE", lambda: "")
+    monkeypatch.setattr("infra.pipeline.de_issuance.LAST_MODIFIED", no_outlook)
+    monkeypatch.setattr("infra.pipeline.de_issuance.FETCH_OUTLOOK", no_outlook)
+
 
 @pytest.fixture(autouse=True)
 def _network_always_ready(monkeypatch):

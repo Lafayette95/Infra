@@ -204,6 +204,25 @@ EVENTS: dict[str, EconEvent] = {e.id: e for e in (
          note="reopenings carry their REMAINING term (e.g. '9-Year 10-Month' = a 10y reopening): match on "
               "the original security term")
       for t in (2, 3, 5, 7, 10, 20, 30)),
+    # ---------------------------------------------------------------- German Federal auctions
+    # The Finanzagentur's auctions (2026-10-07). Bidding 08:00-11:30 Frankfurt, verified on its
+    # auction-process page 2026-10-07 (the current rule; older years not verified). Dates from
+    # the issuance plan (annual outlook -> quarterly updates -> the live calendar,
+    # infra.pipeline.de_issuance) and the held auctions (issuance history, 1999 on);
+    # syndications are not auctions and are left out. Stage = new_issue / reopening.
+    *(_E(f"DE_AUCTION_{t}Y", f"German Federal {t}-year {'Schatz' if t == 2 else 'Bobl' if t == 5 else 'Bund'} auction",
+         "DE", "Finanzagentur", "auction", "M", "11:30", schedule="agency_schedule", timezone="Europe/Berlin",
+         note="Bunds by the ISIN's maturity segment; a multi-tenor placeholder is DE_AUCTION_LONG")
+      for t in (2, 5, 7, 10, 15, 20, 30)),
+    _E("DE_AUCTION_LONG", "German Federal long-end auction, line decided later (15/20/30y)", "DE", "Finanzagentur",
+       "auction", "M", "11:30", schedule="agency_schedule", timezone="Europe/Berlin",
+       note="a plan line naming several tenors and no ISIN; the held auction carries its own tenor"),
+    _E("DE_AUCTION_GREEN", "German Federal Green bond auction", "DE", "Finanzagentur", "auction", "M", "11:30",
+       schedule="agency_schedule", timezone="Europe/Berlin"),
+    _E("DE_AUCTION_ILB", "German Federal inflation-linked auction", "DE", "Finanzagentur", "auction", "irregular",
+       "11:30", schedule="agency_schedule", timezone="Europe/Berlin"),
+    _E("DE_AUCTION_BUBILL", "German Treasury discount paper (Bubill) auction", "DE", "Finanzagentur", "auction", "W",
+       "11:30", schedule="agency_schedule", timezone="Europe/Berlin"),
     # ---------------------------------------------------------------- US Treasury lifecycle
     # Day-level events (no time), derived from the auctions store: each auction's issue
     # (settlement) date - stage "new_issue" / "reopening" - and the day a new issue becomes

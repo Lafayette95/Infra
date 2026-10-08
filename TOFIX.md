@@ -1433,3 +1433,10 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **Only 3m from FX swaps.** The matched hedge still uses OIS + basis; longer FX forwards (1y+) are thin in the archive. Revisit when the cross-currency basis is checked against them.
 *   **Thin days:** GBP has FX swaps on ~42% of days (often one swap), so the carried spread does much of the work there.
 *   **`scripts/run_daily_cycle.py --dry-run` fails before 2025-03-10** (Eurex's `definition` cost estimate starts before XEUR.EOBI's available start, 422). The estimate should be clamped like the real fetch. Not fixed: `infra/api/databento_client.py` was being edited by another session.
+
+## German auctions: plan history gaps (2026-10-07)
+*   **Where:** `infra.pipeline.de_issuance` (CLAUDE.md 17).
+*   **The December 2025 version of the 2026 annual plan is lost:** the file was replaced in place on 2026-02-04 and no archive holds the original, so the 2026 Q1 auctions count as known only from the first Wayback snapshot (2026-01-17) or the replaced file (11 held auctions in early January 2026 had no plan the day before). Unfixable unless someone has the original.
+*   **Before 2024 the plans exist only as PDFs** (press releases and presentations from 2006, scattered over the old site's paths; listed by the Wayback CDX index), and 2022-2023 rests on sparse Wayback captures of the live table (45 held 2023 auctions not in the plan the day before). Option: parse the PDFs (the quarterly press releases have one table each) if a pre-2024 point-in-time calendar is needed; held auction DATES since 1999 are complete either way (`de_auctions`).
+*   **The 11:30 Frankfurt bidding deadline** is the current rule (auction-process page, 2026-10-07); older years are not verified.
+*   **A dropped line is only detected per event:** `as_of` judges a drop by a later observation of the same (event, source), so a version that removes the only planned 7y auction (and lists no other 7y line) leaves it looking scheduled. Same limitation as every release-calendar source.

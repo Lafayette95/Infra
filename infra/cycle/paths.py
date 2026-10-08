@@ -27,6 +27,7 @@ class CyclePaths:
     bund_rv_dir: Path
     bund_prices_coverage: Path
     de_auctions_dir: Path
+    de_issuance_plan_dir: Path
     boe_ois_coverage: Path
     contracts_file: Path
     defs_coverage: Path
@@ -99,6 +100,7 @@ class CyclePaths:
             bund_rv_dir=config.BUND_RV_DIR,
             bund_prices_coverage=config.DAILY_BUND_PRICES_COVERAGE_FILE,
             de_auctions_dir=config.DE_AUCTIONS_DIR,
+            de_issuance_plan_dir=config.DE_ISSUANCE_PLAN_DIR,
             boe_ois_coverage=config.DAILY_BOE_OIS_COVERAGE_FILE,
             contracts_file=config.FUTURES_CONTRACTS_FILE,
             defs_coverage=config.FUTURES_DEFS_COVERAGE_FILE,

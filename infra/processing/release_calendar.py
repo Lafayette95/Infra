@@ -20,10 +20,12 @@ One row per (event, release instant, source):
 * ``last_seen`` - the last day a fetch still listed it. A scheduled date that stops being
   listed (a shutdown delay, a moved release) keeps its old ``last_seen`` while later
   fetches move on - so "what did we expect on day D" (``as_of``) = everything known by D
-  that had happened, or that no later fetch made by D had dropped.
+  that had happened (and wasn't dropped before its date), or that no later fetch made by D
+  had dropped.
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from infra.trading_calendar import snap_instants
@@ -152,4 +154,14 @@ def as_of(rows: pd.DataFrame, day) -> pd.DataFrame:
     latest_fetch = seen_by_day.groupby([known["event"], known["source"]]).transform("max")
     happened = known["timestamp"] < day + pd.Timedelta(days=1)
     dropped = latest_fetch > known["last_seen"]
-    return known[happened | ~dropped].sort_values("timestamp").reset_index(drop=True)
+    # A dropped row stays dropped once its date passes if the fetch that dropped it came
+    # BEFORE that date (moved / cancelled); one dropped only by a fetch after its date had
+    # simply left the source's forward window - it happened.
+    fetches = seen_by_day.groupby([known["event"], known["source"]])
+    nxt = pd.Series(pd.NaT, index=known.index, dtype="datetime64[ms]")
+    for _, idx in fetches.groups.items():
+        times = np.sort(seen_by_day.loc[idx].unique())
+        k = np.searchsorted(times, seen_by_day.loc[idx].to_numpy(), side="right")
+        nxt.loc[idx] = [times[j] if j < len(times) else pd.NaT for j in k]
+    cancelled = dropped & (nxt < known["timestamp"].dt.normalize())
+    return known[(happened & ~cancelled) | ~dropped].sort_values("timestamp").reset_index(drop=True)
