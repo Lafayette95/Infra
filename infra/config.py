@@ -50,6 +50,12 @@ OHLCV_1D_FUTURES_COVERAGE_FILE = OHLCV_1D_ROOT / "_coverage" / "futures.parquet"
 BBO_1S_ROOT = DATABASE_ROOT / "bbo-1s"
 BBO_1S_FUTURES_DIR = BBO_1S_ROOT / "Futures"
 BBO_1S_FUTURES_COVERAGE_FILE = BBO_1S_ROOT / "_coverage" / "futures.parquet"
+# every TRADE with its aggressor side (Databento ``trades``; aggressor positioning,
+# TOFIX "Positioning: roadmap"), and the 1-minute signed-volume bars built from it locally
+TRADES_ROOT = DATABASE_ROOT / "trades"
+TRADES_FUTURES_DIR = TRADES_ROOT / "Futures"
+TRADES_FUTURES_COVERAGE_FILE = TRADES_ROOT / "_coverage" / "futures.parquet"
+SIGNED_1M_FUTURES_DIR = DATABASE_ROOT / "trades-1m" / "Futures"
 
 # Master table of absolute futures contracts (root, ticker, expiry, ...).
 FUTURES_CONTRACTS_FILE = REFERENCE_ROOT / "Futures" / "contracts.parquet"
@@ -556,6 +562,7 @@ SCHEMA_OHLCV_1S = "ohlcv-1s"
 SCHEMA_OHLCV_1D = "ohlcv-1d"
 SCHEMA_BBO_1M = "bbo-1m"
 SCHEMA_BBO_1S = "bbo-1s"
+SCHEMA_TRADES = "trades"
 SCHEMA_DEFINITION = "definition"
 SCHEMA_STATISTICS = "statistics"
 API_KEY_ENV = "DATABENTO_API_KEY"

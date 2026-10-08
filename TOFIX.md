@@ -1381,7 +1381,7 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 
 **Suggested order:** TFF basis decomposition (data stored) -> index month-end extension -> MBS convexity (MBB) -> option-OI dealer gamma -> residual specialness -> aggressor signed volume (needs `trades` fetch) -> asymmetric reaction -> custody / allotments into the sector-balance-sheet nowcast.
 
-**Progress:** asymmetric reaction BUILT 2026-10-07 (user moved it first; `infra/analytics/positioning`, root CLAUDE.md 33); open items in "Positioning: asymmetric reaction - open items".
+**Progress:** signed volume (aggressor flow) BUILT 2026-10-08 for ZN, 6 months of ticks (root CLAUDE.md 14, positioning CLAUDE.md 5): strong same-time impact, no intraday prediction on its own. Next for it: more history (daily horizons, cumulative flow + OI entry prices), the other Treasury futures, and roll tagging (spread legs = the `N` prints; the spread instruments need a Rule 2.2 exception). Asymmetric reaction BUILT 2026-10-07 (user moved it first; `infra/analytics/positioning`, root CLAUDE.md 33); open items in "Positioning: asymmetric reaction - open items".
 
 ---
 

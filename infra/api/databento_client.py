@@ -26,6 +26,7 @@ from infra.config import (
     SCHEMA_DEFINITION,
     SCHEMA_OHLCV,
     SCHEMA_STATISTICS,
+    SCHEMA_TRADES,
 )
 from infra.relative.symbology import is_relative
 
@@ -222,6 +223,24 @@ def fetch_futures_bbo(
     trade, which can be much older)."""
     validate_absolute_symbol(symbol)
     return _get_range(dataset, schema, [symbol], start, end, "raw_symbol", max_cost_usd, client)
+
+
+def fetch_futures_trades(
+    dataset: str,
+    symbol: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    *,
+    max_cost_usd: float = MAX_COST_USD,
+    client: db.Historical | None = None,
+) -> pd.DataFrame:
+    """Every ``trades`` record for ONE absolute contract over ``[start, end)``, indexed by
+    ``ts_recv``: ``ts_event`` (matching-engine time, ns), ``side`` (the AGGRESSOR: ``B`` a
+    buyer lifted the offer, ``A`` a seller hit the bid, ``N`` none - e.g. the legs CME
+    prints for a spread trade), ``price``, ``size``, ``sequence`` (several fills of one
+    sweep share it, a microsecond apart), ``flags``. Verified on ZN, 2026-10-08."""
+    validate_absolute_symbol(symbol)
+    return _get_range(dataset, SCHEMA_TRADES, [symbol], start, end, "raw_symbol", max_cost_usd, client)
 
 
 def fetch_definitions(

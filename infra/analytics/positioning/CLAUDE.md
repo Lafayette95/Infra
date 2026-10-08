@@ -103,3 +103,30 @@ measures MEAN and how they behaved on real data.
     in a 63-day window can't measure an excess beta. Next: intraday (bbo-1m) for the macro
     roots - ~53 observations a day.
 
+## 5. Aggressor positioning: signed volume (built 2026-10-08)
+*   **Data:** every ZN trade with its AGGRESSOR side (Databento `trades`: `B` buyer-initiated,
+    `A` seller-initiated, `N` none), 2026-04-07..10-07, ZNM6/ZNU6/ZNZ6/ZNH7 (front and second
+    around both rolls), 13.3M trades, $16.65, 146 MB. Raw ticks are STORED (any later cut -
+    1-second, volume buckets, trade sizes, blocks - is local, never re-bought); the 1-minute
+    signed bars are built from them (root CLAUDE.md 14). Extending = more history or the other
+    five Treasury futures (one year of all six: $104, priced 2026-10-08).
+*   **Terms:** signed volume = buy - sell aggressor volume ("trade pressure" when normalised:
+    `imbalance` = signed / (buy + sell)). NOT order flow imbalance in the Cont-Kukanov-Stoikov
+    sense (quote-queue changes, passive orders too) - a separate, later measure.
+*   **First look (front contract, 128 trading days; day-clustered t):**
+    *   **Same-time link is strong:** correlation of signed volume with the price change 0.48
+        (5 min), 0.57 (15), 0.61 (60); impact ~0.25-0.30 ticks (1/64) per 1,000 net contracts.
+    *   **No persistence:** 5-minute signed volume autocorrelation ~0 at every lag (1-12).
+    *   **No short-term prediction:** past 5 / 15-minute flow -> next 5 / 15 minutes: 0.00
+        (t 0.1-0.3), also net of the window's own price move. Past HOUR -> next hour: -0.05
+        (t -2.2): a slight reversal of heavy hourly flow - borderline, one of several tests.
+    *   **Absorption** (30-min windows with top-10% |flow| and a below-median move, n = 101): no
+        follow-through either way (-0.7 ticks in the flow's direction over the next hour, t -1).
+    *   **`N` (no aggressor) = 1.2% of volume:** mostly the outright legs of spread trades - the
+        hook for roll research (tagging roll trades), deliberately not pursued yet (user, 2026-10-08:
+        outrights first; the spread instruments need a Rule 2.2 exception).
+*   **Reading:** flow explains price at the same time and predicts nothing at intraday horizons
+    on its own - the efficient-market baseline. The positioning use is slower: cumulative flow
+    over days, combined with daily open interest (the entry-price distribution, TOFIX roadmap) -
+    which needs more history than six months.
+
