@@ -33,7 +33,8 @@ def main() -> None:
     if args.discover:
         days = pd.bdate_range(args.since, pd.Timestamp.now().normalize(), freq=f"{args.every}BMS")
         types = args.types if args.discover == "gilts" else ["all"]
-        print("universe size:", tw.discover(days, cp_type=args.discover, security_types=types))
+        r = tw.discover(days, cp_type=args.discover, security_types=types)
+        print("universe size:", r["universe"], "| failed days:", [d.date() for d in r["failed_days"]])
     if args.history:
         u = tw.read_universe()
         u = u[u["country"].isin(args.countries) & u["security_type"].isin(args.types)].sort_values("maturity_date")

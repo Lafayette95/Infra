@@ -88,26 +88,43 @@ def _merge_universe(rows: pd.DataFrame, raw_root: Path) -> int:
 
 
 def discover(days, *, cp_type: str = "gilts", security_types=("Conventional", "Index-linked"),
-             raw_root: Path = TRADEWEB_RAW_DIR) -> int:
+             raw_root: Path = TRADEWEB_RAW_DIR) -> dict:
     """The ISINs in the site's search grid on ``days`` (one search + a page per 30 rows each),
-    folded into the universe - for securities that matured before today's export."""
-    from infra.api.tradeweb_client import _grid
+    folded into the universe AFTER EACH DAY (an interrupted run keeps what it found) - for
+    securities that matured before today's export. A search the site answers with its error
+    page is retried ``ERROR_RETRIES`` times after a growing pause; a day that still fails is
+    returned in ``failed_days`` (never read as "no securities")."""
     s = _session()
-    frames = []
+    failed, n = [], 0
     for day in pd.DatetimeIndex(days):
-        for st in security_types:
-            rows = s.grid_rows(day, day, cp_type=cp_type, security_type=st)
-            g = pd.DataFrame([r[:6] for r in rows if len(r) >= 6],
-                             columns=["name", "timestamp", "isin", "security_type", "coupon", "maturity_date"])
-            if g.empty:
-                continue
-            g["timestamp"] = pd.to_datetime(g["timestamp"], format="%m/%d/%Y")
-            g["maturity_date"] = pd.to_datetime(g["maturity_date"], format="%m/%d/%Y", errors="coerce")
-            g["coupon"] = pd.to_numeric(g["coupon"], errors="coerce")
-            g["country"] = g["isin"].str[:2]
-            frames.append(g)
-        log.info("tradeweb discover %s: %d rows so far", day.date(), sum(len(f) for f in frames))
-    return _merge_universe(pd.concat(frames, ignore_index=True), raw_root) if frames else 0
+        frames = []
+        try:
+            for st in security_types:
+                for attempt in range(1 + ERROR_RETRIES):
+                    try:
+                        rows = s.grid_rows(day, day, cp_type=cp_type, security_type=st)
+                        break
+                    except RuntimeError as exc:
+                        if "application error" not in str(exc) or attempt == ERROR_RETRIES:
+                            raise
+                        time.sleep(ERROR_PAUSE_S * 2 * (attempt + 1))
+                g = pd.DataFrame([r[:6] for r in rows if len(r) >= 6],
+                                 columns=["name", "timestamp", "isin", "security_type", "coupon", "maturity_date"])
+                if g.empty:
+                    continue
+                g["timestamp"] = pd.to_datetime(g["timestamp"], format="%m/%d/%Y")
+                g["maturity_date"] = pd.to_datetime(g["maturity_date"], format="%m/%d/%Y", errors="coerce")
+                g["coupon"] = pd.to_numeric(g["coupon"], errors="coerce")
+                g["country"] = g["isin"].str[:2]
+                frames.append(g)
+        except RuntimeError as exc:
+            failed.append(day)
+            log.warning("tradeweb discover %s failed: %s", day.date(), exc)
+            continue
+        if frames:
+            n = _merge_universe(pd.concat(frames, ignore_index=True), raw_root)
+        log.info("tradeweb discover %s: %d rows; universe %d", day.date(), sum(len(f) for f in frames), n)
+    return {"universe": n, "failed_days": failed}
 
 
 # ------------------------------------------------------------------ prices

@@ -132,7 +132,10 @@ class InSite:
         page = self._request("GET", PRICES).text
         f = self._filters(_form(page), start, end, isin, cp_type, security_type)
         f["__EVENTTARGET"], f["__EVENTARGUMENT"] = P + "SubmitButton", ""
-        return self._request("POST", PRICES, data=f).text
+        page = self._request("POST", PRICES, data=f).text
+        if "has experienced an error" in _text(page):
+            raise RuntimeError("InSite search: the site returned an application error")
+        return page
 
     def export(self, start, end, *, isin: str = "", cp_type: str = "all", security_type: str = "all") -> str:
         """The CSV export of a search ("" when the site returned no file)."""
@@ -159,6 +162,8 @@ class InSite:
             f["__EVENTTARGET"] = P + f"ClosePricesGrid$ctl00$ctl03$ctl01$ctl{5 + 2 * (k - 1):02d}"
             f["__EVENTARGUMENT"] = ""
             page = self._request("POST", PRICES, data=f).text
+            if "has experienced an error" in _text(page):
+                raise RuntimeError("InSite grid page: the site returned an application error")
             rows += _grid(page)
         return rows
 

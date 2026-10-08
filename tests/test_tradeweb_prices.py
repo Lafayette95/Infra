@@ -74,3 +74,17 @@ def test_daily_update_stores_and_extends_the_universe(tmp_path, monkeypatch):
     assert r["rows"] == 2 and (tmp_path / "raw" / "daily" / "2026-10-08.csv").exists()
     u = tw.read_universe(raw_root=tmp_path / "raw")
     assert set(u["isin"]) == {"GB00BL6C7720", "IT0005584856"}
+
+
+def test_discovery_never_reads_an_error_as_no_securities(tmp_path, monkeypatch):
+    class Grid:
+        def grid_rows(self, start, end, **_):
+            if pd.Timestamp(start) == D("2022-11-01"):
+                raise RuntimeError("InSite search: the site returned an application error")
+            return [["UKT 5 03/18", "1/2/2018", "GB00B1VWPC84", "Conventional", "5.000", "3/7/2018"]]
+
+    monkeypatch.setattr(tw, "SESSION", Grid())
+    monkeypatch.setattr(tw, "ERROR_PAUSE_S", 0)
+    r = tw.discover([D("2018-01-02"), D("2022-11-01")], security_types=("Conventional",), raw_root=tmp_path)
+    assert r["failed_days"] == [D("2022-11-01")] and r["universe"] == 1
+    assert list(tw.read_universe(raw_root=tmp_path)["isin"]) == ["GB00B1VWPC84"]      # saved as it went
