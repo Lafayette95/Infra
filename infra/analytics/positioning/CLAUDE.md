@@ -74,3 +74,32 @@ measures MEAN and how they behaved on real data.
     only the relative measures and the de-trended skew are clean, and none is yet shown
     to predict. Next tests: episodes (2020-03, 2022, 2023-03 SVB, 2023-10), and forward
     SKEW / reversal size rather than forward direction.
+
+## 4. Cross-asset, multi-factor (built 2026-10-07)
+*   **Data:** 16 CME macro roots (`infra.config.MACRO_ROOTS`: ES NQ RTY NKD, 6E 6J 6B 6A 6C 6S
+    6M, CL NG, GC SI HG), daily settlements from 2010-07 (`scripts/backfill_daily_bulk.py`),
+    read as `fret:<root>.v.0` = SAME-CONTRACT log returns. Never take log differences of the
+    additively back-adjusted level (`fut:`): it divides each move by a shifted level - crude's
+    level went negative before 2014, and every macro future's vol came out wrong (NQ 14% vs
+    20%, crude 64% vs 43%). STIR as `fut:SR1.c.3` (same-contract change, x -100 = bp), never
+    `stir:` (raw rank settlement: every roll a fake jump).
+*   **Orientation:** every instrument "+ = a loss for a long holder" (futures -100 x log
+    return, yields +100 x change), so positive asymmetry = crowded long everywhere.
+*   **Multi-factor expected move** (`multifactor_relative`): residual vs a trailing OLS on K
+    factors (first 4 PCs of the VOL-SCALED panel, or named: 10y, S&P, EUR, crude, gold),
+    fitted every 21 days on 504 days ending before the measurement window, >= 252 rows per fit
+    (60 overfit: ES out-of-sample R^2 -4.5); asymmetry on big EXPECTED moves. Specs
+    `macro_daily`, `macro_daily_named`, `macro_daily_stir` (the last from 2022, SR1's history
+    start + the fit's warm-up). ~35 s for all three.
+*   **Fit quality:** median out-of-sample R^2 0.5-0.65 for FX majors, equity indices, the 5-30y,
+    gold; ~0 for crude, natural gas, the yen. It COLLAPSES in regime changes (10y -0.7 in 2023,
+    the stock-bond correlation flip): there the residual measures changing covariance, not
+    positioning.
+*   **Validation (equity + FX futures vs CFTC TFF, 2010-2026): nothing.** Multi-factor asym vs
+    leveraged-fund net (z vs its trailing year) -0.06 on average, residual skew -0.11 (both
+    the wrong sign, small); forward 20-day pain move: pooled correlation +-0.02 (~t 0.15).
+    Semivariance vs leveraged funds -0.26, asset managers -0.33: trend again - speculative
+    CFTC positioning is itself largely trend-following. Likely reason: ~9 big moves per side
+    in a 63-day window can't measure an excess beta. Next: intraday (bbo-1m) for the macro
+    roots - ~53 observations a day.
+

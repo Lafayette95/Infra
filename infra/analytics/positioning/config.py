@@ -36,7 +36,8 @@ class AsymmetrySpec:
     scale: float = 100.0
     # per-instrument overrides of how a stored value becomes a move: (id, how, multiplier),
     # how = "diff" | "logdiff" | "as_is". Cross-asset convention: + = a LOSS for a long
-    # holder of the instrument - a futures price as -100 x log return (% price fall),
+    # holder of the instrument - a futures price as -100 x its same-contract log return
+    # (``fret:``, % price fall),
     # a yield as +100 x its change (bp up).
     instrument_moves: tuple[tuple[str, str, float], ...] = ()
     pnl_source: str = "FUTURE_BPS_BBO"      # intraday moves
@@ -49,6 +50,8 @@ class AsymmetrySpec:
     # a factor is regressed on the others) - asymmetry.multifactor_relative.
     factor: str = "pc1"
     mf_refit_every: int = 21
+    # rows a multi-factor beta fit / PC fit needs (a 4-factor fit on fewer overfits)
+    beta_min_obs: int = 252
     pc_window: int = 252
     pc_refit_every: int = 21
     # windows in observations (days, or grid steps intraday)
@@ -132,25 +135,31 @@ _INTRADAY = AsymmetrySpec(
 
 # Cross-asset (user decisions 2026-10-07): US rates + the CME macro roots (equity index,
 # G10 FX + MXN, energy, metals), daily settlements from 2010-07; STIR (SR1) from 2018-05.
-_MACRO_FUT = tuple(f"fut:{r}.v.0" for r in ("ES", "NQ", "RTY", "NKD", "6E", "6J", "6B", "6A", "6C", "6S", "6M",
+# fret: = same-contract log returns (NOT logdiff of the back-adjusted level - wrong for
+# compounding prices, continuous.log_returns); x -100 = % price fall.
+_MACRO_FUT = tuple(f"fret:{r}.v.0" for r in ("ES", "NQ", "RTY", "NKD", "6E", "6J", "6B", "6A", "6C", "6S", "6M",
                                             "CL", "NG", "GC", "SI", "HG"))
 _MACRO = AsymmetrySpec(
     name="macro_daily",
     description="US rates (OTR 2/5/10/30y) + CME equity index, FX, energy, metals futures, daily from 2010-07; "
                 "multi-factor: the first 4 PCs of the vol-scaled panel. + = a loss for longs everywhere.",
     instruments=_OTR + _MACRO_FUT,
-    instrument_moves=tuple((f, "logdiff", -100.0) for f in _MACRO_FUT),
+    instrument_moves=tuple((f, "as_is", -100.0) for f in _MACRO_FUT),
     factor="pcs:4", beta_window=504, pc_window=504, min_obs=60, start="2010-07-10",
 )
-_STIR = ("stir:SR1.c.3",)
+# fut: (back-adjusted, same-contract changes) x -100 = bp of rate rise. NOT stir: - that is
+# the raw settlement of whichever contract holds the rank, so every monthly roll is a fake
+# jump (found 2026-10-07: it wrecked the whole panel's factors, ES's median R^2 0.62 -> 0.10).
+_STIR = ("fut:SR1.c.3",)
 
 ASYMMETRY_SPECS: dict[str, AsymmetrySpec] = {s.name: s for s in (
     _MACRO,
     replace(_MACRO, name="macro_daily_named",
-            factor="series:otr:US_BOND_10y,fut:ES.v.0,fut:6E.v.0,fut:CL.v.0,fut:GC.v.0",
+            factor="series:otr:US_BOND_10y,fret:ES.v.0,fret:6E.v.0,fret:CL.v.0,fret:GC.v.0",
             description="As macro_daily, factors = named: 10y yield, S&P, EUR, crude, gold."),
     replace(_MACRO, name="macro_daily_stir", instruments=_OTR + _STIR + _MACRO_FUT, start="2018-06-01",
-            description="As macro_daily plus the SOFR strip (SR1, 3rd contract: 100 - price, bp), from 2018-06."),
+            instrument_moves=_MACRO.instrument_moves + (("fut:SR1.c.3", "diff", -100.0),),
+            description="As macro_daily plus the SOFR strip (SR1, 3rd contract: rate change in bp), from 2018-06."),
     _DAILY,
     replace(_DAILY, name="ust_daily_vs10y", factor="series:otr:US_BOND_10y",
             description="As ust_daily, factor = the 10y itself (relative measures read 'vs the 10y')."),

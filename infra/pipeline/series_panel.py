@@ -61,6 +61,23 @@ _PRIOR_DAYS = pd.Timedelta(days=10)
 def continuous_futures(tickers: list[str], start, end) -> pd.DataFrame:
     """Back-adjusted continuous settlement prices, wide ``timestamp x ticker``, over
     ``[start, end]`` (inclusive days) for relative futures tickers. Disk only."""
+    changes = _same_contract_changes(tickers, start, end)
+    if changes is None:
+        return pd.DataFrame(columns=tickers, dtype="float64")
+    return continuous.back_adjusted(changes).reindex(columns=tickers)
+
+
+def continuous_futures_returns(tickers: list[str], start, end) -> pd.DataFrame:
+    """Same-contract daily LOG returns of relative futures tickers (each day on the contract
+    held that day), wide. Use these, not log differences of the back-adjusted level, for
+    anything that compounds (``continuous.log_returns``). Disk only."""
+    changes = _same_contract_changes(tickers, start, end)
+    if changes is None:
+        return pd.DataFrame(columns=tickers, dtype="float64")
+    return continuous.log_returns(changes).reindex(columns=tickers)
+
+
+def _same_contract_changes(tickers: list[str], start, end) -> pd.DataFrame | None:
     specs = []
     for t in tickers:
         spec = parse_relative(t)
@@ -70,7 +87,7 @@ def continuous_futures(tickers: list[str], start, end) -> pd.DataFrame:
     start, end = pd.Timestamp(start), pd.Timestamp(end)
     rel = load_relative_daily(specs, start, end + _ONE_DAY, fetch_missing=False)
     if rel.empty:
-        return pd.DataFrame(columns=tickers, dtype="float64")
+        return None
     contracts = sorted(rel["contract"].astype(str).unique())
     absolute = dl.read_daily_from_disk(contracts, start - _PRIOR_DAYS, end + _ONE_DAY)
     changes = continuous.same_contract_changes(rel, absolute)
@@ -79,7 +96,7 @@ def continuous_futures(tickers: list[str], start, end) -> pd.DataFrame:
         log.warning("continuous_futures: %d day(s) with no same-contract prior settlement (counted as no "
                     "move): %s", len(unknown),
                     ", ".join(f"{r.ticker} {r.timestamp.date()}" for r in unknown.head(10).itertuples()))
-    return continuous.back_adjusted(changes).reindex(columns=tickers)
+    return changes
 
 
 def raw_settlements(tickers: list[str], start, end) -> pd.DataFrame:
@@ -108,6 +125,10 @@ def raw_settlements(tickers: list[str], start, end) -> pd.DataFrame:
 # --------------------------------------------------------------------------- readers
 def _fut(keys, start, end, as_of):
     return continuous_futures(keys, start, end)
+
+
+def _fret(keys, start, end, as_of):
+    return continuous_futures_returns(keys, start, end)
 
 
 def _settle(keys, start, end, as_of):
@@ -366,6 +387,9 @@ SERIES_SOURCES: dict[str, SeriesSource] = {
     "fut": SeriesSource(_fut, "back-adjusted continuous futures settlement",
                         ("fut:ZN.v.0", "fut:ZF.v.0", "fut:ZT.v.0", "fut:TN.v.0", "fut:ZB.v.0", "fut:UB.v.0"),
                         availability=_settle_avail),
+    "fret": SeriesSource(_fret, "same-contract daily LOG return of a relative futures ticker (equity index, FX, "
+                         "commodities: anything that compounds)", ("fret:ES.v.0", "fret:6E.v.0", "fret:CL.v.0"),
+                         availability=_settle_avail, kind="moves"),
     "settle": SeriesSource(_settle, "raw daily settlement (roll jumps kept)", ("settle:ZQ.c.1",),
                            availability=_settle_avail),
     "stir": SeriesSource(_stir, "STIR implied rate, 100 - settlement (%)",

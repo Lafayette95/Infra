@@ -312,6 +312,29 @@ def fetch_statistics(
     return _get_range(dataset, SCHEMA_STATISTICS, [symbol], start, end, "raw_symbol", max_cost_usd, client)
 
 
+def fetch_statistics_bulk(
+    dataset: str,
+    symbols: Sequence[str],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    *,
+    max_cost_usd: float = MAX_COST_USD,
+    client: db.Historical | None = None,
+) -> pd.DataFrame:
+    """Raw ``statistics`` rows for MANY absolute contracts over ``[start, end)``, with the
+    ``symbol`` column naming each row's contract; batched under the per-request symbol cap.
+    One request per batch instead of one per contract: the per-contract path's latency is
+    the bottleneck of a long backfill (TOFIX "Daily statistics requests are slow")."""
+    for s in symbols:
+        validate_absolute_symbol(s)
+    frames = [
+        _get_range(dataset, SCHEMA_STATISTICS, batch, start, end, "raw_symbol", max_cost_usd, client)
+        for batch in _batched(list(symbols), MAX_SYMBOLS_PER_REQUEST)
+    ]
+    frames = [f for f in frames if not f.empty]
+    return pd.concat(frames) if frames else pd.DataFrame()
+
+
 _AVAILABLE_END_TTL_S = 300.0
 _available_end_cache: dict[tuple[str, str], tuple[float, pd.Timestamp]] = {}
 

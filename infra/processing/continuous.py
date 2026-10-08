@@ -15,6 +15,7 @@ same contract both days" the daily cycle's pnl uses (infra.cycle.bmk).
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 
@@ -73,3 +74,20 @@ def unknown_changes(changes: pd.DataFrame) -> pd.DataFrame:
     contract had no settlement on the prior day. Mostly roll days with a gap in the store."""
     first = changes.groupby("ticker")["timestamp"].transform("min")
     return changes.loc[changes["change"].isna() & (changes["timestamp"] > first)].reset_index(drop=True)
+
+
+def log_returns(changes: pd.DataFrame) -> pd.DataFrame:
+    """Wide ``timestamp x ticker`` same-contract LOG returns, log(P_t(c_t) / P_{t-1}(c_t)).
+
+    The right return for anything quoted as a price that compounds (equity index, FX,
+    commodities): a log difference of the ADDITIVELY back-adjusted level divides each day's
+    move by a shifted level, not the real price - found 2026-10-07, crude oil's
+    back-adjusted series went negative early in 2010-2026 (16 years of contango roll gaps),
+    and every macro future's volatility came out wrong (NQ 14% vs 20%, crude 64% vs 43%).
+    NaN where either price is not positive (crude, 2020-04-20) or the prior is unknown."""
+    ok = (changes["price"] > 0) & (changes["prior_price"] > 0)
+    ret = np.log(changes["price"].where(ok) / changes["prior_price"].where(ok))
+    return (changes.assign(ret=ret)
+            .pivot_table(index="timestamp", columns="ticker", values="ret", aggfunc="last", dropna=False)
+            .sort_index())
+

@@ -297,3 +297,45 @@ def test_cleared_volume_is_the_final_update_on_its_own_trading_day():
     out = clean_daily_statistics(raw, "ZQV6", "GLBX.MDP3")
     assert out["timestamp"].tolist() == [pd.Timestamp("2026-09-01")]
     assert out["volume"].tolist() == [132953] and out["settlement_price"].isna().all()
+
+
+# --------------------------------------------------------------------------- bulk backfill
+def test_bulk_plan_respects_coverage_and_splits_partial_tickers(tmp_path):
+    from infra.storage import coverage_store
+    cov = tmp_path / "cov.parquet"
+    coverage_store.record_covered(cov, "B", [(D("2021-03-01"), D("2021-06-01"))])   # partly covered in 2021
+    coverage_store.record_covered(cov, "C", [(D("2020-06-01"), D("2022-01-01"))])   # covered from mid-2020
+    bulk, single = dl.plan_daily_bulk(["A", "B", "C"], "2020-06-01", "2022-01-01", coverage_file=cov)
+    assert bulk == [((D("2020-06-01"), D("2021-01-01")), ["A", "B"]), ((D("2021-01-01"), D("2022-01-01")), ["A"])]
+    assert single == [("B", [(D("2021-01-01"), D("2021-03-01")), (D("2021-06-01"), D("2022-01-01"))])]
+
+
+def test_bulk_fetch_splits_rows_per_contract_and_stores_coverage(tmp_path, monkeypatch):
+    root, cov = tmp_path / "Daily", tmp_path / "cov.parquet"
+    calls = []
+
+    def fake_bulk(dataset, symbols, start, end, **_):
+        calls.append(list(symbols))
+        a = _raw_stat_rows(["2024-01-02 22:00"], ["2024-01-02"], [3], price=[100.5]).assign(symbol="ESH4")
+        b = _raw_stat_rows(["2024-01-02 22:00"], ["2024-01-02"], [3], price=[101.0]).assign(symbol="ESM4")
+        return pd.concat([a, b], ignore_index=True)
+
+    monkeypatch.setattr(api, "fetch_statistics_bulk", fake_bulk)
+    piece = (D("2024-01-01"), D("2024-02-01"))
+    fetched = dl.fetch_daily_raw_bulk(["ESH4", "ESM4", "ESU4"], piece, dataset="GLBX.MDP3")
+    assert len(calls) == 1
+    for t, f in fetched.items():
+        dl.store_daily_raw(t, f, dataset="GLBX.MDP3", root=root, coverage_file=cov)
+    df = dl.read_daily_from_disk(["ESH4", "ESM4"], *piece, root=root, adjusted=False)
+    assert df.set_index("ticker")["settlement_price"].to_dict() == {"ESH4": 100.5, "ESM4": 101.0}
+    bulk, single = dl.plan_daily_bulk(["ESH4", "ESM4", "ESU4"], *piece, coverage_file=cov)
+    assert bulk == [] and single == []           # all three recorded covered, ESU4 too (no rows)
+
+
+def test_bulk_plan_skips_pieces_outside_a_contracts_life(tmp_path):
+    cov = tmp_path / "cov.parquet"
+    alive = {"RTYH8": [(D("2017-03-01"), D("2018-03-17"))], "ESH0": [(D("2009-03-20"), D("2010-03-20")),
+                                                                       (D("2019-03-15"), D("2020-03-21"))]}
+    bulk, _ = dl.plan_daily_bulk(["ESH0", "RTYH8"], "2015-01-01", "2021-01-01", coverage_file=cov, alive=alive)
+    pieces = {p[0].year: t for p, t in bulk}
+    assert pieces == {2017: ["RTYH8"], 2018: ["RTYH8"], 2019: ["ESH0"], 2020: ["ESH0"]}

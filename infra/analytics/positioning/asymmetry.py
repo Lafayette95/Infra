@@ -198,7 +198,8 @@ def trailing_pcs(moves: pd.DataFrame, n: int, window: int, refit_every: int, min
 
 def multifactor_relative(moves: pd.DataFrame, factors: pd.DataFrame, *, beta_window: int, window: int,
                          refit_every: int, k: float, vol_span: int, min_obs: int, min_big: int,
-                         own_factor: dict[str, str] | None = None) -> dict[str, pd.DataFrame]:
+                         own_factor: dict[str, str] | None = None,
+                         beta_min_obs: int | None = None) -> dict[str, pd.DataFrame]:
     """Family 3 with several factors. Per instrument: a trailing OLS of its move on the
     factors, fitted every ``refit_every`` rows on the ``beta_window`` rows that END
     ``window`` rows earlier (never the measurement window), gives the EXPECTED move
@@ -212,8 +213,11 @@ def multifactor_relative(moves: pd.DataFrame, factors: pd.DataFrame, *, beta_win
     > 0: when everything else said "this should fall" (a loss for longs) it fell MORE than
     usual, and when it should have rallied it rallied less: crowded long. With one factor
     this is the one-factor measure up to the beta's scale. ``own_factor``: an instrument
-    that IS one of the factors (named factors) is regressed on the OTHERS only."""
+    that IS one of the factors (named factors) is regressed on the OTHERS only.
+    ``beta_min_obs``: rows a beta fit needs (a 4-factor fit on 60 rows overfits: found
+    2026-10-07, ES out-of-sample R^2 -4.5 in a spec starting 2018); default ``min_obs``."""
     own_factor = own_factor or {}
+    beta_min_obs = min_obs if beta_min_obs is None else beta_min_obs
     F = factors.to_numpy(dtype=float)
     idx = moves.index
     expected = pd.DataFrame(np.nan, index=idx, columns=moves.columns)
@@ -230,7 +234,7 @@ def multifactor_relative(moves: pd.DataFrame, factors: pd.DataFrame, *, beta_win
                 lo = max(0, hi - beta_window)
                 rows = np.arange(lo, max(hi, lo))
                 rows = rows[ok[rows]] if len(rows) else rows
-                if len(rows) >= min_obs:
+                if len(rows) >= beta_min_obs:
                     X, yy = Fu[rows], y[rows]
                     b = np.linalg.lstsq(X, yy, rcond=None)[0]
             if b is not None and np.isfinite(Fu[i]).all():

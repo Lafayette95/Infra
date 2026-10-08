@@ -173,7 +173,7 @@ def compute(spec: AsymmetrySpec | str, start=None, end=None) -> pd.DataFrame:
     # factors
     factors = None
     if spec.factor.startswith("pcs:"):
-        factors = asym.trailing_pcs(moves, spec.n_pcs, spec.pc_window, spec.pc_refit_every, spec.min_obs)
+        factors = asym.trailing_pcs(moves, spec.n_pcs, spec.pc_window, spec.pc_refit_every, spec.beta_min_obs)
         factor = factors["pc1"]
     elif spec.multifactor:
         factors = moves[spec.factor_instruments]
@@ -198,7 +198,8 @@ def compute(spec: AsymmetrySpec | str, start=None, end=None) -> pd.DataFrame:
         rel = asym.multifactor_relative(moves, factors, beta_window=spec.beta_window, window=spec.window,
                                         refit_every=spec.mf_refit_every, k=spec.k, vol_span=spec.vol_span,
                                         min_obs=spec.min_obs, min_big=spec.min_big,
-                                        own_factor={f: f for f in spec.factor_instruments})
+                                        own_factor={f: f for f in spec.factor_instruments},
+                                        beta_min_obs=spec.beta_min_obs)
     else:
         others = moves.drop(columns=[c for c in [spec.factor_instrument] if c])
         rel = asym.relative_asymmetry(others, factor, beta_window=spec.beta_window, window=spec.window, k=spec.k,

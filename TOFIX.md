@@ -425,7 +425,7 @@ pair each area with CPI-U/CPI-W, and area names need mapping to `cu.area` codes.
 
 **Found:** 2026-10-01, back-filling cleared volume (CLAUDE.md 5, 8) into the daily store.
 **Where:** `infra.pipeline.daily.fetch_and_store_daily`, called per contract by `infra.pipeline.relative.volume_ranked_mapping` and `load_relative_daily`.
-**Status:** open, not fixed.
+**Status:** open for the relative loaders; a BULK path exists since 2026-10-07 (`scripts/backfill_daily_bulk.py`, root CLAUDE.md 8): one request per (dataset, year) across many roots - Databento's time scales with the date range, not the symbol count. The relative loaders could plan their candidate pools through it.
 
 **The issue:** a single-contract `statistics` request over ~15 months took ~230s of
 Databento server time (SR3Z6, 2026-10-01; storing it took 0.1s). The cost is tiny
@@ -1426,6 +1426,19 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **What:** on 6 of 1,108 days 2022-2026 (2 in 2022, 4 in late Aug 2026: 08-27, 08-31, 09-01, 09-02) the curve moves +-10-13bp at every tenor while the on-the-run Bund, our own Bund curve and the Bund future agree within a few bp. The peer bad-print rule can't see a curve-wide move.
 *   **Done:** the synchronized family uses our curve instead (CLAUDE.md 12); `yield_sources_agree` (warn) lists such days in the unsynced P&L.
 *   **Open:** treat them in `yield_bundesbank` itself (e.g. an outlier test against our curve / the OTR, then NA) - not done, since that bmk is the raw official series by design.
+
+---
+
+## Positioning: cross-asset asymmetry - open items
+
+**Found:** 2026-10-07 (`infra/analytics/positioning/CLAUDE.md` 4). **Where:** `macro_daily*` specs, `infra.config.MACRO_ROOTS`. **Status:** open.
+
+* **No signal on daily data** (vs CFTC TFF for equity/FX futures, and forward moves). Next: intraday bbo-1m for the macro roots (user: daily first, intraday later; price it with a dry run first), so a window holds hundreds of big moves, not ~9 per side.
+* **The usual-covariance fit collapses in regime changes** (10y out-of-sample R^2 -0.7 in 2023): candidates - a shorter beta window, exponentially weighted betas, or skipping windows whose own R^2 is negative.
+* **Commodities have no positioning benchmark stored:** CFTC's Disaggregated report (managed money) covers them; TFF doesn't. Same client, a second report.
+* **Macro roots are not in the daily cycle,** so their settlements go stale; adding them to `DAILY_BACKFILL` needs the px bad-print checks calibrated for non-rates (peers, thresholds).
+* **Point values / currencies unset** for the macro roots (cmegroup.com blocks this machine): needed before any P&L in currency.
+* **The CTA model's `returns="log"` reads the back-adjusted level** (`CTAAsset.returns`): wrong for compounding futures (see `continuous.log_returns`); its universes are rates (`diff`) so far - use `fret:`-style returns before adding equities, FX or commodities.
 
 ## Hedged yields / FX-implied rates: open items (2026-10-07)
 *   **Where:** `infra.pipeline.hedged_yields`, `infra.pipeline.fx_implied` (CLAUDE.md 16). v2 (`rolling_3m_fx`, FX swaps) is done and the default; v1 (`rolling_3m`, OIS + basis) stays alongside.

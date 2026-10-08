@@ -212,7 +212,7 @@ def test_trailing_pcs_vol_scale_the_panel():
 def test_macro_spec_move_rules():
     s = get_spec("macro_daily")
     assert s.multifactor and s.n_pcs == 4
-    assert s.move_rule("fut:ES.v.0") == ("logdiff", -100.0)
+    assert s.move_rule("fret:ES.v.0") == ("as_is", -100.0)
     assert s.move_rule("otr:US_BOND_10y") == (None, 100.0)
     named = get_spec("macro_daily_named")
-    assert named.multifactor and "fut:ES.v.0" in named.factor_instruments
+    assert named.multifactor and "fret:ES.v.0" in named.factor_instruments

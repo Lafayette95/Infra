@@ -158,6 +158,58 @@ def fetch_and_store_daily(
     return store_daily_raw(ticker, fetched, dataset=dataset, root=root, coverage_file=coverage_file, prune=prune)
 
 
+# ------------------------------------------------------------------ bulk (many contracts at once)
+
+def plan_daily_bulk(
+    tickers: list[str], start, end, *, chunk_years: int = 1,
+    coverage_file: Path = DAILY_FUTURES_COVERAGE_FILE,
+    alive: dict[str, list[Interval]] | None = None,
+) -> tuple[list[tuple[Interval, list[str]]], list[tuple[str, list[Interval]]]]:
+    """Rule 2.1 for a many-contract backfill: ``[start, end)`` cut into ``chunk_years``
+    pieces; per piece, the tickers with NO coverage in it go into one bulk request
+    (``bulk``: [(piece, tickers)]), and tickers only PARTLY covered there keep the
+    per-contract path for their exact gaps (``single``: [(ticker, gaps)]). Nothing already
+    covered is asked again. ``alive``: each ticker's listed life(s) (activation to expiry; a
+    one-digit-year CME symbol has one per decade) - a ticker goes only into pieces that
+    overlap one, since a request whose symbols ALL fail to resolve is rejected (422).
+    Touches no API."""
+    start, end = to_utc_day(start), to_utc_day(end)
+    bounds = [start] + [pd.Timestamp(year=y, month=1, day=1)
+                        for y in range(start.year + 1, end.year + 1, chunk_years)] + [end]
+    pieces = [(a, b) for a, b in zip(bounds[:-1], bounds[1:]) if a < b]
+    bulk, single = [], {}
+    for piece in pieces:
+        whole = []
+        for t in tickers:
+            if alive is not None and not any(a < piece[1] and b > piece[0] for a, b in alive.get(t, [])):
+                continue
+            gaps = plan_daily_update(t, *piece, coverage_file=coverage_file)
+            if gaps == [piece]:
+                whole.append(t)
+            elif gaps:
+                single.setdefault(t, []).extend(gaps)
+        if whole:
+            bulk.append((piece, whole))
+    return bulk, list(single.items())
+
+
+def fetch_daily_raw_bulk(
+    tickers: list[str], piece: Interval, *, dataset: str, max_cost_usd: float = MAX_COST_USD, client=None,
+) -> dict[str, Fetched]:
+    """NETWORK ONLY: one bulk request (batched) for ``tickers`` over ``piece``, split back
+    per ticker into the shape ``store_daily_raw`` takes. A ticker with no rows (not listed
+    yet, or a symbol that resolves to nothing then) still gets its empty range, so it is
+    recorded covered and never re-asked."""
+    range_start, range_end = piece
+    query_end, covered_end = bounded_by_availability(dataset, range_end, client)
+    if query_end <= range_start:
+        return {}
+    raw = api.fetch_statistics_bulk(dataset, tickers, range_start, query_end,
+                                    max_cost_usd=max_cost_usd, client=client)
+    sym = raw["symbol"].astype(str) if "symbol" in raw else pd.Series(dtype=str)
+    return {t: [(range_start, range_end, covered_end, raw[sym == t] if len(raw) else raw)] for t in tickers}
+
+
 _RECENT = pd.Timedelta(days=7)
 
 

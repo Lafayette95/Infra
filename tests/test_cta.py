@@ -269,3 +269,18 @@ def test_futures_prices_reads_disk_only(monkeypatch):
     assert seen["fetch_missing"] is False
     assert out["ZN.v.0"].diff().dropna().tolist() == [0.5, 0.25, -0.5]
     assert out["ZN.v.0"].iloc[-1] == 111.0
+
+
+def test_log_returns_use_the_held_contracts_own_prices():
+    """Back-adjusted levels shift by the roll gaps: their log differences are wrong."""
+    days = pd.bdate_range("2024-01-01", periods=4)
+    rel = pd.DataFrame({"timestamp": days, "ticker": "CL.v.0", "contract": ["CLF4", "CLF4", "CLG4", "CLG4"],
+                        "settlement_price": [10.0, 11.0, 20.0, 22.0]})
+    absolute = pd.DataFrame({"timestamp": [days[0], days[1], days[1], days[2], days[3]],
+                             "ticker": ["CLF4", "CLF4", "CLG4", "CLG4", "CLG4"],
+                             "settlement_price": [10.0, 11.0, 19.0, 20.0, 22.0]})
+    chg = continuous.same_contract_changes(rel, absolute)
+    r = continuous.log_returns(chg)["CL.v.0"]
+    assert np.allclose(r.dropna().to_numpy(), np.log([1.1, 20 / 19, 1.1]))
+    lvl = continuous.back_adjusted(chg)["CL.v.0"]
+    assert not np.allclose(np.log(lvl).diff().dropna().to_numpy(), r.dropna().to_numpy())
