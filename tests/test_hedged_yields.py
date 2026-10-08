@@ -47,3 +47,51 @@ def test_short_basis_prefers_a_recent_3m_over_a_same_day_1y():
     s = hy.short_basis(obs, carry_days=1)
     assert list(s["basis_bp"]) == [-20.0, -20.0, -32.0]          # carried 1 day, then the 1y
     assert s["basis_source"].iloc[2] == "1y same day"
+
+
+def test_fx_hedge_cost_same_day_then_carries_the_spread_over_ois_not_the_level():
+    days = pd.bdate_range("2026-01-05", periods=15)
+    ois = pd.Series(2.0, index=days)
+    ois.iloc[3:] = 2.5                                     # the OIS 3m moves 50bp after the last FX day
+    fx = pd.Series({days[0]: 1.70, days[2]: 1.80})         # FX swaps: 70 then 20bp below OIS (on day 2: 2.0)
+    out = hy.fx_hedge_cost(fx, ois, carry_days=10)
+    assert out.at[days[2], "cost"] == pytest.approx(1.80) and out.at[days[2], "source"] == "same_day"
+    assert out.at[days[1], "cost"] == pytest.approx(2.0 - 0.30)     # spread from day 0
+    assert out.at[days[5], "cost"] == pytest.approx(2.5 - 0.20)     # today's OIS + day 2's spread
+    assert out.at[days[5], "source"].startswith("spread carried from")
+    assert np.isnan(out.at[days[13], "cost"])                       # beyond 10 business days
+
+
+def test_fx_swap_pairing_orientation_and_implied_rate():
+    from infra.processing import dtcc_fx as fx
+    day = D("2026-09-14")
+    t = "2026-09-14T14:00:11Z"
+
+    def leg(fisn, exp, rate, n1, c1, n2, c2, when=t):
+        return {"UPI FISN": fisn, "Action type": "NEWT", "Package indicator": "True", "Execution Timestamp": when,
+                "Expiration Date": exp, "Exchange rate": rate, "Notional amount-Leg 1": n1, "Notional currency-Leg 1": c1,
+                "Notional amount-Leg 2": n2, "Notional currency-Leg 2": c2, "Platform identifier": "XOFF"}
+    raw = pd.DataFrame([
+        leg("NA/Swaps JPY USD", "2026-09-16", "150.00", "1,500,000,000", "JPY", "10,000,000", "USD"),
+        leg("NA/Swaps JPY USD", "2026-12-16", "148.89", "1,488,900,000", "JPY", "10,000,000", "USD"),
+        # a lone leg and a 1-year swap: not a spot-start 3-month swap
+        leg("NA/Swaps EUR USD", "2026-09-16", "1.16", "1,000,000", "EUR", "1,160,000", "USD", "2026-09-14T15:00:00Z"),
+        leg("NA/Swaps EUR USD", "2026-09-16", "1.16", "1,000,000", "EUR", "1,160,000", "USD", "2026-09-14T16:00:00Z"),
+        leg("NA/Swaps EUR USD", "2027-09-16", "1.18", "1,000,000", "EUR", "1,180,000", "USD", "2026-09-14T16:00:00Z"),
+    ])
+    sw = fx.spot_start_swaps(fx.legs(raw, day), day)
+    assert list(sw["ccy"]) == ["JPY"] and bool(sw["orientation_ok"].iloc[0])
+    assert sw["usd_notional"].iloc[0] == 10_000_000
+    # USDJPY falls 1.11 big figures over 3 months with USD growing 1%: JPY grows 1.01 x 148.89 / 150
+    g = fx.implied_growth(150.0, 148.89, 1.01, "JPY")
+    assert g == pytest.approx(1.01 * 148.89 / 150.0)
+    # EURUSD-style: forward above spot = EUR grows less than USD
+    assert fx.implied_growth(1.16, 1.17, 1.01, "EUR") == pytest.approx(1.01 * 1.16 / 1.17)
+
+
+def test_rolling_fx_hedge_mirrors_both_ways():
+    # with all-in costs A (r + b) per currency, F->B and B->F pickups mirror exactly
+    a_jp, a_us, y_jp, y_us = 0.9, 4.0, 1.6, 4.2
+    jp_into_usd = hy.hedged_yield(y_jp, a_jp, 0.0, a_us, 0.0) - y_us
+    us_into_jpy = hy.hedged_yield(y_us, a_us, 0.0, a_jp, 0.0) - y_jp
+    assert jp_into_usd == pytest.approx(-us_into_jpy)

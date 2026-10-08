@@ -1427,7 +1427,9 @@ and FedInvest prices (2008-09) exist. Store it flagged (`model = "M0_proxy"`) so
 *   **Done:** the synchronized family uses our curve instead (CLAUDE.md 12); `yield_sources_agree` (warn) lists such days in the unsynced P&L.
 *   **Open:** treat them in `yield_bundesbank` itself (e.g. an outlier test against our curve / the OTR, then NA) - not done, since that bmk is the raw official series by design.
 
-## Hedged yields: v2 on FX forwards (2026-10-07)
-*   **Where:** `infra.pipeline.hedged_yields` (CLAUDE.md 16).
-*   **The issue:** the rolling 3-month hedge cost comes from OIS curves + the 3-month cross-currency basis. The 3m basis has a same-day close on only 35% of rows (61% carried up to 10 business days, the rest the 6m / 1y), and the JPY / CAD OIS curves have no short end (flat to the 1y). CAD's curve exists on only 62% of days, which caps every CAD pair at ~56-61%.
-*   **Planned (user, "soon"):** the hedge cost from actual FX forward points - DTCC FOREX archive (forwards / FX swaps, from 2024-09-30), a forward-points close per pair and tenor at a fixed snap, then hedged = y_F + (forward-implied B-F rate differential) directly. Keep the OIS + basis version alongside for comparison (CIP deviation = their difference).
+## Hedged yields / FX-implied rates: open items (2026-10-07)
+*   **Where:** `infra.pipeline.hedged_yields`, `infra.pipeline.fx_implied` (CLAUDE.md 16). v2 (`rolling_3m_fx`, FX swaps) is done and the default; v1 (`rolling_3m`, OIS + basis) stays alongside.
+*   **The OIS short ends behind v1 are wrong where the FX swaps disagree:** EUR before 2025-07-01 (no ESR settlements stored: the curve is flat to its 1y; ~70bp too low in 2024Q4). Fix: backfill ESR settlements 2024-08..2025-06 (priced 2026-10-07 at ~$0.006 for statistics; needs the user's go), then rebuild the EUR curve and everything after it in `derived`. JPY / CAD have no short end at all: a TONA / CORRA fixing source, or the FX-implied rate minus the basis.
+*   **Only 3m from FX swaps.** The matched hedge still uses OIS + basis; longer FX forwards (1y+) are thin in the archive. Revisit when the cross-currency basis is checked against them.
+*   **Thin days:** GBP has FX swaps on ~42% of days (often one swap), so the carried spread does much of the work there.
+*   **`scripts/run_daily_cycle.py --dry-run` fails before 2025-03-10** (Eurex's `definition` cost estimate starts before XEUR.EOBI's available start, 422). The estimate should be clamped like the real fetch. Not fixed: `infra/api/databento_client.py` was being edited by another session.

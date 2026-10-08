@@ -532,16 +532,53 @@ XCCY_BASIS_CLOSES = DerivedMetric(
 )
 
 
+# ------------------------------------------------ FX-implied 3-month rates (DTCC FX swaps)
+def compute_fx_implied(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> tuple[pd.DataFrame, dict]:
+    """Each currency's implied 3-month rate from the archived FX swaps
+    (``infra.pipeline.fx_implied``), over the OIS curves' recomputed range (USD's leg is the
+    SOFR curve). Runs after ``ois_curve``."""
+    from infra.config import SWAP_CORRECTION_DAYS
+    from infra.pipeline.fx_implied import compute_fx_implied as compute
+    lo = start - pd.Timedelta(days=SWAP_CORRECTION_DAYS)
+    df = compute(lo, end, dtcc_root=paths.dtcc_dir, ois_root=paths.ois_curves_dir)
+    days = sorted(pd.to_datetime(df["timestamp"]).unique()) if len(df) else []
+    return df, {"days": days, "empty_days": {}, "range": (lo, end)}
+
+
+def _replace_fx_implied(store, df: pd.DataFrame, diag: dict, start, end) -> None:
+    from infra.pipeline.fx_implied import store_fx_implied
+    lo, hi = diag.get("range", (start, end))
+    store_fx_implied(df, lo, hi, root=store)
+
+
+def _check_fx_implied(ctx: StepContext):
+    """(c) implied rates in [-2, 10]%."""
+    from infra.pipeline.fx_implied import read_fx_implied
+    df = read_fx_implied(ctx.start, ctx.end, root=ctx.paths.fx_implied_dir)
+    bad = df[~df["rate_pct"].between(-2, 10)]
+    if bad.empty:
+        return True, f"{len(df)} FX-implied rates in bounds", None
+    return False, f"{len(bad)} FX-implied rate(s) outside [-2, 10]%", bad
+
+
+FX_IMPLIED = DerivedMetric(
+    "fx_implied", lambda p: p.fx_implied_dir, ("timestamp", "currency"), compute_fx_implied,
+    checks=(Check("fx_implied_sane", _check_fx_implied, Severity.WARN),), replace=_replace_fx_implied,
+    presence_severity=Severity.WARN,
+)
+
+
 # ------------------------------------------------------- FX-hedged bond yields, 5 x 5
 def compute_hedged_yields(start: pd.Timestamp, end: pd.Timestamp, paths: CyclePaths) -> tuple[pd.DataFrame, dict]:
     """Every bond hedged into every base currency (``infra.pipeline.hedged_yields``) over the
     xccy closes' recomputed range (a corrected basis or close moves its hedged yields too).
-    Runs after ``ois_curve``, ``bund_curve`` and ``xccy_basis_closes`` (registry order)."""
+    Runs after ``ois_curve``, ``bund_curve``, ``xccy_basis_closes`` and ``fx_implied``
+    (registry order)."""
     from infra.config import SWAP_CORRECTION_DAYS
     from infra.pipeline.hedged_yields import compute_hedged_yields as compute
     lo = start - pd.Timedelta(days=SWAP_CORRECTION_DAYS)
     df = compute(lo, end, bonds_root=paths.daily_bonds_dir, bund_root=paths.bund_curves_dir, ois_root=paths.ois_curves_dir,
-                 basis_root=paths.xccy_basis_closes_dir)
+                 basis_root=paths.xccy_basis_closes_dir, fx_root=paths.fx_implied_dir)
     days = sorted(pd.to_datetime(df["timestamp"]).unique()) if len(df) else []
     return df, {"days": days, "empty_days": {}, "range": (lo, end)}
 
@@ -779,7 +816,7 @@ DERIVED_METRICS: dict[str, DerivedMetric] = {"wirp": WIRP, "treasury_curve": TRE
                                              "swap_closes": SWAP_CLOSES_PURE, "ois_curve": OIS_CURVE,
                                              "swap_spreads": SWAP_SPREADS, "inflation_swap_closes": INFLATION_CLOSES,
                                              "inflation_curve": INFLATION_CURVE, "xccy_basis_closes": XCCY_BASIS_CLOSES,
-                                             "hedged_yields": HEDGED_YIELDS,
+                                             "fx_implied": FX_IMPLIED, "hedged_yields": HEDGED_YIELDS,
                                              "swaption_records": SWAPTION_RECORDS,
                                              "swaption_prints": SWAPTION_PRINTS, "swaption_vols": SWAPTION_VOLS,
                                              "swaption_oi": SWAPTION_OI, "vrp": VRP_METRIC}

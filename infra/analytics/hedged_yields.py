@@ -11,6 +11,10 @@ pays TONA + b_JPY < TONA, a pickup). Two hedges (``method``):
 
 * ``rolling_3m`` (DEFAULT): roll 3-month hedges - r = the 3-month OIS rate, b = the 3-month
   basis; what most real-money investors do; the pickup earned this quarter.
+* ``rolling_3m_fx`` (DEFAULT since v2, 2026-10-07): the same rolling hedge, its cost (r + b)
+  read off actual 3-month FX swaps (``infra.pipeline.fx_implied``) - what the hedge costs in
+  the FX market, turns and CIP deviations included, and independent of the OIS curves' short
+  ends (flat to the 1y for JPY / CAD, and for EUR before ESR's stored history).
 * ``matched``: one swap to the bond's maturity - r = the T-year par OIS rate, b = the T-year
   basis; locked for the bond's life; the like-for-like comparison of sovereigns.
 
@@ -23,7 +27,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-METHODS = ("rolling_3m", "matched")
+METHODS = ("rolling_3m", "rolling_3m_fx", "matched")
 
 
 def annual_to_semiannual(r_pct: float) -> float:
@@ -105,3 +109,23 @@ def short_basis(obs: pd.DataFrame, *, carry_days: int = 10) -> pd.DataFrame:
             val, how = np.nan, None
         out.append((d, val, how))
     return pd.DataFrame(out, columns=["timestamp", "basis_bp", "basis_source"]).set_index("timestamp")
+
+
+def fx_hedge_cost(fx: pd.Series, ois_3m: pd.Series, *, carry_days: int = 10) -> pd.DataFrame:
+    """Per day of ``ois_3m``, the rolling hedge's all-in cost (r + b, %) from FX swaps: the
+    day's FX-implied rate (``same_day``), else today's OIS 3m + the last FX-implied spread over
+    OIS within ``carry_days`` business days (``spread carried from <day>``: the spread - basis
+    and the OIS short end's error - moves slowly, the rate level doesn't). Point in time."""
+    fx = fx.dropna().sort_index()
+    out, last = [], None
+    for d in ois_3m.index.sort_values():
+        if d in fx.index:
+            val, how = float(fx[d]), "same_day"
+            if pd.notna(ois_3m[d]):
+                last = (d, float(fx[d] - ois_3m[d]))
+        elif last is not None and pd.notna(ois_3m[d]) and np.busday_count(last[0].date(), d.date()) <= carry_days:
+            val, how = float(ois_3m[d] + last[1]), f"spread carried from {last[0].date()}"
+        else:
+            val, how = np.nan, None
+        out.append((d, val, how))
+    return pd.DataFrame(out, columns=["timestamp", "cost", "source"]).set_index("timestamp")

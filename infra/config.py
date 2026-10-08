@@ -148,11 +148,18 @@ HEDGED_YIELDS_DIR = DERIVED_ROOT / "HedgedYields"
 HEDGED_YIELD_COUNTRIES = {"US": ("USD", "cmt"), "DE": ("EUR", "curve"), "UK": ("GBP", "boe"),
                           "JP": ("JPY", "mof"), "CA": ("CAD", "boc")}
 HEDGED_YIELD_TENORS = (2, 5, 10, 30)
-HEDGED_YIELD_DEFAULT_METHOD = "rolling_3m"
+HEDGED_YIELD_DEFAULT_METHOD = "rolling_3m_fx"   # v2 (2026-10-07); v1 "rolling_3m" kept alongside
 HEDGED_YIELD_OIS = {"USD": "USD_SOFR", "EUR": "EUR_ESTR", "GBP": "GBP_SONIA", "JPY": "JPY_TONA", "CAD": "CAD_CORRA"}
 HEDGED_YIELD_BASIS_PAIR = {"EUR": "EURUSD", "GBP": "GBPUSD", "JPY": "USDJPY", "CAD": "USDCAD"}
 HEDGED_YIELD_BASIS_CARRY_DAYS = 10
-HEDGED_YIELDS_START = "2024-09-30"   # the DTCC archive's first day: OIS curves and basis start here
+HEDGED_YIELDS_START = "2024-09-30"
+# v2 (2026-10-07): the rolling hedge's cost from FX SWAPS in the DTCC FOREX archive
+# (infra.pipeline.fx_implied): per day and currency the median implied 3-month rate (basis
+# included) over spot-start swaps of at least FX_IMPLIED_MIN_NOTIONAL_USD - small tickets carry
+# dealer markups (the $5m floor halved GBP's day-to-day noise, 15.9 -> 7.8bp)
+FX_IMPLIED_DIR = DERIVED_ROOT / "FxImpliedRates"
+FX_IMPLIED_MIN_NOTIONAL_USD = 5_000_000
+HEDGED_YIELD_FX_GAP_CARRY_DAYS = 10   # the DTCC archive's first day: OIS curves and basis start here
 # Eurex German bond futures (infra.pipeline.eurex_basis): delivery baskets with conversion
 # factors per day and listed contract, and the daily basis table (gross basis, implied repo,
 # cheapest-to-deliver, futures DV01) at the Bundesbank's 11:15 Frankfurt price time
