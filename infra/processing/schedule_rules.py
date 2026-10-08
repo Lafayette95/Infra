@@ -40,6 +40,8 @@ class _MarketCalendar(AbstractHolidayCalendar):
 def business_days(start, end, calendar: str = "federal") -> pd.DatetimeIndex:
     """Weekdays minus the ``calendar``'s holidays: ``federal`` (agencies) or ``market``
     (NYSE-style - private publishers like MNI follow it: no Chicago PMI on Good Friday)."""
+    if calendar == "weekday":   # no holiday calendar (a foreign market's: none is encoded yet)
+        return pd.bdate_range(start, end)
     cal = USFederalHolidayCalendar() if calendar == "federal" else _MarketCalendar()
     holidays = cal.holidays(pd.Timestamp(start) - pd.Timedelta(days=7), pd.Timestamp(end) + pd.Timedelta(days=7))
     days = pd.bdate_range(start, end)

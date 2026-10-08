@@ -214,8 +214,37 @@ def _bond_avail(key: str) -> Availability:
     if key.startswith("DE_"):
         return Availability("day", 1, "09:00", "Europe/Berlin", calendar="market", verified=False,
                             note="Bundesbank Svensson parameters: next morning (conservative; same-day in practice)")
+    if key.startswith("JP_"):
+        return Availability("day", 1, "09:30", "Asia/Tokyo", calendar="weekday", verified=False,
+                            note="MoF: 09:30 Tokyo the next business day (no Japanese holiday calendar)")
+    if key.startswith("CA_"):
+        return Availability("day", 1, "10:00", "America/New_York", verified=False,
+                            note="BoC Valet benchmark yields: next morning (conservative; publication time unverified)")
     return Availability("day", 1, "09:00", "America/New_York", verified=False,
                         note="Treasury par yield curve (CMT): next morning (conservative; published the same evening)")
+
+
+def _bmk_avail(key: str) -> Availability:
+    """bmk P&L of day D is public when its inputs are: per issuer where it differs from the
+    generic rule (D+1 10:00 New York - FedInvest's posting, the late one)."""
+    src, _, ticker = key.partition(":")
+    if src in ("mof", "yield_mof") or ticker.startswith("JP_"):
+        return Availability("day", 1, "09:30", "Asia/Tokyo", calendar="weekday", verified=False,
+                            note="MoF JGB yields: 09:30 Tokyo the next business day (MoF Q&A); no Japanese holiday "
+                                 "calendar - on the day after one the rule is a day early")
+    if src.endswith("@LDN1615"):
+        if src.startswith("fut"):
+            return Availability("day", 0, "16:16", "Europe/London", calendar="weekday",
+                                note="futures mids at the 16:15 London snap: known then")
+        if src.startswith("ois"):
+            return Availability("day", 0, "20:15", "Europe/London", calendar="weekday",
+                                note="OIS closes at 16:15 London may use prints up to 4h after (EUR / GBP fallback "
+                                     "window): known by 20:15")
+        # cash moved by futures: as late as its source curve (bond: rules)
+        return _bond_avail(ticker.split("__")[0] if "__" not in ticker else ticker.split("__")[1])
+    return Availability("day", 1, "10:00", "America/New_York", calendar="market", verified=False,
+                        note="yield P&L: FedInvest-based (otr, curve) posts D+1 ~10:00 New York; CMT is out the same "
+                             "evening - one rule, the late one")
 
 
 def _swap_avail(key: str) -> Availability:
@@ -352,11 +381,7 @@ SERIES_SOURCES: dict[str, SeriesSource] = {
                                                        "(root CLAUDE.md 18)")),
     "bmk": SeriesSource(_bmk, "daily benchmark P&L in bp of a long position (bmk yield_<source>; yield structures too)",
                         ("bmk:curve:US_BOND_10y", "bmk:otr:FLY__US_BOND_5y__US_BOND_7y__US_BOND_10y"),
-                        availability=Availability("day", 1, "10:00", "America/New_York", calendar="market",
-                                                  verified=False,
-                                                  note="yield P&L: FedInvest-based (otr, curve) posts D+1 ~10:00 New "
-                                                       "York; CMT is out the same evening - one rule, the late one"),
-                        kind="moves"),
+                        availability=_bmk_avail, kind="moves"),
     "swap": SeriesSource(_swap, "swap close (currency:tenor[:close[:method]]), %",
                          tuple(f"swap:USD:{t}y" for t in (1, 2, 3, 5, 7, 10, 15, 20, 30)), availability=_swap_avail),
     "repo": SeriesSource(_repo, "repo rate, %", ("repo:SOFR", "repo:TGCR", "repo:BGCR"), availability=_repo_avail),

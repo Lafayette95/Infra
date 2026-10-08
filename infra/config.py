@@ -229,6 +229,28 @@ BMK_YIELD_OFFICIAL_TENORS = (2, 3, 5, 7, 10, 20, 30)
 # 16:15 London = the Eurex settlement minute (17:14-17:15 Frankfurt, VWAP), ICE's Long Gilt
 # settlement and the Tradeweb/FTSE gilt close. bmk names end "@LDN1615".
 BMK_SYNC_SNAP = "LDN1615"
+# WHEN each bmk P&L series is marked - the market instant at the end of its interval (day D's
+# row covers the previous mark -> D's mark), per bmk and issuer (ticker prefix) or futures
+# exchange; the lag-aware join (infra.pipeline.pnl_timing) needs it so a position earns only
+# intervals starting after its decision. Verified 2026-10-07 by correlating each series' daily
+# change with futures mids sampled through the day: Bundesbank 11:15 Frankfurt (0.96 there,
+# 0.50 at 17:15), MoF 15:00 Tokyo (as MoF states), BoC 16:00 Toronto (peak, flat 15:30-16:30:
+# 2-decimal series); CMT / FedInvest 15:30 New York; BoE 16:15 London.
+BMK_MARK_TIMES: dict[str, dict[str, tuple[str, str]]] = {
+    "yield_cmt": {"US": ("15:30", "America/New_York")},
+    "yield_otr": {"US": ("15:30", "America/New_York"), "DE": ("11:15", "Europe/Berlin")},
+    "yield_curve": {"US": ("15:30", "America/New_York"), "DE": ("11:15", "Europe/Berlin")},
+    "yield_bundesbank": {"DE": ("11:15", "Europe/Berlin")},
+    "yield_boe": {"UK": ("16:15", "Europe/London")},
+    "yield_mof": {"JP": ("15:00", "Asia/Tokyo")},
+    "yield_boc": {"CA": ("16:00", "America/Toronto")},
+    "swsp_cmt": {"US": ("15:30", "America/New_York")},
+    "swsp_otr": {"US": ("15:30", "America/New_York")},
+}
+# futures settlement instants by dataset (CME: 14:00 Chicago for the bond / STIR settlements;
+# Eurex: 17:15 Frankfurt; ICE Europe: 16:15 London)
+SETTLEMENT_MARK_TIMES = {"GLBX.MDP3": ("14:00", "America/Chicago"), "XEUR.EOBI": ("17:15", "Europe/Berlin"),
+                         "IFLL.IMPACT": ("16:15", "Europe/London")}
 BMK_SYNC_FUTURES = ("ZT", "ZF", "ZN", "TN", "ZB", "UB", "FGBS", "FGBM", "FGBL", "FGBX", "R")
 BMK_SYNC_SWAP_TENORS = (2, 5, 10, 30)
 # cash yields moved to the snap: country -> (bmk source, the source's own price time or None
